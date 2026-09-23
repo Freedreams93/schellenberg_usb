@@ -36,15 +36,21 @@ def _leaf_paths(value: Any, prefix: str = "") -> set[str]:
     }
 
 
-def test_developer_tools_runtime_fallback_labels_are_non_empty() -> None:
-    """Every runtime Developer Tools action has a visible fallback label."""
-    assert DEVELOPER_TOOLS_MENU_OPTIONS["reset_stick"] == (
-        "Reset stick / reconnect serial"
-    )
+def test_developer_tools_menu_options_are_valid_step_ids() -> None:
+    """Every Developer Tools menu entry is a non-empty step-id string.
+
+    DEVELOPER_TOOLS_MENU_OPTIONS is deliberately a plain list, not a dict of
+    hardcoded English labels - see the comment above it in config_flow.py.
+    async_show_menu() resolves each id's label from strings.json/translations
+    for every shipped language, so the labels themselves are covered by
+    test_all_config_subentry_menu_options_have_labels below instead.
+    """
+    assert "reset_stick" in DEVELOPER_TOOLS_MENU_OPTIONS
     assert all(
-        isinstance(label, str) and label.strip()
-        for label in DEVELOPER_TOOLS_MENU_OPTIONS.values()
+        isinstance(option, str) and option.strip()
+        for option in DEVELOPER_TOOLS_MENU_OPTIONS
     )
+    assert len(DEVELOPER_TOOLS_MENU_OPTIONS) == len(set(DEVELOPER_TOOLS_MENU_OPTIONS))
 
 
 def test_all_config_subentry_menu_options_have_labels() -> None:

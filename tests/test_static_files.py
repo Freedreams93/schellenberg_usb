@@ -33,7 +33,9 @@ from custom_components.schellenberg_usb.const import (
     SERVICE_TEST_COMMAND,
 )
 
-INTEGRATION_DIR = Path(__file__).parent.parent / "custom_components" / "schellenberg_usb"
+INTEGRATION_DIR = (
+    Path(__file__).parent.parent / "custom_components" / "schellenberg_usb"
+)
 
 PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
@@ -45,7 +47,9 @@ def _load_json(relative_path: str) -> dict:
 
 
 def _load_services_yaml() -> dict:
-    return yaml.safe_load((INTEGRATION_DIR / "services.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load(
+        (INTEGRATION_DIR / "services.yaml").read_text(encoding="utf-8")
+    )
 
 
 def _key_paths(node: object, prefix: str = "") -> set[str]:

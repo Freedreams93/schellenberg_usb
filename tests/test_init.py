@@ -302,7 +302,9 @@ async def test_service_test_command_rejects_invalid_device_id(
         )
 
 
-async def test_service_test_command_fails_when_no_hub_loaded(hass: HomeAssistant) -> None:
+async def test_service_test_command_fails_when_no_hub_loaded(
+    hass: HomeAssistant,
+) -> None:
     await async_setup(hass, {})
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
@@ -313,7 +315,9 @@ async def test_service_test_command_fails_when_no_hub_loaded(hass: HomeAssistant
         )
 
 
-async def test_service_test_command_raises_when_command_fails(hass: HomeAssistant) -> None:
+async def test_service_test_command_raises_when_command_fails(
+    hass: HomeAssistant,
+) -> None:
     api = MagicMock(spec=SchellenbergUsbApi)
     api.control_blind = AsyncMock(return_value=False)
     _stub_status_attrs(api)

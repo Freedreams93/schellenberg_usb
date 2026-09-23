@@ -22,7 +22,9 @@ from custom_components.schellenberg_usb.const import CMD_DOWN, CMD_STOP, CMD_UP
 from custom_components.schellenberg_usb.cover import SchellenbergCover
 
 
-def make_cover(hass: HomeAssistant, *, invert_direction: bool = False) -> SchellenbergCover:
+def make_cover(
+    hass: HomeAssistant, *, invert_direction: bool = False
+) -> SchellenbergCover:
     """Build a SchellenbergCover wired to a real hass and a fake API."""
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
