@@ -81,16 +81,24 @@ async def test_api_connect_success(hass: HomeAssistant) -> None:
         mock_protocol = MagicMock()
         mock_create.return_value = (mock_transport, mock_protocol)
 
-        await api.connect()
+        try:
+            await api.connect()
 
-        assert api._is_connecting is False
-        mock_create.assert_awaited_once()
-        serial_call = mock_create.await_args
-        assert serial_call is not None
-        assert serial_call.args[0] is hass.loop
-        assert callable(serial_call.args[1])
-        assert serial_call.args[2] == "/dev/ttyUSB0"
-        assert serial_call.kwargs == {"baudrate": 112500}
+            assert api._is_connecting is False
+            mock_create.assert_awaited_once()
+            serial_call = mock_create.await_args
+            assert serial_call is not None
+            assert serial_call.args[0] is hass.loop
+            assert callable(serial_call.args[1])
+            assert serial_call.args[2] == "/dev/ttyUSB0"
+            assert serial_call.kwargs == {"baudrate": 115200}
+        finally:
+            # The bare mock protocol never sends back the RFTU_ handshake
+            # verify_device() waits for, so verification times out and
+            # connect() schedules an automatic reconnect - same as it would
+            # for a real, non-Schellenberg serial device. Cancel it so it
+            # doesn't outlive the test.
+            api._cancel_scheduled_reconnect()
 
 
 @pytest.mark.asyncio

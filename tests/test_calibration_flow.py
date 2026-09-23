@@ -312,7 +312,9 @@ async def test_open_instruction_cancelled_error_reraises(hass: HomeAssistant) ->
 # --- calibration_complete --------------------------------------------------
 
 
-async def test_complete_aborts_when_device_or_times_missing(hass: HomeAssistant) -> None:
+async def test_complete_aborts_when_device_or_times_missing(
+    hass: HomeAssistant,
+) -> None:
     handler = make_handler(hass)
     result = await handler.async_step_calibration_complete()
     assert result["type"] == FlowResultType.ABORT
@@ -363,7 +365,9 @@ async def test_complete_updates_existing_subentry_when_recalibrating(
     assert kwargs["data_updates"][CONF_CLOSE_TIME] == 18.5
 
 
-async def test_complete_notifies_live_entity_via_dispatcher(hass: HomeAssistant) -> None:
+async def test_complete_notifies_live_entity_via_dispatcher(
+    hass: HomeAssistant,
+) -> None:
     handler = make_handler(hass)
     handler.set_selected_device(
         {"id": "5D3E7C", "name": "Living room", "entity_id": "cover.living_room"}
@@ -405,7 +409,9 @@ def test_apply_calibration_status_candidates_with_primary_and_secondary(
     ]
 
 
-def test_apply_calibration_status_candidates_with_no_result(hass: HomeAssistant) -> None:
+def test_apply_calibration_status_candidates_with_no_result(
+    hass: HomeAssistant,
+) -> None:
     handler = make_handler(hass)
     handler._calibration_discovery_result = None
     handler._apply_calibration_status_candidates()
@@ -413,7 +419,9 @@ def test_apply_calibration_status_candidates_with_no_result(hass: HomeAssistant)
     assert handler._pending_status_identity_source == STATUS_IDENTITY_SOURCE_UNKNOWN
 
 
-def test_apply_calibration_status_candidates_with_no_primary(hass: HomeAssistant) -> None:
+def test_apply_calibration_status_candidates_with_no_primary(
+    hass: HomeAssistant,
+) -> None:
     handler = make_handler(hass)
     handler._calibration_discovery_result = {"primary": None, "secondary": []}
     handler._apply_calibration_status_candidates()
@@ -431,7 +439,9 @@ def test_calibration_record_includes_rounded_times(hass: HomeAssistant) -> None:
     assert record["close_time"] == 11.11
 
 
-def test_calibration_record_is_none_without_discovery_result(hass: HomeAssistant) -> None:
+def test_calibration_record_is_none_without_discovery_result(
+    hass: HomeAssistant,
+) -> None:
     handler = make_handler(hass)
     handler._calibration_discovery_result = None
     assert handler._calibration_record() is None
