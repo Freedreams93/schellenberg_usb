@@ -50,7 +50,7 @@ async def test_turn_on_success(hass: HomeAssistant) -> None:
 
     await switch.async_turn_on()
 
-    switch.api.led_on.assert_awaited_once()
+    switch.api.led_on.assert_awaited_once()  # type: ignore[attr-defined]
     assert switch.is_on is True
 
 
@@ -58,7 +58,7 @@ async def test_turn_on_raises_and_leaves_state_off_when_command_fails(
     hass: HomeAssistant,
 ) -> None:
     switch = make_switch(hass)
-    switch.api.led_on = AsyncMock(return_value=False)
+    switch.api.led_on = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     with pytest.raises(HomeAssistantError, match="turn on"):
         await switch.async_turn_on()
@@ -72,7 +72,7 @@ async def test_turn_off_success(hass: HomeAssistant) -> None:
 
     await switch.async_turn_off()
 
-    switch.api.led_off.assert_awaited_once()
+    switch.api.led_off.assert_awaited_once()  # type: ignore[attr-defined]
     assert switch.is_on is False
 
 
@@ -81,7 +81,7 @@ async def test_turn_off_raises_and_leaves_state_on_when_command_fails(
 ) -> None:
     switch = make_switch(hass)
     switch._is_on = True
-    switch.api.led_off = AsyncMock(return_value=False)
+    switch.api.led_off = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     with pytest.raises(HomeAssistantError, match="turn off"):
         await switch.async_turn_off()
@@ -94,7 +94,7 @@ async def test_restore_hardware_state_logs_but_does_not_raise_on_failure(
 ) -> None:
     switch = make_switch(hass)
     switch._is_on = True
-    switch.api.led_on = AsyncMock(return_value=False)
+    switch.api.led_on = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     await switch._restore_hardware_state()  # must not raise
 

@@ -107,8 +107,10 @@ def make_flow(hass: HomeAssistant, *, api: MagicMock | None = None, subentries=(
     fake_entry = MagicMock()
     fake_entry.runtime_data = api
     fake_entry.subentries = {s.subentry_id: s for s in subentries}
-    flow._get_entry = MagicMock(return_value=fake_entry)
-    flow._api = api  # convenience handle for test assertions
+    flow._get_entry = MagicMock(return_value=fake_entry)  # type: ignore[method-assign]
+    flow._api = (
+        api  # convenience handle for test assertions  # type: ignore[attr-defined]
+    )
     return flow
 
 
