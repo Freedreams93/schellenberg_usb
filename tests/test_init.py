@@ -181,6 +181,7 @@ async def test_async_setup_entry_ignores_non_hub_entries(hass: HomeAssistant) ->
 
 async def test_async_setup_entry_full_lifecycle_loads_and_unloads(
     hass: HomeAssistant,
+    enable_custom_integrations: None,
 ) -> None:
     """End-to-end setup/unload through the real config-entry machinery.
 

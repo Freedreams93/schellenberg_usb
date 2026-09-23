@@ -26,7 +26,10 @@ def make_entry(hass: HomeAssistant) -> MockConfigEntry:
     return entry
 
 
-async def test_same_port_is_a_noop_save(hass: HomeAssistant) -> None:
+async def test_same_port_is_a_noop_save(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     entry = make_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == FlowResultType.FORM
@@ -41,6 +44,7 @@ async def test_same_port_is_a_noop_save(hass: HomeAssistant) -> None:
 
 async def test_new_port_that_opens_updates_entry_and_reloads(
     hass: HomeAssistant,
+    enable_custom_integrations: None,
 ) -> None:
     entry = make_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -57,6 +61,7 @@ async def test_new_port_that_opens_updates_entry_and_reloads(
 
 async def test_new_port_that_fails_to_open_shows_cannot_connect(
     hass: HomeAssistant,
+    enable_custom_integrations: None,
 ) -> None:
     entry = make_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -71,7 +76,10 @@ async def test_new_port_that_fails_to_open_shows_cannot_connect(
     assert entry.data[CONF_SERIAL_PORT] == "/dev/ttyUSB0"  # unchanged
 
 
-async def test_new_port_unexpected_error_shows_unknown(hass: HomeAssistant) -> None:
+async def test_new_port_unexpected_error_shows_unknown(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     entry = make_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
