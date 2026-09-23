@@ -782,3 +782,5 @@ Bug reports and tested improvements are welcome. Please include:
 Remove or replace any identifiers you do not want to share publicly.
 
 ## License
+
+See [LICENSE](LICENSE).
