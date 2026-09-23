@@ -1,8 +1,8 @@
 # Schellenberg USB for Home Assistant
 
-[![GitHub Release](https://img.shields.io/github/release/GimpArm/schellenberg_usb.svg)](https://github.com/GimpArm/schellenberg_usb/releases)
-[![License](https://img.shields.io/github/license/GimpArm/schellenberg_usb.svg)](https://github.com/GimpArm/schellenberg_usb/blob/main/LICENSE)
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/GimpArm/schellenberg_usb/build-test.yaml)
+[![GitHub Release](https://img.shields.io/github/release/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/releases)
+[![License](https://img.shields.io/github/license/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Freedreams93/schellenberg_usb/build-test.yaml)
 
 Control Schellenberg RF shutters and blinds in Home Assistant with a Schellenberg
 USB FunkStick.
