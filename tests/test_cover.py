@@ -57,7 +57,7 @@ async def test_open_cover_sends_command_and_updates_state(hass: HomeAssistant) -
     cover = make_cover(hass)
     try:
         await cover.async_open_cover()
-        cover._api.control_blind.assert_awaited_once_with(
+        cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
             "01", CMD_UP, device_id="5D3E7C"
         )
         assert cover._attr_is_opening is True
@@ -72,7 +72,7 @@ async def test_open_cover_inverted_direction_sends_down_command(
     cover = make_cover(hass, invert_direction=True)
     try:
         await cover.async_open_cover()
-        cover._api.control_blind.assert_awaited_once_with(
+        cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
             "01", CMD_DOWN, device_id="5D3E7C"
         )
     finally:
@@ -83,8 +83,8 @@ async def test_open_cover_raises_and_leaves_state_untouched_when_command_fails(
     hass: HomeAssistant,
 ) -> None:
     cover = make_cover(hass)
-    cover._api.control_blind = AsyncMock(return_value=False)
-    cover._api.transmit_block_reason = "stick disconnected"
+    cover._api.control_blind = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    cover._api.transmit_block_reason = "stick disconnected"  # type: ignore[misc]
 
     with pytest.raises(HomeAssistantError, match="stick disconnected"):
         await cover.async_open_cover()
@@ -100,7 +100,7 @@ async def test_close_cover_sends_command_and_updates_state(hass: HomeAssistant) 
     cover = make_cover(hass)
     try:
         await cover.async_close_cover()
-        cover._api.control_blind.assert_awaited_once_with(
+        cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
             "01", CMD_DOWN, device_id="5D3E7C"
         )
         assert cover._attr_is_closing is True
@@ -113,8 +113,8 @@ async def test_close_cover_raises_and_leaves_state_untouched_when_command_fails(
     hass: HomeAssistant,
 ) -> None:
     cover = make_cover(hass)
-    cover._api.control_blind = AsyncMock(return_value=False)
-    cover._api.transmit_block_reason = "wrong mode"
+    cover._api.control_blind = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    cover._api.transmit_block_reason = "wrong mode"  # type: ignore[misc]
 
     with pytest.raises(HomeAssistantError, match="wrong mode"):
         await cover.async_close_cover()
@@ -129,7 +129,7 @@ async def test_stop_cover_sends_command(hass: HomeAssistant) -> None:
 
     await cover.async_stop_cover()
 
-    cover._api.control_blind.assert_awaited_once_with(
+    cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
         "01", CMD_STOP, device_id="5D3E7C"
     )
     assert cover._attr_is_opening is False
@@ -139,8 +139,8 @@ async def test_stop_cover_sends_command(hass: HomeAssistant) -> None:
 async def test_stop_cover_raises_when_command_fails(hass: HomeAssistant) -> None:
     cover = make_cover(hass)
     cover._attr_is_closing = True
-    cover._api.control_blind = AsyncMock(return_value=False)
-    cover._api.transmit_block_reason = None
+    cover._api.control_blind = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    cover._api.transmit_block_reason = None  # type: ignore[misc]
 
     with pytest.raises(HomeAssistantError, match="command was not sent"):
         await cover.async_stop_cover()
@@ -160,7 +160,7 @@ async def test_set_position_equal_to_current_while_idle_is_a_noop(
 
     await cover.async_set_cover_position(position=40)
 
-    cover._api.control_blind.assert_not_awaited()
+    cover._api.control_blind.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_set_position_equal_to_current_while_moving_stops_instead_of_noop(
@@ -175,7 +175,7 @@ async def test_set_position_equal_to_current_while_moving_stops_instead_of_noop(
 
     await cover.async_set_cover_position(position=40)
 
-    cover._api.control_blind.assert_awaited_once_with(
+    cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
         "01", CMD_STOP, device_id="5D3E7C"
     )
 
@@ -185,7 +185,7 @@ async def test_set_position_above_current_opens(hass: HomeAssistant) -> None:
     cover._attr_current_cover_position = 20
     try:
         await cover.async_set_cover_position(position=80)
-        cover._api.control_blind.assert_awaited_once_with(
+        cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
             "01", CMD_UP, device_id="5D3E7C"
         )
         assert cover._target_position == 80
@@ -198,7 +198,7 @@ async def test_set_position_below_current_closes(hass: HomeAssistant) -> None:
     cover._attr_current_cover_position = 80
     try:
         await cover.async_set_cover_position(position=20)
-        cover._api.control_blind.assert_awaited_once_with(
+        cover._api.control_blind.assert_awaited_once_with(  # type: ignore[attr-defined]
             "01", CMD_DOWN, device_id="5D3E7C"
         )
         assert cover._target_position == 20

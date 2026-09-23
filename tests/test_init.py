@@ -217,11 +217,13 @@ async def test_async_setup_entry_full_lifecycle_loads_and_unloads(
         assert len(hub_subentries) == 1
 
         device_registry = dr.async_get(hass)
-        hub_device = device_registry.async_get_device_by_identifier(
-            (DOMAIN, entry.entry_id), entry.entry_id
+        hub_device = device_registry.async_get_device(
+            identifiers={(DOMAIN, entry.entry_id)}
         )
         assert hub_device is not None
-        assert hub_device.config_subentry_id == hub_subentries[0].subentry_id
+        assert hub_device.config_entries_subentries.get(entry.entry_id) == {
+            hub_subentries[0].subentry_id
+        }
 
         entity_registry = er.async_get(hass)
         entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)

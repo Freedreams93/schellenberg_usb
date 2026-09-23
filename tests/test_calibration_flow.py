@@ -117,7 +117,7 @@ def make_handler_with_live_api(
     handler = make_handler(hass)
     fake_entry = MagicMock()
     fake_entry.runtime_data = api
-    handler.flow._get_entry = MagicMock(return_value=fake_entry)
+    handler.flow._get_entry = MagicMock(return_value=fake_entry)  # type: ignore[method-assign]
     return handler, api
 
 
@@ -266,23 +266,25 @@ async def test_full_open_then_close_cycle_reaches_complete_step(
 async def test_open_instruction_start_timeout_shows_error(hass: HomeAssistant) -> None:
     handler = make_handler(hass)
     handler.set_selected_device({"id": "5D3E7C", "name": "Living room"})
-    handler._wait_for_movement_start = AsyncMock(return_value=False)
+    handler._wait_for_movement_start = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     result = await handler.async_step_calibration_open_instruction({})
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "calibration_open_instruction"
+    assert result["errors"] is not None
     assert result["errors"]["base"] == "calibration_start_timeout"
 
 
 async def test_open_instruction_stop_timeout_shows_error(hass: HomeAssistant) -> None:
     handler = make_handler(hass)
     handler.set_selected_device({"id": "5D3E7C", "name": "Living room"})
-    handler._wait_for_movement_start = AsyncMock(return_value=True)
-    handler._wait_for_stop_event = AsyncMock(return_value=False)
+    handler._wait_for_movement_start = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    handler._wait_for_stop_event = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     result = await handler.async_step_calibration_open_instruction({})
 
+    assert result["errors"] is not None
     assert result["errors"]["base"] == "calibration_timeout"
 
 
@@ -291,19 +293,20 @@ async def test_open_instruction_generic_exception_shows_unknown_error(
 ) -> None:
     handler = make_handler(hass)
     handler.set_selected_device({"id": "5D3E7C", "name": "Living room"})
-    handler._wait_for_movement_start = AsyncMock(side_effect=RuntimeError("boom"))
+    handler._wait_for_movement_start = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
     result = await handler.async_step_calibration_open_instruction({})
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "calibration_open_instruction"
+    assert result["errors"] is not None
     assert result["errors"]["base"] == "unknown"
 
 
 async def test_open_instruction_cancelled_error_reraises(hass: HomeAssistant) -> None:
     handler = make_handler(hass)
     handler.set_selected_device({"id": "5D3E7C", "name": "Living room"})
-    handler._wait_for_movement_start = AsyncMock(side_effect=asyncio.CancelledError())
+    handler._wait_for_movement_start = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
 
     with pytest.raises(asyncio.CancelledError):
         await handler.async_step_calibration_open_instruction({})
@@ -359,8 +362,8 @@ async def test_complete_updates_existing_subentry_when_recalibrating(
     result = await handler.async_step_calibration_complete({})
 
     assert result["type"] == FlowResultType.ABORT
-    handler.flow.async_update_and_abort.assert_called_once()
-    _, kwargs = handler.flow.async_update_and_abort.call_args
+    handler.flow.async_update_and_abort.assert_called_once()  # type: ignore[attr-defined]
+    _, kwargs = handler.flow.async_update_and_abort.call_args  # type: ignore[attr-defined]
     assert kwargs["data_updates"][CONF_OPEN_TIME] == 20.0
     assert kwargs["data_updates"][CONF_CLOSE_TIME] == 18.5
 
@@ -435,6 +438,7 @@ def test_calibration_record_includes_rounded_times(hass: HomeAssistant) -> None:
     handler._open_time = 12.3456
     handler._close_time = 11.111
     record = handler._calibration_record()
+    assert record is not None
     assert record["open_time"] == 12.35
     assert record["close_time"] == 11.11
 
@@ -532,6 +536,7 @@ async def test_open_instruction_real_timeout_shows_error(hass: HomeAssistant) ->
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "calibration_open_instruction"
+    assert result["errors"] is not None
     assert result["errors"]["base"] == "calibration_start_timeout"
 
 
