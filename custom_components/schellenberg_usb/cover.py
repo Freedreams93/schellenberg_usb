@@ -235,9 +235,11 @@ async def async_setup_entry(
                         f"secondary statuses {len(secondary_status_identities)})"
                     ),
                 )
-            elif device.config_subentry_id != subentry.subentry_id:
+            elif subentry.subentry_id not in device.config_entries_subentries.get(
+                entry.entry_id, set()
+            ):
                 async_reassign_device_subentry_compat(
-                    device_registry, device, subentry.subentry_id
+                    device_registry, device, entry.entry_id, subentry.subentry_id
                 )
             stable_device_registry_id = device.id
             _LOGGER.debug(
