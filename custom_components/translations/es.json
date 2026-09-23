@@ -1,6 +1,13 @@
 {
   "config": {
     "step": {
+      "menu": {
+        "title": "Configuración de Schellenberg USB",
+        "menu_options": {
+          "user": "Configurar hub USB",
+          "pair_device_menu": "Emparejar nuevo dispositivo"
+        }
+      },
       "user": {
         "title": "Configurar memoria USB Schellenberg",
         "description": "Introduzca la ruta del puerto serie para su memoria USB Schellenberg.",
@@ -18,10 +25,13 @@
     },
     "error": {
       "cannot_connect": "Error al conectar con el puerto serie",
+      "pairing_timeout": "Ningún dispositivo respondió en 2 minutos. Por favor, inténtelo de nuevo y asegúrese de presionar el botón de emparejamiento en su motor de persiana.",
       "unknown": "Se produjo un error inesperado"
     },
     "abort": {
-      "already_configured": "El dispositivo ya está configurado"
+      "already_configured": "El dispositivo ya está configurado",
+      "no_hub": "No se encontró ningún hub USB. Por favor, configure primero el hub USB.",
+      "reconfigure_successful": "Calibración completada con éxito"
     }
   },
   "config_subentries": {
@@ -29,7 +39,7 @@
       "entry_type": "Persiana",
       "initiate_flow": {
         "user": "Añadir persiana",
-        "reconfigure": "Configurar"
+        "reconfigure": "Calibrar"
       },
       "step": {
         "user": {
@@ -173,6 +183,9 @@
           },
           "submit": "Confirmar posición"
         },
+        "reset_stick": {
+          "title": "Reiniciar memoria / reconectar puerto serie"
+        },
         "copy_diagnostics": {
           "title": "Copiar diagnóstico",
           "description": "Seleccione y copie el texto de diagnóstico a continuación. Pulse Enviar para volver.",
@@ -217,6 +230,8 @@
         "invalid_device_enum": "El enum debe contener exactamente 2 caracteres hexadecimales.",
         "invalid_travel_time": "El tiempo de recorrido debe ser mayor que cero.",
         "already_configured": "Este dispositivo ya está configurado.",
+        "pairing_timeout": "Ningún dispositivo respondió en 2 minutos. Por favor, inténtelo de nuevo y asegúrese de presionar el botón de emparejamiento en su motor de persiana.",
+        "pairing_failed": "Error en el emparejamiento.",
         "calibration_timeout": "Tiempo de calibración agotado. La persiana tardó más de 5 minutos en completar el movimiento. Por favor, verifique el dispositivo e inténtelo de nuevo.",
         "calibration_start_timeout": "Tiempo de espera agotado para que la persiana comience a moverse. Por favor, asegúrese de que el dispositivo esté correctamente conectado e inténtelo de nuevo.",
         "unknown": "Se produjo un error inesperado durante la calibración. Por favor, inténtelo de nuevo.",
@@ -231,9 +246,9 @@
       "abort": {
         "pairing_timeout": "Ningún dispositivo respondió en 2 minutos. Por favor, inténtelo de nuevo.",
         "pairing_failed": "Error en el emparejamiento.",
-        "device_not_found": "No se pudo encontrar la persiana seleccionada. Por favor, inicie este paso de nuevo.",
-        "reconfigure_successful": "Configuración de la persiana actualizada correctamente",
-        "command_test_successful": "La prueba de comando del motor se completó correctamente."
+        "reconfigure_successful": "Calibración completada con éxito",
+        "command_test_successful": "La prueba de comando del motor se completó correctamente.",
+        "device_not_found": "No se pudo encontrar la persiana seleccionada. Por favor, inicie este paso de nuevo."
       }
     }
   },
@@ -283,6 +298,10 @@
     }
   },
   "services": {
+    "pair": {
+      "name": "Emparejar dispositivo",
+      "description": "Active el modo de emparejamiento en la memoria USB Schellenberg para emparejar un nuevo motor de persiana. Después de llamar a este servicio, presione el botón de emparejamiento en su motor de persiana en los próximos 10 segundos."
+    },
     "test_command": {
       "name": "Probar comando de persiana",
       "description": "Envía abrir, cerrar o detener a un enum de dispositivo sin crear una persiana."

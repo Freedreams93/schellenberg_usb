@@ -1,6 +1,13 @@
 {
   "config": {
     "step": {
+      "menu": {
+        "title": "Schellenberg USB Einrichtung",
+        "menu_options": {
+          "user": "USB-Hub einrichten",
+          "pair_device_menu": "Neues Gerät koppeln"
+        }
+      },
       "user": {
         "title": "Schellenberg USB-Stick einrichten",
         "description": "Geben Sie den seriellen Anschlusspfad für Ihren Schellenberg USB-Stick ein.",
@@ -18,10 +25,13 @@
     },
     "error": {
       "cannot_connect": "Verbindung zum seriellen Anschluss fehlgeschlagen",
+      "pairing_timeout": "Kein Gerät hat innerhalb von 2 Minuten geantwortet. Bitte versuchen Sie es erneut und stellen Sie sicher, dass Sie die Kopplungstaste an Ihrem Rollladenmotor drücken.",
       "unknown": "Unerwarteter Fehler aufgetreten"
     },
     "abort": {
-      "already_configured": "Gerät ist bereits konfiguriert"
+      "already_configured": "Gerät ist bereits konfiguriert",
+      "no_hub": "Kein USB-Hub gefunden. Bitte richten Sie zuerst den USB-Hub ein.",
+      "reconfigure_successful": "Kalibrierung erfolgreich abgeschlossen"
     }
   },
   "config_subentries": {
@@ -29,7 +39,7 @@
       "entry_type": "Rollladen",
       "initiate_flow": {
         "user": "Rollladen hinzufügen",
-        "reconfigure": "Konfigurieren"
+        "reconfigure": "Kalibrieren"
       },
       "step": {
         "user": {
@@ -42,7 +52,7 @@
         },
         "pair_device": {
           "title": "Neues Gerät koppeln",
-          "description": "Verwenden Sie nach dem Drücken von „Koppeln" innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat.",
+          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat.",
           "submit": "Koppeln"
         },
         "manual": {
@@ -90,7 +100,7 @@
         },
         "pair_test": {
           "title": "Koppeln und testen",
-          "description": "Verwenden Sie nach dem Drücken von „Koppeln" innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Auf/Stopp-Test; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat.",
+          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Auf/Stopp-Test; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat.",
           "submit": "Koppeln"
         },
         "manual_next": {
@@ -157,7 +167,7 @@
         },
         "discover_status": {
           "title": "Status von Originalfernbedienung erkennen",
-          "description": "Ausgewählter Rollladen: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken von „Empfang starten" die Original-Schellenberg-Fernbedienung für diesen Rollladenkanal: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
+          "description": "Ausgewählter Rollladen: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Rollladenkanal: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
           "submit": "Empfang starten"
         },
         "confirm_status_discovery": {
@@ -172,6 +182,9 @@
             "position": "Position"
           },
           "submit": "Position bestätigen"
+        },
+        "reset_stick": {
+          "title": "Stick zurücksetzen / seriell neu verbinden"
         },
         "copy_diagnostics": {
           "title": "Diagnose kopieren",
@@ -217,6 +230,8 @@
         "invalid_device_enum": "Der Enum-Wert muss genau 2 Hexadezimalzeichen enthalten.",
         "invalid_travel_time": "Die Laufzeit muss größer als null sein.",
         "already_configured": "Dieses Gerät ist bereits konfiguriert.",
+        "pairing_timeout": "Kein Gerät hat innerhalb von 2 Minuten geantwortet. Bitte versuchen Sie es erneut und stellen Sie sicher, dass Sie die Kopplungstaste an Ihrem Rollladenmotor drücken.",
+        "pairing_failed": "Kopplung fehlgeschlagen.",
         "calibration_timeout": "Kalibrierung abgelaufen. Der Rollladen hat mehr als 5 Minuten für die Bewegung benötigt. Bitte überprüfen Sie das Gerät und versuchen Sie es erneut.",
         "calibration_start_timeout": "Zeitüberschreitung beim Warten auf die Bewegung des Rollladens. Bitte stellen Sie sicher, dass das Gerät ordnungsgemäß angeschlossen ist, und versuchen Sie es erneut.",
         "unknown": "Ein unerwarteter Fehler ist während der Kalibrierung aufgetreten. Bitte versuchen Sie es erneut.",
@@ -231,9 +246,9 @@
       "abort": {
         "pairing_timeout": "Kein Gerät hat innerhalb von 2 Minuten geantwortet. Bitte versuchen Sie es erneut.",
         "pairing_failed": "Kopplung fehlgeschlagen.",
-        "device_not_found": "Der ausgewählte Rollladen wurde nicht gefunden. Bitte starten Sie diesen Schritt erneut.",
-        "reconfigure_successful": "Rollladen-Konfiguration erfolgreich aktualisiert",
-        "command_test_successful": "Der Motorbefehlstest war erfolgreich."
+        "reconfigure_successful": "Kalibrierung erfolgreich abgeschlossen",
+        "command_test_successful": "Der Motorbefehlstest war erfolgreich.",
+        "device_not_found": "Der ausgewählte Rollladen konnte nicht gefunden werden. Bitte starten Sie diesen Schritt erneut."
       }
     }
   },
@@ -269,7 +284,7 @@
         "name": "Betriebsmodus",
         "state": {
           "bootloader": "Bootloader",
-          "initial": "Initialisierung",
+          "initial": "Initial",
           "listening": "Empfangsbereit",
           "pairing": "Kopplung",
           "unknown": "Unbekannt"
@@ -283,9 +298,13 @@
     }
   },
   "services": {
+    "pair": {
+      "name": "Gerät koppeln",
+      "description": "Aktivieren Sie den Kopplungsmodus am Schellenberg USB-Stick, um einen neuen Rollladenmotor zu koppeln. Drücken Sie nach dem Aufrufen dieses Dienstes innerhalb von 10 Sekunden die Kopplungstaste an Ihrem Rollladenmotor."
+    },
     "test_command": {
       "name": "Testbefehl für Rollladen",
       "description": "Sendet Auf, Zu oder Stopp an einen Geräte-Enum, ohne einen Rollladen anzulegen."
     }
   }
-        }
+}
