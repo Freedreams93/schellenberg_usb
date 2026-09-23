@@ -69,4 +69,4 @@ def async_reassign_device_subentry_compat(
             device.id,
             remove_config_subentry_id=device.config_subentry_id,
             add_config_subentry_id=new_subentry_id,
-)
+        )

@@ -281,9 +281,7 @@ class CalibrationFlowHandler:
             # tick) this could otherwise measure as 0.0, which would later
             # divide-by-zero when cover.py uses it to compute position
             # during movement.
-            self._open_time = max(
-                time.monotonic() - self._calibration_start_time, 0.1
-            )
+            self._open_time = max(time.monotonic() - self._calibration_start_time, 0.1)
             _LOGGER.debug("Calibration open_time: %s seconds", self._open_time)
             self._set_calibration_capture_phase("idle_between_legs")
 
@@ -375,9 +373,7 @@ class CalibrationFlowHandler:
                 )
 
             # Record the close time (see the open_time floor above for why).
-            self._close_time = max(
-                time.monotonic() - self._calibration_start_time, 0.1
-            )
+            self._close_time = max(time.monotonic() - self._calibration_start_time, 0.1)
             _LOGGER.debug("Calibration close_time: %s seconds", self._close_time)
             self._finish_calibration_capture("completed")
             self._apply_calibration_status_candidates()
