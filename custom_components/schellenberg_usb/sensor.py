@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant, callback
@@ -97,7 +96,11 @@ class SchellenbergConnectionSensor(SchellenbergBaseSensor):
     # always being the hardcoded English word, matching the rest of the
     # integration (which already ships de/en/es/fr).
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options: ClassVar[list[str]] = ["connected", "disconnected"]
+    # Plain (non-ClassVar) annotation, matching how the base SensorEntity
+    # class itself declares _attr_options - it's a per-instance-overridable
+    # `_attr_*` convenience attribute, so re-declaring it as a ClassVar here
+    # would be an incompatible override under mypy.
+    _attr_options: list[str] = ["connected", "disconnected"]
 
     def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
         """Initialize the connection sensor."""
@@ -141,7 +144,9 @@ class SchellenbergModeSensor(SchellenbergBaseSensor):
 
     _attr_translation_key = "operating_mode"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options: ClassVar[list[str]] = [
+    # See the matching comment on SchellenbergConnectionSensor - plain
+    # annotation on purpose, not ClassVar.
+    _attr_options: list[str] = [
         "bootloader",
         "initial",
         "listening",
