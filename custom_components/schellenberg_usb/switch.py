@@ -50,7 +50,11 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
     """Switch entity for controlling the USB stick LED."""
 
     _attr_has_entity_name = True
-    _attr_translation_key = "led"
+    # Plain (non-ClassVar) annotation matching the base Entity class's own
+    # `str | None` declaration for _attr_translation_key, so tests may clear
+    # it back to None (see make_switch() in tests/test_switch.py) without a
+    # mypy assignment error.
+    _attr_translation_key: str | None = "led"
 
     def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
         """Initialize the LED switch."""
@@ -133,14 +137,18 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the LED on."""
         if not await self.api.led_on():
-            raise HomeAssistantError("Failed to turn on the LED: the command was not sent")
+            raise HomeAssistantError(
+                "Failed to turn on the LED: the command was not sent"
+            )
         self._is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the LED off."""
         if not await self.api.led_off():
-            raise HomeAssistantError("Failed to turn off the LED: the command was not sent")
+            raise HomeAssistantError(
+                "Failed to turn off the LED: the command was not sent"
+            )
         self._is_on = False
         self.async_write_ha_state()
 

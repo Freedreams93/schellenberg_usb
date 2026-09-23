@@ -98,7 +98,7 @@ class SchellenbergConnectionSensor(SchellenbergBaseSensor):
     _attr_device_class = SensorDeviceClass.ENUM
     # Plain (non-ClassVar) annotation, matching how the base SensorEntity
     # class itself declares _attr_options - it's a per-instance-overridable
-    # `_attr_*` convenience attribute, so re-declaring it as a ClassVar here
+    # `_attr_*` convenience attribute, so redeclaring it as a ClassVar here
     # would be an incompatible override under mypy.
     _attr_options: list[str] = ["connected", "disconnected"]
 

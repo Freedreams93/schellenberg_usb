@@ -236,9 +236,11 @@ async def async_setup_entry(
             manufacturer="Schellenberg",
             model="USB Stick",
         )
-    elif hub_device.config_subentry_id != hub_subentry.subentry_id:
+    elif hub_subentry.subentry_id not in hub_device.config_entries_subentries.get(
+        entry.entry_id, set()
+    ):
         async_reassign_device_subentry_compat(
-            device_registry, hub_device, hub_subentry.subentry_id
+            device_registry, hub_device, entry.entry_id, hub_subentry.subentry_id
         )
     hub_device_id = hub_device.id
 
