@@ -181,6 +181,7 @@ async def test_async_setup_entry_ignores_non_hub_entries(hass: HomeAssistant) ->
 
 async def test_async_setup_entry_full_lifecycle_loads_and_unloads(
     hass: HomeAssistant,
+    enable_custom_integrations: None,
 ) -> None:
     """End-to-end setup/unload through the real config-entry machinery.
 
@@ -217,11 +218,13 @@ async def test_async_setup_entry_full_lifecycle_loads_and_unloads(
         assert len(hub_subentries) == 1
 
         device_registry = dr.async_get(hass)
-        hub_device = device_registry.async_get_device_by_identifier(
-            (DOMAIN, entry.entry_id), entry.entry_id
+        hub_device = device_registry.async_get_device(
+            identifiers={(DOMAIN, entry.entry_id)}
         )
         assert hub_device is not None
-        assert hub_device.config_subentry_id == hub_subentries[0].subentry_id
+        assert hub_device.config_entries_subentries.get(entry.entry_id) == {
+            hub_subentries[0].subentry_id
+        }
 
         entity_registry = er.async_get(hass)
         entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
@@ -302,7 +305,9 @@ async def test_service_test_command_rejects_invalid_device_id(
         )
 
 
-async def test_service_test_command_fails_when_no_hub_loaded(hass: HomeAssistant) -> None:
+async def test_service_test_command_fails_when_no_hub_loaded(
+    hass: HomeAssistant,
+) -> None:
     await async_setup(hass, {})
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
@@ -313,7 +318,9 @@ async def test_service_test_command_fails_when_no_hub_loaded(hass: HomeAssistant
         )
 
 
-async def test_service_test_command_raises_when_command_fails(hass: HomeAssistant) -> None:
+async def test_service_test_command_raises_when_command_fails(
+    hass: HomeAssistant,
+) -> None:
     api = MagicMock(spec=SchellenbergUsbApi)
     api.control_blind = AsyncMock(return_value=False)
     _stub_status_attrs(api)

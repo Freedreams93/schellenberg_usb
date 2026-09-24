@@ -1,6 +1,13 @@
 {
   "config": {
     "step": {
+      "menu": {
+        "title": "Schellenberg USB setup",
+        "menu_options": {
+          "user": "Set up USB hub",
+          "pair_device_menu": "Pair new device"
+        }
+      },
       "user": {
         "title": "Set up Schellenberg USB Stick",
         "description": "Enter the serial port path for your Schellenberg USB stick.",
@@ -18,10 +25,13 @@
     },
     "error": {
       "cannot_connect": "Failed to connect to the serial port",
+      "pairing_timeout": "No device responded within 2 minutes. Please try again and ensure you press the pairing button on your blind motor.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "no_hub": "No USB hub found. Please set up the USB hub first.",
+      "reconfigure_successful": "Calibration completed successfully"
     }
   },
   "config_subentries": {
@@ -153,6 +163,9 @@
           },
           "submit": "Confirm position"
         },
+        "reset_stick": {
+          "title": "Reset stick / reconnect serial"
+        },
         "copy_diagnostics": {
           "title": "Copy diagnostics",
           "description": "Select and copy the diagnostic text below. Press Submit to return.",
@@ -218,6 +231,8 @@
         "invalid_travel_time": "Travel time must be greater than zero.",
         "already_configured": "This command device ID is already configured.",
         "command_failed": "The serial command could not be queued. Check the USB connection and logs.",
+        "pairing_timeout": "No device responded within 2 minutes. Please try again.",
+        "pairing_failed": "Pairing failed.",
         "calibration_timeout": "Calibration timed out. The blind took more than 5 minutes to complete the movement. Please check the device and try again.",
         "calibration_start_timeout": "Timeout waiting for the blind to start moving. Please make sure the device is properly connected, and try again.",
         "unknown": "An unexpected error occurred during calibration. Please try again.",
@@ -283,6 +298,10 @@
     }
   },
   "services": {
+    "pair": {
+      "name": "Pair device",
+      "description": "Activate pairing mode on the Schellenberg USB stick to pair a new blind motor. After calling this service, press the pairing button on your blind motor within 10 seconds."
+    },
     "test_command": {
       "name": "Test blind command",
       "description": "Send open, close, or stop to a device enum without creating a cover."

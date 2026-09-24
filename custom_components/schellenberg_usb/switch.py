@@ -7,6 +7,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -49,7 +50,11 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
     """Switch entity for controlling the USB stick LED."""
 
     _attr_has_entity_name = True
-    _attr_translation_key = "led"
+    # Plain (non-ClassVar) annotation matching the base Entity class's own
+    # `str | None` declaration for _attr_translation_key, so tests may clear
+    # it back to None (see make_switch() in tests/test_switch.py) without a
+    # mypy assignment error.
+    _attr_translation_key: str | None = "led"
 
     def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
         """Initialize the LED switch."""
@@ -103,14 +108,21 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
         self.async_write_ha_state()
 
     async def _restore_hardware_state(self) -> None:
-        """Restore the hardware LED state to match the entity state."""
+        """Restore the hardware LED state to match the entity state.
+
+        Runs detached (as a background task), so it must never raise -
+        there is nothing synchronous waiting to catch it. A failure is
+        logged instead.
+        """
         _LOGGER.info(
             "Restoring LED hardware state to: %s", "on" if self._is_on else "off"
         )
-        if self._is_on:
-            await self.api.led_on()
-        else:
-            await self.api.led_off()
+        success = await self.api.led_on() if self._is_on else await self.api.led_off()
+        if not success:
+            _LOGGER.error(
+                "Failed to restore LED hardware state to: %s",
+                "on" if self._is_on else "off",
+            )
 
     @property
     def is_on(self) -> bool:
@@ -124,13 +136,19 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the LED on."""
-        await self.api.led_on()
+        if not await self.api.led_on():
+            raise HomeAssistantError(
+                "Failed to turn on the LED: the command was not sent"
+            )
         self._is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the LED off."""
-        await self.api.led_off()
+        if not await self.api.led_off():
+            raise HomeAssistantError(
+                "Failed to turn off the LED: the command was not sent"
+            )
         self._is_on = False
         self.async_write_ha_state()
 

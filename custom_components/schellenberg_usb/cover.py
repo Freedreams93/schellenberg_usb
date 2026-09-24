@@ -16,6 +16,7 @@ from homeassistant.components.cover import (
 )
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -53,6 +54,10 @@ from .const import (
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
     SchellenbergConfigEntry,
+)
+from .device_registry_compat import (
+    async_get_device_by_identifier_compat,
+    async_reassign_device_subentry_compat,
 )
 from .identities import normalize_status_identities, normalize_status_identity
 
@@ -204,12 +209,12 @@ async def async_setup_entry(
             # Assistant (calling it raised AttributeError, not caught by the
             # ValueError handler that used to sit here). Identifiers are also no
             # longer globally unique as of HA 2026.9 (they are scoped per config
-            # entry), so the lookup itself must be scoped: use the registry's
-            # async_get_device_by_identifier(identifier, entry_id), which returns
-            # the DeviceEntry directly (or None), instead of the removed
-            # async_get_device(identifiers=...) helper.
-            device = device_registry.async_get_device_by_identifier(
-                (DOMAIN, stable_device_id), entry.entry_id
+            # entry there), so the lookup itself must be scoped. See
+            # device_registry_compat.py for why the call below still works on
+            # Home Assistant releases older than 2026.9 too, rather than
+            # trading one AttributeError for another.
+            device = async_get_device_by_identifier_compat(
+                device_registry, (DOMAIN, stable_device_id), entry.entry_id
             )
 
             if device is None:
@@ -230,10 +235,11 @@ async def async_setup_entry(
                         f"secondary statuses {len(secondary_status_identities)})"
                     ),
                 )
-            elif device.config_subentry_id != subentry.subentry_id:
-                device_registry.async_update_device(
-                    device.id,
-                    new_config_subentry_id=subentry.subentry_id,
+            elif subentry.subentry_id not in device.config_entries_subentries.get(
+                entry.entry_id, set()
+            ):
+                async_reassign_device_subentry_compat(
+                    device_registry, device, entry.entry_id, subentry.subentry_id
                 )
             stable_device_registry_id = device.id
             _LOGGER.debug(
@@ -1004,9 +1010,19 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new open command")
         self._start_position_tracking()
         self.async_write_ha_state()
-        await self._api.control_blind(
+        if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
-        )
+        ):
+            # The command never reached the stick - undo the optimistic
+            # "opening" state set above so the entity doesn't report a
+            # movement that never physically happened.
+            self._attr_is_opening = False
+            self._move_start_time = None
+            self._move_start_position = None
+            await self._async_cancel_position_tracking("open command failed")
+            self.async_write_ha_state()
+            reason = self._api.transmit_block_reason or "the command was not sent"
+            raise HomeAssistantError(f"Failed to open {self._device_name}: {reason}")
 
     async def async_close_cover(
         self, *, _preserve_target: bool = False, **kwargs: Any
@@ -1048,9 +1064,19 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new close command")
         self._start_position_tracking()
         self.async_write_ha_state()
-        await self._api.control_blind(
+        if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
-        )
+        ):
+            # The command never reached the stick - undo the optimistic
+            # "closing" state set above so the entity doesn't report a
+            # movement that never physically happened.
+            self._attr_is_closing = False
+            self._move_start_time = None
+            self._move_start_position = None
+            await self._async_cancel_position_tracking("close command failed")
+            self.async_write_ha_state()
+            reason = self._api.transmit_block_reason or "the command was not sent"
+            raise HomeAssistantError(f"Failed to close {self._device_name}: {reason}")
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover immediately and freeze the estimated position."""
@@ -1061,6 +1087,11 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_enum,
         )
         previous_position = self._attr_current_cover_position
+        previous_is_opening = self._attr_is_opening
+        previous_is_closing = self._attr_is_closing
+        previous_move_start_time = self._move_start_time
+        previous_move_start_position = self._move_start_position
+        previous_target_position = self._target_position
         self._position_source_kind = "HA command"
         self._full_travel_resync_direction = None
         self._position_update_source = "Home Assistant stop command"
@@ -1079,9 +1110,22 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             status="estimated",
         )
         self.async_write_ha_state()
-        await self._api.control_blind(
+        if not await self._api.control_blind(
             self._command_enum, CMD_STOP, device_id=self._command_device_id
-        )
+        ):
+            # The stop never reached the stick. If the blind was moving, it
+            # likely still is - restore the pre-stop moving state instead of
+            # leaving it frozen at this instant, so the ongoing elapsed-time
+            # estimate (based on the original move start) keeps working
+            # instead of a prematurely frozen position.
+            self._attr_is_opening = previous_is_opening
+            self._attr_is_closing = previous_is_closing
+            self._move_start_time = previous_move_start_time
+            self._move_start_position = previous_move_start_position
+            self._target_position = previous_target_position
+            self.async_write_ha_state()
+            reason = self._api.transmit_block_reason or "the command was not sent"
+            raise HomeAssistantError(f"Failed to stop {self._device_name}: {reason}")
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position by chaining open/close."""
@@ -1098,7 +1142,16 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         )
 
         if target_position == current_position:
-            _LOGGER.debug("Target position equals current position, no action needed")
+            if self._attr_is_opening or self._attr_is_closing:
+                _LOGGER.debug(
+                    "Target position equals current position while moving, "
+                    "stopping instead of letting it continue past the target"
+                )
+                await self.async_stop_cover()
+            else:
+                _LOGGER.debug(
+                    "Target position equals current position, no action needed"
+                )
             return
 
         self._target_position = target_position

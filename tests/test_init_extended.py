@@ -16,6 +16,9 @@ from custom_components.schellenberg_usb.const import (
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.schellenberg_usb.device_registry_compat import (
+    async_get_device_by_identifier_compat,
+)
 
 
 @pytest.fixture
@@ -93,9 +96,12 @@ async def test_async_setup_entry_updates_existing_hub_device(
 
     assert result is True
 
-    # Verify device still exists
-    hub_device = device_registry.async_get_device(
-        identifiers={(DOMAIN, entry.entry_id)}
+    # Verify device still exists. Uses the same compat helper as production
+    # code (see device_registry_compat.py) instead of calling the
+    # now-deprecated, un-scoped device_registry.async_get_device(identifiers=...)
+    # directly.
+    hub_device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, entry.entry_id), entry.entry_id
     )
     assert hub_device is not None
 

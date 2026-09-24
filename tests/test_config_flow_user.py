@@ -24,7 +24,10 @@ from custom_components.schellenberg_usb.const import CONF_SERIAL_PORT, DOMAIN
 CHECK_PORT = "custom_components.schellenberg_usb.config_flow.check_serial_port"
 
 
-async def test_user_step_success_creates_entry(hass: HomeAssistant) -> None:
+async def test_user_step_success_creates_entry(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     with patch(CHECK_PORT):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": "user"}, data={CONF_SERIAL_PORT: "/dev/ttyUSB0"}
@@ -34,7 +37,10 @@ async def test_user_step_success_creates_entry(hass: HomeAssistant) -> None:
     assert result["title"] == "Schellenberg USB (/dev/ttyUSB0)"
 
 
-async def test_user_step_cannot_connect_shows_error(hass: HomeAssistant) -> None:
+async def test_user_step_cannot_connect_shows_error(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     with patch(CHECK_PORT, side_effect=serial.SerialException("boom")):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": "user"}, data={CONF_SERIAL_PORT: "/dev/ttyUSB0"}
@@ -43,7 +49,10 @@ async def test_user_step_cannot_connect_shows_error(hass: HomeAssistant) -> None
     assert result["errors"] == {"base": "cannot_connect"}
 
 
-async def test_user_step_unexpected_error_shows_unknown(hass: HomeAssistant) -> None:
+async def test_user_step_unexpected_error_shows_unknown(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     with patch(CHECK_PORT, side_effect=RuntimeError("boom")):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": "user"}, data={CONF_SERIAL_PORT: "/dev/ttyUSB0"}
@@ -52,7 +61,10 @@ async def test_user_step_unexpected_error_shows_unknown(hass: HomeAssistant) -> 
     assert result["errors"] == {"base": "unknown"}
 
 
-async def test_user_step_duplicate_port_aborts(hass: HomeAssistant) -> None:
+async def test_user_step_duplicate_port_aborts(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     existing = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_SERIAL_PORT: "/dev/ttyUSB0"},
@@ -68,7 +80,10 @@ async def test_user_step_duplicate_port_aborts(hass: HomeAssistant) -> None:
     assert result["reason"] == "already_configured"
 
 
-async def test_usb_discovery_confirm_creates_entry(hass: HomeAssistant) -> None:
+async def test_usb_discovery_confirm_creates_entry(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     discovery_info = UsbServiceInfo(
         device="/dev/ttyUSB0",
         vid="16C0",
@@ -91,7 +106,10 @@ async def test_usb_discovery_confirm_creates_entry(hass: HomeAssistant) -> None:
     assert result["title"] == "van ooijen Schellenberg USB Stick"
 
 
-async def test_usb_discovery_already_configured_aborts(hass: HomeAssistant) -> None:
+async def test_usb_discovery_already_configured_aborts(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
     existing = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_SERIAL_PORT: "/dev/ttyUSB0"},

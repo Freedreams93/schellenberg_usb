@@ -33,6 +33,10 @@ from .const import (
     SUBENTRY_TYPE_HUB,
     SchellenbergConfigEntry,
 )
+from .device_registry_compat import (
+    async_get_device_by_identifier_compat,
+    async_reassign_device_subentry_compat,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -215,10 +219,12 @@ async def async_setup_entry(
     # NOTE: `dr.async_get_device_id_by_identifier` never existed in Home Assistant
     # (calling it raised AttributeError, which was NOT caught by the ValueError
     # handler that used to be here, so this crashed async_setup_entry on every
-    # attempt). Identifiers are also no longer globally unique as of HA 2026.8;
-    # they are scoped per config entry, so the lookup must be scoped too.
-    hub_device = device_registry.async_get_device_by_identifier(
-        (DOMAIN, entry.entry_id), entry.entry_id
+    # attempt). Identifiers are also no longer globally unique as of HA 2026.9;
+    # they are scoped per config entry there. See device_registry_compat.py for
+    # why the lookup below still works on Home Assistant releases older than
+    # 2026.9 too, rather than trading one AttributeError for another.
+    hub_device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, entry.entry_id), entry.entry_id
     )
 
     if hub_device is None:
@@ -230,10 +236,11 @@ async def async_setup_entry(
             manufacturer="Schellenberg",
             model="USB Stick",
         )
-    elif hub_device.config_subentry_id != hub_subentry.subentry_id:
-        device_registry.async_update_device(
-            hub_device.id,
-            new_config_subentry_id=hub_subentry.subentry_id,
+    elif hub_subentry.subentry_id not in hub_device.config_entries_subentries.get(
+        entry.entry_id, set()
+    ):
+        async_reassign_device_subentry_compat(
+            device_registry, hub_device, entry.entry_id, hub_subentry.subentry_id
         )
     hub_device_id = hub_device.id
 

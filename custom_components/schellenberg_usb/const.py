@@ -106,9 +106,17 @@ CMD_TRANSMIT = "ss"  # Schellenberg transmit prefix for device commands
 
 # Dispatcher signals
 SIGNAL_DEVICE_EVENT = f"{DOMAIN}_device_event"
+SIGNAL_DEVICE_PAIRED = f"{DOMAIN}_device_paired"
+SIGNAL_PAIRING_STARTED = f"{DOMAIN}_pairing_started"
+SIGNAL_PAIRING_TIMEOUT = f"{DOMAIN}_pairing_timeout"
 SIGNAL_STICK_STATUS_UPDATED = f"{DOMAIN}_stick_status_updated"
 SIGNAL_CALIBRATION_COMPLETED = f"{DOMAIN}_calibration_completed"
 SIGNAL_MANUAL_POSITION_SYNC = f"{DOMAIN}_manual_position_sync"
+
+# hass.data[DOMAIN][entry_id] keys used before runtime_data (ConfigEntry.runtime_data)
+# replaced most of them; kept for any code path still reading the old layout.
+DATA_API_INSTANCE = "api_instance"
+DATA_UNSUB_DISPATCHER = "unsub_dispatcher"
 
 # Services
 SERVICE_TEST_COMMAND = "test_command"

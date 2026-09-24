@@ -1,8 +1,8 @@
 # Schellenberg USB for Home Assistant
 
-[![GitHub Release](https://img.shields.io/github/release/GimpArm/schellenberg_usb.svg)](https://github.com/GimpArm/schellenberg_usb/releases)
-[![License](https://img.shields.io/github/license/GimpArm/schellenberg_usb.svg)](https://github.com/GimpArm/schellenberg_usb/blob/main/LICENSE)
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/GimpArm/schellenberg_usb/build-test.yaml)
+[![GitHub Release](https://img.shields.io/github/release/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/releases)
+[![License](https://img.shields.io/github/license/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Freedreams93/schellenberg_usb/build-test.yaml)
 
 Control Schellenberg RF shutters and blinds in Home Assistant with a Schellenberg
 USB FunkStick.
@@ -50,6 +50,7 @@ Please keep these limitations in mind:
 - Stable Home Assistant entity unique IDs
 - Diagnostics and troubleshooting tools
 - Compatibility with legacy blind configurations
+- Available in English, German, Spanish, and French
 
 ## Requirements
 
@@ -360,6 +361,378 @@ For a local development checkout, copy the integration directory into
 `/config/custom_components`, restart Home Assistant, and inspect
 **Settings > System > Logs**. HACS may overwrite locally copied test files during
 an update.
+
+## Optional: fine position control and Alexa voice control (example configuration)
+
+> [!NOTE]
+> This is not part of the integration itself. It is an example configuration
+> contributed by a user, built entirely from standard Home Assistant building
+> blocks (a helper, two scripts, and template covers) on top of the `cover.*`
+> entities this integration already creates. Names, entity IDs, and travel
+> times below are examples — replace them with your own.
+
+This setup gives you two extra things on top of the integration's own cover
+entities:
+
+1. A cover that can be commanded to **any position from 0–100%**, by timing
+   open/close commands using the travel times you already measured during
+   [calibration](#calibration-explained-simply).
+2. A second, English-named copy of that cover meant to be exposed to Alexa
+   only, so voice control keeps working even when Alexa re-sends a position
+   it already thinks the blind is at.
+
+It uses three building blocks: one **number helper** per blind, two
+**scripts** that translate a requested position into a timed move, and one or
+two **template covers** per blind that tie it all together.
+
+### Step 1: Create a number helper for each blind
+
+For every blind, go to **Settings > Devices & services > Helpers > Add
+helper > Number** and create one with:
+
+- Minimum value: `0`
+- Maximum value: `100`
+- Step size: `1`
+
+Give it a clear name, for example "Helper: Living room blind". Note the
+resulting entity ID, for example `input_number.helper_living_room_blind` —
+you'll need it below. Both template covers for the same physical blind (the
+normal one and its Alexa twin) share this single helper.
+
+### Step 2: Add the two scripts
+
+Add both scripts below, for example to `scripts.yaml`. If you prefer the UI,
+create a new script under **Settings > Automations & scenes > Scripts**,
+switch it to YAML mode, and paste in everything from `alias:` down.
+
+| Field | Meaning |
+|---|---|
+| `ziel` | Requested position, on this helper's own scale: **0 = fully open**, **100 = fully closed** (see note below) |
+| `helfer` | The number helper for this blind, from step 1 |
+| `auf` | Measured seconds for a full **opening** run |
+| `ab` | Measured seconds for a full **closing** run |
+| `entity` | The blind's real cover entity from this integration, e.g. `cover.living_room_blind` |
+
+**Script A — for normal use** (dashboards, automations). It does nothing if
+the requested position already matches the stored one:
+
+```yaml
+interne_rollladenlogik_fuer_home_assistant:
+  alias: Interne Rollladenlogik für Home Assistant
+  mode: parallel
+  max: 12
+  sequence:
+    - condition: template
+      value_template: "{{ ziel | int != states(helfer) | int }}"
+    - variables:
+        soll: "{{ ziel | float(0) }}"
+        ist: "{{ states(helfer) | float(0) }}"
+        f_auf: "{{ auf | float(25) }}"
+        f_ab: "{{ ab | float(25) }}"
+        richtung_runter: "{{ soll > ist }}"
+        dauer: >
+          {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
+          richtung_runter else f_auf %} {{ ((diff / 100.0) * faktor) | round(2) }}
+        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
+        korrektur_dauer: |
+          {% if soll == 0 %}
+            {{ (ist / 100.0 * f_auf) | round(2) }}
+          {% elif soll == 100 %}
+            {{ ((100 - ist) / 100.0 * f_ab) | round(2) }}
+          {% else %}
+            0
+          {% endif %}
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ not richtung_runter }}"
+          sequence:
+            - action: cover.open_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.open_cover
+              target:
+                entity_id: "{{ entity }}"
+        - conditions:
+            - condition: template
+              value_template: "{{ richtung_runter }}"
+          sequence:
+            - action: cover.close_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.close_cover
+              target:
+                entity_id: "{{ entity }}"
+    - delay: "{{ rest_dauer }}"
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ soll | int != 0 and soll | int != 100 }}"
+          sequence:
+            - action: cover.stop_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.stop_cover
+              target:
+                entity_id: "{{ entity }}"
+        - conditions:
+            - condition: template
+              value_template: "{{ soll | int == 0 or soll | int == 100 }}"
+          sequence:
+            - delay:
+                seconds: "{{ korrektur_dauer }}"
+    - action: input_number.set_value
+      target:
+        entity_id: "{{ helfer }}"
+      data:
+        value: "{{ soll | float(0) }}"
+```
+
+**Script B — for the Alexa-facing copy.** Alexa's smart-home skill can
+re-send the same target position it already believes a blind is at, which
+script A would then ignore. Script B instead treats "target equals current"
+as an instruction to run a full close (target ≥ 50) or full open (target <
+50), so a repeated Alexa command still moves the blind:
+
+```yaml
+rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
+  alias: Rollladenlogik fuer Alexasprachsteuerungen für Rollladen
+  mode: parallel
+  max: 12
+  sequence:
+    - variables:
+        soll: "{{ ziel | float(0) }}"
+        ist: "{{ states(helfer) | float(0) }}"
+        f_auf: "{{ auf | float(25) }}"
+        f_ab: "{{ ab | float(25) }}"
+        reset_richtung_runter: "{{ soll >= 50 }}"
+        richtung_runter: |
+          {% if soll == ist %}
+            {{ reset_richtung_runter }}
+          {% else %}
+            {{ soll > ist }}
+          {% endif %}
+        dauer: |
+          {% if soll == ist %}
+            {% if reset_richtung_runter %}
+              {{ f_ab }}
+            {% else %}
+              {{ (ist / 100.0) * f_auf }}
+            {% endif %}
+          {% else %}
+            {% set diff = (ist - soll) | abs %}
+            {% set faktor = f_ab if richtung_runter else f_auf %}
+            {{ ((diff / 100.0) * faktor) | round(2) }}
+          {% endif %}
+        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
+        korrektur_dauer: |
+          {% if soll == 0 or (soll == ist and not reset_richtung_runter) %}
+            {{ (ist / 100.0 * f_auf) | round(2) }}
+          {% elif soll == 100 or (soll == ist and reset_richtung_runter) %}
+            {{ ((100 - ist) / 100.0 * f_ab) | round(2) }}
+          {% else %}
+            0
+          {% endif %}
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ not richtung_runter }}"
+          sequence:
+            - action: cover.open_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.open_cover
+              target:
+                entity_id: "{{ entity }}"
+        - conditions:
+            - condition: template
+              value_template: "{{ richtung_runter }}"
+          sequence:
+            - action: cover.close_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.close_cover
+              target:
+                entity_id: "{{ entity }}"
+    - delay: "{{ rest_dauer }}"
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: >-
+                {{ not (soll == ist) and (soll | int != 0 and soll | int != 100) }}
+          sequence:
+            - action: cover.stop_cover
+              target:
+                entity_id: "{{ entity }}"
+            - delay:
+                hours: 0
+                minutes: 0
+                seconds: 1
+                milliseconds: 0
+            - action: cover.stop_cover
+              target:
+                entity_id: "{{ entity }}"
+        - conditions:
+            - condition: template
+              value_template: "{{ (soll | int == 0 or soll | int == 100) or (soll == ist) }}"
+          sequence:
+            - delay:
+                seconds: "{{ korrektur_dauer }}"
+    - action: input_number.set_value
+      target:
+        entity_id: "{{ helfer }}"
+      data:
+        value: |
+          {% if soll == ist %}
+            {{ 100 if reset_richtung_runter else 0 }}
+          {% else %}
+            {{ soll | float(0) }}
+          {% endif %}
+```
+
+Keep `mode: parallel` and a `max` at least as high as your number of blinds
+on both scripts. With the default `single` mode, moving several blinds at
+the same time would make later calls wait for earlier ones, or get skipped.
+
+### Step 3: Add the template cover
+
+Add this to `configuration.yaml`, or merge the `cover:` list into an
+existing `template:` section:
+
+```yaml
+template:
+  - cover:
+      - name: "Living Room Blind"
+        device_class: shutter
+        unique_id: living_room_blind_percent
+        position: "{{ states('input_number.helper_living_room_blind') | int(0) }}"
+        set_cover_position:
+          action: script.interne_rollladenlogik_fuer_home_assistant
+          data:
+            ziel: "{{ position }}"
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        open_cover:
+          action: script.interne_rollladenlogik_fuer_home_assistant
+          data:
+            ziel: 0
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        close_cover:
+          action: script.interne_rollladenlogik_fuer_home_assistant
+          data:
+            ziel: 100
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        stop_cover:
+          action: cover.stop_cover
+          target:
+            entity_id: cover.living_room_blind
+```
+
+Replace `living_room_blind` everywhere (in the name, `unique_id`, helper, and
+`entity`), and `12.00` / `11.50` with your own measured travel times. Repeat
+the whole block for each additional blind.
+
+### Step 4 (optional): Add an Alexa-facing twin
+
+For each blind you also want on Alexa, add a second template cover that
+points at script B and reuses the **same** helper and the **same** real
+`entity`, but gets its own name and `unique_id`:
+
+```yaml
+      - name: "Living Room Blind Alexa"
+        device_class: shutter
+        unique_id: living_room_blind_percent_alexa
+        position: "{{ states('input_number.helper_living_room_blind') | int(0) }}"
+        set_cover_position:
+          action: script.rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen
+          data:
+            ziel: "{{ position }}"
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        open_cover:
+          action: script.rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen
+          data:
+            ziel: 0
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        close_cover:
+          action: script.rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen
+          data:
+            ziel: 100
+            helfer: input_number.helper_living_room_blind
+            auf: 12.00
+            ab: 11.50
+            entity: cover.living_room_blind
+        stop_cover:
+          action: cover.stop_cover
+          target:
+            entity_id: cover.living_room_blind
+```
+
+Then, in your Alexa integration (for example the Alexa section of Home
+Assistant Cloud, or your Alexa smart-home skill's exposed-entities list),
+expose only the "Alexa" template covers and keep the normal ones hidden from
+Alexa, so each blind doesn't show up twice in the Alexa app.
+
+### Notes
+
+- The 0–100 scale used above is this helper's own convention (0 = open, 100
+  = closed) and is independent of the position this integration tracks
+  internally on the real `cover.*` entity — the two don't need to match.
+- Both scripts send `open_cover`/`close_cover` twice, one second apart,
+  before waiting out the calculated duration. This is a small safety margin
+  in case a single RF command is missed.
+- When the target is exactly 0 or 100, the scripts intentionally keep
+  driving into the mechanical end stop instead of stopping at the
+  calculated time, which corrects any position drift that built up over
+  previous moves.
+- Because these scripts nudge the motor often, you may see extra
+  `Transmit error - stick busy` warnings in your log. You can silence just
+  that line without hiding other warnings:
+
+```yaml
+logger:
+  filters:
+    custom_components.schellenberg_usb.api:
+      - "Transmit error - stick busy"
+```
 
 ## Advanced protocol notes
 

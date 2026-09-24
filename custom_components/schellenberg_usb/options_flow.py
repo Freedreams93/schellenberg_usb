@@ -37,9 +37,7 @@ class SchellenbergOptionsFlowHandler(OptionsFlow):
             new_port = user_input[CONF_SERIAL_PORT]
             if new_port != current_port:
                 try:
-                    await self.hass.async_add_executor_job(
-                        check_serial_port, new_port
-                    )
+                    await self.hass.async_add_executor_job(check_serial_port, new_port)
                 except serial.SerialException:
                     _LOGGER.error(
                         "Failed to open serial port %s during options save", new_port

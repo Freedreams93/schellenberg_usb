@@ -1194,8 +1194,7 @@ async def test_pairing_persists_calibrated_protocol_data(
     handler._open_time = 25.064
     handler._close_time = 23.054
 
-    with patch.object(handler, "_save_calibration_data", new=AsyncMock()):
-        await handler.async_step_calibration_complete({})
+    await handler.async_step_calibration_complete({})
 
     flow.async_create_entry.assert_called_once_with(
         title="Sitting room",
@@ -1267,8 +1266,7 @@ async def test_calibration_candidates_are_persisted_with_frame_diagnostics() -> 
     }
     handler._apply_calibration_status_candidates()
 
-    with patch.object(handler, "_save_calibration_data", new=AsyncMock()):
-        await handler.async_step_calibration_complete({})
+    await handler.async_step_calibration_complete({})
 
     data = flow.async_create_entry.call_args.kwargs["data"]
     assert data[CONF_STATUS_DEVICE_ID] == "3720B8"
@@ -1300,8 +1298,7 @@ async def test_reconfigure_persists_calibrated_travel_times() -> None:
     handler._open_time = 25.678
     handler._close_time = 23.456
 
-    with patch.object(handler, "_save_calibration_data", new=AsyncMock()):
-        result = await handler.async_step_calibration_complete({})
+    result = await handler.async_step_calibration_complete({})
 
     assert result is expected_result
     flow.async_update_and_abort.assert_called_once_with(

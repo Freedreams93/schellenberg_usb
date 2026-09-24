@@ -107,8 +107,9 @@ def make_flow(hass: HomeAssistant, *, api: MagicMock | None = None, subentries=(
     fake_entry = MagicMock()
     fake_entry.runtime_data = api
     fake_entry.subentries = {s.subentry_id: s for s in subentries}
-    flow._get_entry = MagicMock(return_value=fake_entry)
-    flow._api = api  # convenience handle for test assertions
+    flow._get_entry = MagicMock(return_value=fake_entry)  # type: ignore[method-assign]
+    # convenience handle for test assertions
+    flow._api = api  # type: ignore[attr-defined]
     return flow
 
 
@@ -224,7 +225,9 @@ async def test_manual_step_valid_input_advances_to_menu(hass: HomeAssistant) -> 
     assert flow._pending_device_enum == "01"
 
 
-async def test_save_manual_creates_entry_with_expected_data(hass: HomeAssistant) -> None:
+async def test_save_manual_creates_entry_with_expected_data(
+    hass: HomeAssistant,
+) -> None:
     flow = make_flow(hass)
     await flow.async_step_manual(dict(VALID_MANUAL_INPUT))
 
@@ -671,7 +674,9 @@ async def test_discover_status_success_advances_to_confirm(hass: HomeAssistant) 
 
     assert flow._pending_status_device_id == "5D3E7C"
     assert flow._pending_status_enum == "01"
-    assert flow._pending_status_identity_source == STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY
+    assert (
+        flow._pending_status_identity_source == STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY
+    )
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == "confirm_status_discovery"
 

@@ -1,7 +1,10 @@
 {
   "domain": "schellenberg_usb",
   "name": "Schellenberg-USB",
-  "codeowners": ["@GimpArm", "@Freedreams93"],
+  "codeowners": [
+    "@GimpArm",
+    "@Freedreams93"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/GimpArm/schellenberg_usb",
   "integration_type": "hub",
