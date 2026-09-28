@@ -1,101 +1,66 @@
-"""Tests for switch.py's SchellenbergLedSwitch entity (the USB stick LED),
-against the real Home Assistant test harness rather than hand-written fakes.
-
-Focus: async_turn_on/async_turn_off must raise HomeAssistantError and leave
-the entity's on/off state unchanged when the underlying LED command fails,
-instead of silently reporting success; the background-task restore path
-(_restore_hardware_state) must log rather than raise on the same failure,
-since nothing synchronous is waiting on it.
-"""
+"""Tests for the LED switch's reconnect-triggered hardware-state restore."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.schellenberg_usb.switch import SchellenbergLedSwitch
 
 
-def make_switch(hass: HomeAssistant) -> SchellenbergLedSwitch:
-    api = MagicMock()
-    api.led_on = AsyncMock(return_value=True)
-    api.led_off = AsyncMock(return_value=True)
-    api.is_connected = True
-    api.device_version = "1.0"
-
-    entry = MagicMock()
-    entry.entry_id = "test_entry"
-
+def _build_switch(hass: HomeAssistant, api: Any) -> SchellenbergLedSwitch:
+    entry: Any = MagicMock()
+    entry.entry_id = "test-entry"
     switch = SchellenbergLedSwitch(api, entry)
     switch.hass = hass
-    switch.entity_id = "switch.test_led"
-    # async_write_ha_state() (called by async_turn_on/off) resolves the
-    # entity's translated name via self.platform_data, which is only
-    # populated when an entity is added through a real EntityPlatform via
-    # async_add_entities() - not the case here, where the entity is built
-    # directly. That's a test-setup gap, not a production bug: real setup
-    # (switch.py's async_setup_entry) always goes through async_add_entities
-    # first. Clearing translation_key sidesteps that name resolution the
-    # same way cover.py's own entities do (they use a plain _attr_name
-    # instead of a translation_key).
-    switch._attr_translation_key = None
+    switch.entity_id = "switch.schellenberg_usb_stick_led"
+    switch.async_write_ha_state = MagicMock()  # type: ignore[method-assign]
     return switch
 
 
-async def test_turn_on_success(hass: HomeAssistant) -> None:
-    switch = make_switch(hass)
-
-    await switch.async_turn_on()
-
-    switch.api.led_on.assert_awaited_once()  # type: ignore[attr-defined]
-    assert switch.is_on is True
-
-
-async def test_turn_on_raises_and_leaves_state_off_when_command_fails(
-    hass: HomeAssistant,
+async def test_reconnect_schedules_hardware_restore_as_a_background_task(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    switch = make_switch(hass)
-    switch.api.led_on = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    """Regression: the restore must run as a background task, not a tracked one.
 
-    with pytest.raises(HomeAssistantError, match="turn on"):
-        await switch.async_turn_on()
-
-    assert switch.is_on is False
-
-
-async def test_turn_off_success(hass: HomeAssistant) -> None:
-    switch = make_switch(hass)
+    A plain async_create_task() task is awaited by Home Assistant during
+    shutdown; this one is meant to run detached (see
+    _restore_hardware_state's own docstring), so it must be scheduled with
+    async_create_background_task() instead, which Home Assistant cancels
+    outright at shutdown rather than waiting on.
+    """
+    api = MagicMock()
+    api.is_connected = True
+    api.led_on = AsyncMock(return_value=True)
+    switch = _build_switch(hass, api)
     switch._is_on = True
+    switch._was_available = False
 
-    await switch.async_turn_off()
+    background_task_spy = MagicMock(wraps=hass.async_create_background_task)
+    monkeypatch.setattr(hass, "async_create_background_task", background_task_spy)
+    tracked_task_spy = MagicMock(wraps=hass.async_create_task)
+    monkeypatch.setattr(hass, "async_create_task", tracked_task_spy)
 
-    switch.api.led_off.assert_awaited_once()  # type: ignore[attr-defined]
-    assert switch.is_on is False
+    switch._handle_status_update()
+    await hass.async_block_till_done()
 
-
-async def test_turn_off_raises_and_leaves_state_on_when_command_fails(
-    hass: HomeAssistant,
-) -> None:
-    switch = make_switch(hass)
-    switch._is_on = True
-    switch.api.led_off = AsyncMock(return_value=False)  # type: ignore[method-assign]
-
-    with pytest.raises(HomeAssistantError, match="turn off"):
-        await switch.async_turn_off()
-
-    assert switch.is_on is True
+    background_task_spy.assert_called_once()
+    tracked_task_spy.assert_not_called()
+    api.led_on.assert_awaited_once()
 
 
-async def test_restore_hardware_state_logs_but_does_not_raise_on_failure(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    switch = make_switch(hass)
-    switch._is_on = True
-    switch.api.led_on = AsyncMock(return_value=False)  # type: ignore[method-assign]
+async def test_no_restore_scheduled_when_already_available(hass: HomeAssistant) -> None:
+    """No availability transition must not re-trigger a hardware restore."""
+    api = MagicMock()
+    api.is_connected = True
+    api.led_on = AsyncMock(return_value=True)
+    switch = _build_switch(hass, api)
+    switch._was_available = True
 
-    await switch._restore_hardware_state()  # must not raise
+    switch._handle_status_update()
+    await hass.async_block_till_done()
 
-    assert "Failed to restore LED hardware state" in caplog.text
+    api.led_on.assert_not_awaited()

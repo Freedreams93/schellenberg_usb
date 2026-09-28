@@ -1,56 +1,106 @@
-"""Shared fixtures for Schellenberg USB tests."""
+"""Shared fixtures for the Schellenberg USB test suite.
+
+These tests exercise the integration's core logic (protocol handling, the
+transmit lock/retry/priority-stop bypass, device-registry compatibility
+helpers, and the cover entity's position/stop logic) without opening a real
+serial port: SchellenbergUsbApi is wired to a `_FakeTransport` instead of a
+real `serial_asyncio_fast` connection, which is what `connect()` would
+otherwise require a live USB stick for.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Callable, Generator
+from typing import Any, cast
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
 
-from custom_components.schellenberg_usb.const import CONF_SERIAL_PORT
+from custom_components.schellenberg_usb.api import SchellenbergUsbApi
 
-
-@pytest.fixture
-def mock_serial_port() -> str:
-    """Return a mock serial port."""
-    return "/dev/ttyUSB0"
+pytest_plugins = "pytest_homeassistant_custom_component"
 
 
-@pytest.fixture
-def mock_config_entry_data(mock_serial_port: str) -> dict[str, str]:
-    """Return mock config entry data."""
-    return {CONF_SERIAL_PORT: mock_serial_port}
+@pytest.fixture(autouse=True)
+def auto_enable_custom_integrations(
+    enable_custom_integrations: None,
+) -> Generator[None]:
+    """Make custom_components/schellenberg_usb loadable by every test."""
+    yield
 
 
-@pytest.fixture
-async def mock_api() -> MagicMock:
-    """Create a mock API instance."""
-    api = MagicMock()
-    api.is_connected = False
-    api.connect = AsyncMock()
-    api.disconnect = AsyncMock()
-    api.pair_device_and_wait = AsyncMock()
-    api.register_existing_devices = MagicMock()
-    api.remove_known_device = MagicMock()
-    api.initialize_next_device_enum = MagicMock(return_value="10")
+class FakeTransport:
+    """Minimal stand-in for asyncio.Transport that just records writes.
+
+    SchellenbergUsbApi only ever calls write()/is_closing()/close() on the
+    transport; a real serial transport (or a bigger mock of asyncio's
+    Transport interface) is unnecessary for exercising the API's own logic.
+    """
+
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self._closing = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    def is_closing(self) -> bool:
+        return self._closing
+
+    def close(self) -> None:
+        self._closing = True
+
+
+def make_connected_api(
+    hass: Any, port: str = "/dev/fake-schellenberg"
+) -> SchellenbergUsbApi:
+    """Build a SchellenbergUsbApi already wired to a ready FakeTransport.
+
+    Bypasses connect()/serial_asyncio_fast entirely by setting the private
+    connection-state attributes directly, exactly as a real connect() would
+    have left them after a successful handshake (connected, in listening
+    mode, transport ready to accept writes).
+    """
+    api = SchellenbergUsbApi(hass, port)
+    # api._transport is typed as asyncio.Transport | None in production
+    # code; FakeTransport deliberately only duck-types that interface
+    # rather than subclassing it, so the assignment needs an explicit cast.
+    api._transport = cast(Any, FakeTransport())
+    api._is_connected = True
+    api._device_mode = "listening"
     return api
 
 
-@pytest.fixture
-async def mock_storage(hass: HomeAssistant) -> MagicMock:
-    """Create a mock storage instance."""
-    storage = MagicMock(spec=Store)
-    storage.async_load = AsyncMock(return_value={"devices": []})
-    storage.async_save = AsyncMock()
-    return storage
+def written(api: SchellenbergUsbApi) -> list[bytes]:
+    """Type-safe access to a test API's recorded writes.
+
+    api._transport is typed as asyncio.Transport | None in production code,
+    so reading .written straight off it is a mypy union-attr error even
+    though every fixture here actually wires it to a FakeTransport (see
+    make_connected_api above). This narrows that once for every call site
+    instead of a type: ignore comment at each assertion.
+    """
+    assert isinstance(api._transport, FakeTransport)
+    return api._transport.written
 
 
 @pytest.fixture
-def mock_serial() -> Generator[MagicMock]:
-    """Mock the serial module."""
-    with patch("serial.Serial") as mock:
-        instance = MagicMock()
-        mock.return_value = instance
-        yield mock
+def connected_api(hass: Any) -> SchellenbergUsbApi:
+    """A SchellenbergUsbApi ready to transmit, backed by a FakeTransport."""
+    return make_connected_api(hass)
+
+
+@pytest.fixture
+def connected_api_factory(
+    hass: Any,
+) -> Callable[..., SchellenbergUsbApi]:
+    """A factory for building extra ready-to-transmit API instances.
+
+    Tests that need more than one independent SchellenbergUsbApi (e.g. one
+    loaded config entry plus one that was never set up) use this instead of
+    the single connected_api fixture.
+    """
+
+    def _factory(port: str = "/dev/fake-schellenberg") -> SchellenbergUsbApi:
+        return make_connected_api(hass, port)
+
+    return _factory
