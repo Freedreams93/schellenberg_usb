@@ -100,7 +100,7 @@ async def test_sensor_updates_on_dispatcher_signal(hass: HomeAssistant) -> None:
     sensor = SchellenbergConnectionSensor(api, entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.schellenberg_usb_stick_connection"
-    sensor.async_write_ha_state = MagicMock()  # type: ignore[method-assign]
+    sensor.async_write_ha_state = MagicMock()  # type: ignore[misc]
 
     await sensor.async_added_to_hass()
     async_dispatcher_send(hass, SIGNAL_STICK_STATUS_UPDATED)
