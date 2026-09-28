@@ -78,7 +78,7 @@ def make_flow(
     *,
     api: MagicMock | None = None,
     subentries: Iterable[Any] = (),
-) -> SchellenbergPairingSubentryFlow:
+) -> Any:
     """Build a subentry flow with _get_entry() stubbed to a fake hub entry."""
     flow = SchellenbergPairingSubentryFlow()
     flow.hass = hass
