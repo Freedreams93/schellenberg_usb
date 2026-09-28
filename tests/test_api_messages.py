@@ -269,7 +269,8 @@ async def test_handle_message_device_event_registered_device(
         # Format: ssXXYYYYYYZZZZCCPPRR where XX=enum, YYYYYY=device_id, CC=command
         api._handle_message("ss10ABC123ZZZZ01PP00")
 
-        # Calibration receives the ID-only signal and the cover receives an exact signal.
+        # Calibration receives the ID-only signal and the cover receives an
+        # exact signal.
         assert mock_send.call_count == 2
         assert mock_send.call_args_list[0].args == (
             hass,

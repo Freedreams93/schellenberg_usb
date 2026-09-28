@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -42,14 +43,18 @@ PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 LANGUAGES = ("de", "en", "es", "fr")
 
 
-def _load_json(relative_path: str) -> dict:
-    return json.loads((INTEGRATION_DIR / relative_path).read_text(encoding="utf-8"))
+def _load_json(relative_path: str) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(
+        (INTEGRATION_DIR / relative_path).read_text(encoding="utf-8")
+    )
+    return data
 
 
-def _load_services_yaml() -> dict:
-    return yaml.safe_load(
+def _load_services_yaml() -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load(
         (INTEGRATION_DIR / "services.yaml").read_text(encoding="utf-8")
     )
+    return data
 
 
 def _key_paths(node: object, prefix: str = "") -> set[str]:

@@ -146,7 +146,7 @@ async def test_teach_motor_sends_60_then_40_and_waits_for_each_ack(
         return True
 
     wait_for_idle = AsyncMock(side_effect=_complete_transmit)
-    api._wait_for_transmitter_idle = wait_for_idle
+    api._wait_for_transmitter_idle = wait_for_idle  # type: ignore[method-assign]
 
     with caplog.at_level("WARNING"):
         assert await api.teach_motor("0d", device_id="F2B8D5", source="developer_tools")
@@ -185,7 +185,7 @@ async def test_raw_transmit_preserves_exact_protocol_slots(
     api._is_connected = True
     api._device_mode = "listening"
     wait_for_idle = AsyncMock(return_value=True)
-    api._wait_for_transmitter_idle = wait_for_idle
+    api._wait_for_transmitter_idle = wait_for_idle  # type: ignore[method-assign]
 
     assert await api.send_raw_transmit(payload)
 
@@ -225,7 +225,7 @@ async def test_raw_transmit_timeout_latches_busy_state(hass: HomeAssistant) -> N
     api._is_connected = True
     api._device_mode = "listening"
     wait_for_idle = AsyncMock(return_value=False)
-    api._wait_for_transmitter_idle = wait_for_idle
+    api._wait_for_transmitter_idle = wait_for_idle  # type: ignore[method-assign]
 
     assert not await api.send_raw_transmit("ss109010000")
 
