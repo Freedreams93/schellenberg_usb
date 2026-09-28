@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
+from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
@@ -42,6 +43,7 @@ from .const import (
     STATUS_IDENTITY_SOURCE_CALIBRATION,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
 )
+from .identities import normalize_status_identity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ class CalibrationFlowHandler:
     def _runtime_api(self) -> SchellenbergUsbApi | None:
         """Return the loaded hub API for this subentry flow's parent entry."""
         entry = self.flow._get_entry()
-        api = getattr(entry, "runtime_data", None)
+        api = entry.runtime_data
         return api if isinstance(api, SchellenbergUsbApi) else None
 
     def _start_calibration_capture(self) -> None:
@@ -459,6 +461,15 @@ class CalibrationFlowHandler:
             # Otherwise this is a recalibration of an already-existing blind
             # subentry (self.flow is always a ConfigSubentryFlow; see the
             # class docstring).
+            existing_data = self.flow._get_reconfigure_subentry().data
+            existing_status_identity = normalize_status_identity(
+                existing_data.get(CONF_STATUS_DEVICE_ID),
+                existing_data.get(CONF_STATUS_ENUM),
+            )
+            existing_status_confirmed = (
+                existing_data.get(CONF_STATUS_IDENTITY_SOURCE)
+                != STATUS_IDENTITY_SOURCE_UNKNOWN
+            )
             data_updates: dict[str, Any] = {
                 CONF_OPEN_TIME: round(self._open_time, 2),
                 CONF_CLOSE_TIME: round(self._close_time, 2),
@@ -471,18 +482,56 @@ class CalibrationFlowHandler:
                 and self._pending_status_identity_source
                 == STATUS_IDENTITY_SOURCE_CALIBRATION
             ):
-                data_updates.update(
-                    {
-                        CONF_STATUS_DEVICE_ID: self._pending_status_device_id,
-                        CONF_STATUS_ENUM: self._pending_status_enum,
-                        CONF_STATUS_IDENTITY_SOURCE: (
-                            STATUS_IDENTITY_SOURCE_CALIBRATION
-                        ),
-                        CONF_SECONDARY_STATUS_IDENTITIES: list(
-                            self._pending_secondary_status_identities
-                        ),
-                    }
+                discovered_status_identity = normalize_status_identity(
+                    self._pending_status_device_id, self._pending_status_enum
                 )
+                # A recalibration run here is normally just about remeasuring
+                # travel times, not re-discovering status identity - but a
+                # freshly captured "primary" can be wrong in ways this code
+                # cannot tell apart from a genuine re-discovery: RF noise, a
+                # neighboring blind's remote, or another blind sharing the
+                # capture window. When this run confirms the *same* identity
+                # that was already configured, applying it is harmless (and
+                # still refreshes secondary identities/source below); it is
+                # only a *different* discovered identity, while a known-good
+                # one is already configured, that gets silently discarded
+                # instead of overwriting a working identity with a possibly
+                # wrong guess. Someone who deliberately wants to replace an
+                # existing identity with a genuinely different one can still
+                # clear it via the manual edit step first, which goes through
+                # this same STATUS_IDENTITY_SOURCE_UNKNOWN gate on the way
+                # back in.
+                if (
+                    existing_status_identity is not None
+                    and existing_status_confirmed
+                    and discovered_status_identity != existing_status_identity
+                ):
+                    _LOGGER.info(
+                        "Recalibration for %s discovered status identity %s/%s, "
+                        "which differs from the already-configured %s/%s; "
+                        "keeping the existing one and discarding the newly "
+                        "discovered guess",
+                        self._selected_device["name"]
+                        if self._selected_device is not None
+                        else "unknown device",
+                        self._pending_status_device_id,
+                        self._pending_status_enum,
+                        existing_status_identity[0],
+                        existing_status_identity[1],
+                    )
+                else:
+                    data_updates.update(
+                        {
+                            CONF_STATUS_DEVICE_ID: self._pending_status_device_id,
+                            CONF_STATUS_ENUM: self._pending_status_enum,
+                            CONF_STATUS_IDENTITY_SOURCE: (
+                                STATUS_IDENTITY_SOURCE_CALIBRATION
+                            ),
+                            CONF_SECONDARY_STATUS_IDENTITIES: list(
+                                self._pending_secondary_status_identities
+                            ),
+                        }
+                    )
             return self.flow.async_update_and_abort(
                 self.flow._get_entry(),
                 self.flow._get_reconfigure_subentry(),
@@ -515,13 +564,41 @@ class CalibrationFlowHandler:
             return False
         device_id = self._selected_device["id"]
         self._start_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
 
-        # Set up listener for movement start events
+        # Set up listener for movement start events. @callback is kept here
+        # as correct HA style for a fast, non-blocking listener, but it does
+        # NOT guarantee this runs on the event loop thread: a real reproduced
+        # crash (thread-based pytest-timeout dump, not a theory) caught
+        # Home Assistant's own dispatcher routing this exact @callback
+        # target through hass.loop.run_in_executor(...) regardless -
+        # homeassistant/core.py's _async_add_hass_job, at least on the
+        # pinned HA version this integration tests against, does not treat
+        # @callback as a hard guarantee of inline execution the way this
+        # module previously assumed. So handle_device_event below CAN run on
+        # a worker thread, and self._start_event.set() is therefore reaching
+        # asyncio.Event.set() -> Future.set_result() -> loop.call_soon() from
+        # off the loop thread. call_soon() is not thread-safe and raises
+        # "Non-thread-safe operation invoked on an event loop other than the
+        # current one" when that happens - which Home Assistant's background
+        # job runner only logs ("Future exception was never retrieved"),
+        # never surfaces to this method's own asyncio.wait_for() below. The
+        # event is therefore never actually set, and the wait below runs all
+        # the way to its own timeout every time, silently. This is also why
+        # an earlier version of this method used
+        # hass.loop.call_soon_threadsafe() here and a prior fix in this same
+        # file's history replaced it with a plain .set() call, reasoning that
+        # the *sender* (_handle_message) always runs on the loop thread; that
+        # reasoning never accounted for the *listener* potentially running
+        # off it regardless of its own decoration, which is exactly what
+        # happens here. call_soon_threadsafe() is the only call that may
+        # safely schedule work on the loop from any thread, so it is
+        # restored below - now for the right, verified reason instead of
+        # being removed for an incomplete one.
+        @callback
         def handle_device_event(command: str) -> None:
             """Handle device event."""
             if command == event_type and self._start_event:
-                loop.call_soon_threadsafe(self._start_event.set)
+                self.flow.hass.loop.call_soon_threadsafe(self._start_event.set)
 
         # Subscribe to device events
         self._event_listener_unsub = async_dispatcher_connect(
@@ -556,13 +633,18 @@ class CalibrationFlowHandler:
             return False
         device_id = self._selected_device["id"]
         self._stop_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
 
-        # Set up listener for stop events
+        # Set up listener for stop events. See _wait_for_movement_start above
+        # for the full explanation, verified against a real reproduced
+        # crash: Home Assistant's dispatcher can run this @callback target on
+        # a worker thread regardless of the decoration, so the .set() call
+        # must be scheduled back onto the loop thread via
+        # call_soon_threadsafe() rather than called directly.
+        @callback
         def handle_device_event(command: str) -> None:
             """Handle device event."""
             if command == EVENT_STOPPED and self._stop_event:
-                loop.call_soon_threadsafe(self._stop_event.set)
+                self.flow.hass.loop.call_soon_threadsafe(self._stop_event.set)
 
         # Subscribe to device events
         self._event_listener_unsub = async_dispatcher_connect(

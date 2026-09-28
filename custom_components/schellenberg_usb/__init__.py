@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import MappingProxyType
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigSubentry
@@ -12,6 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.typing import ConfigType
 
 from .api import SchellenbergUsbApi
 from .blind_id import claim_blind_id
@@ -20,10 +22,13 @@ from .const import (
     CMD_STOP,
     CMD_UP,
     CONF_BLIND_ID,
+    CONF_CLOSE_TIME,
     CONF_COMMAND,
     CONF_CONFIG_ENTRY_ID,
     CONF_DEVICE_ID,
     CONF_ENUM,
+    CONF_LAST_CALIBRATION,
+    CONF_OPEN_TIME,
     CONF_SERIAL_PORT,
     DOMAIN,
     PLATFORMS,
@@ -34,6 +39,7 @@ from .const import (
     SchellenbergConfigEntry,
 )
 from .device_registry_compat import (
+    async_device_on_subentry_compat,
     async_get_device_by_identifier_compat,
     async_reassign_device_subentry_compat,
 )
@@ -97,13 +103,22 @@ TEST_COMMAND_SCHEMA = vol.Schema(
 )
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     _LOGGER.info("Setting up Schellenberg USB integration")
 
     async def _handle_test_command(call: ServiceCall) -> None:
         requested_entry_id = call.data.get(CONF_CONFIG_ENTRY_ID)
         loaded_entries: list[tuple[SchellenbergConfigEntry, SchellenbergUsbApi]] = []
         for candidate in hass.config_entries.async_entries(DOMAIN):
+            # candidate.runtime_data is only set by async_setup_entry, so a
+            # configured-but-not-loaded entry (never set up, failed setup,
+            # or unloaded) has no such attribute at all yet - accessing it
+            # directly raises AttributeError instead of returning None, and
+            # this loop must survive that for every *other* entry to still
+            # be considered. This is unrelated to the identifier-lookup
+            # compatibility handled by device_registry_compat.py: it is not
+            # about older Home Assistant releases, it is about a config
+            # entry that simply is not loaded right now.
             api = getattr(candidate, "runtime_data", None)
             if isinstance(api, SchellenbergUsbApi):
                 loaded_entries.append((candidate, api))
@@ -236,8 +251,8 @@ async def async_setup_entry(
             manufacturer="Schellenberg",
             model="USB Stick",
         )
-    elif hub_subentry.subentry_id not in hub_device.config_entries_subentries.get(
-        entry.entry_id, set()
+    elif not async_device_on_subentry_compat(
+        hub_device, entry.entry_id, hub_subentry.subentry_id
     ):
         async_reassign_device_subentry_compat(
             device_registry, hub_device, entry.entry_id, hub_subentry.subentry_id
@@ -268,29 +283,48 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    known_subentries = {
-        subentry_id: (
-            subentry.subentry_type,
-            subentry.title,
-            subentry.unique_id,
-            dict(subentry.data),
-        )
-        for subentry_id, subentry in entry.subentries.items()
-    }
+    # Fields the running entities already pick up live via a dispatcher
+    # signal (_notify_calibration_completed in options_flow_calibration.py
+    # -> SchellenbergCover._handle_calibration_completed in cover.py)
+    # instead of needing a reload. Recalibrating an *existing* blind persists
+    # exactly these three fields onto its subentry, so counting them here
+    # would trigger a full hub reload - disconnecting the serial port and
+    # rebuilding every cover/sensor/switch on this hub, not just the
+    # recalibrated one - immediately after that live update, defeating the
+    # whole point of it. Everything else (a subentry being added/removed, or
+    # any other data field changing, including the status-identity fields
+    # cover.py only reads once at entity construction) still needs the
+    # reload below to take effect.
+    reload_ignored_subentry_data_keys = (
+        CONF_OPEN_TIME,
+        CONF_CLOSE_TIME,
+        CONF_LAST_CALIBRATION,
+    )
+
+    def _subentry_reload_snapshot(
+        current_entry: SchellenbergConfigEntry,
+    ) -> dict[str, tuple[str, str, str | None, dict[str, Any]]]:
+        return {
+            subentry_id: (
+                subentry.subentry_type,
+                subentry.title,
+                subentry.unique_id,
+                {
+                    key: value
+                    for key, value in subentry.data.items()
+                    if key not in reload_ignored_subentry_data_keys
+                },
+            )
+            for subentry_id, subentry in current_entry.subentries.items()
+        }
+
+    known_subentries = _subentry_reload_snapshot(entry)
 
     async def _on_entry_updated(
         hass_instance: HomeAssistant, updated_entry: SchellenbergConfigEntry
     ) -> None:
         nonlocal known_subentries
-        current_subentries = {
-            subentry_id: (
-                subentry.subentry_type,
-                subentry.title,
-                subentry.unique_id,
-                dict(subentry.data),
-            )
-            for subentry_id, subentry in updated_entry.subentries.items()
-        }
+        current_subentries = _subentry_reload_snapshot(updated_entry)
         if current_subentries != known_subentries:
             _LOGGER.info(
                 "Subentry configuration changed; reloading entry %s", entry.entry_id
