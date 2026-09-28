@@ -99,8 +99,10 @@ class SchellenbergConnectionSensor(SchellenbergBaseSensor):
     # Plain (non-ClassVar) annotation, matching how the base SensorEntity
     # class itself declares _attr_options - it's a per-instance-overridable
     # `_attr_*` convenience attribute, so redeclaring it as a ClassVar here
-    # would be an incompatible override under mypy.
-    _attr_options: list[str] = ["connected", "disconnected"]
+    # would be an incompatible override under mypy. RUF012 (mutable class
+    # default) is a false positive for this HA convenience-attribute
+    # pattern, hence the suppression rather than the suggested ClassVar fix.
+    _attr_options: list[str] = ["connected", "disconnected"]  # noqa: RUF012
 
     def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
         """Initialize the connection sensor."""
@@ -145,8 +147,9 @@ class SchellenbergModeSensor(SchellenbergBaseSensor):
     _attr_translation_key = "operating_mode"
     _attr_device_class = SensorDeviceClass.ENUM
     # See the matching comment on SchellenbergConnectionSensor - plain
-    # annotation on purpose, not ClassVar.
-    _attr_options: list[str] = [
+    # annotation on purpose, not ClassVar; RUF012 suppressed for the same
+    # reason (false positive for this HA convenience-attribute pattern).
+    _attr_options: list[str] = [  # noqa: RUF012
         "bootloader",
         "initial",
         "listening",

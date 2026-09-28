@@ -102,7 +102,14 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
         if is_now_available and not self._was_available:
             # Connection restored, restore hardware state
             _LOGGER.debug("USB stick reconnected, restoring LED state")
-            self.hass.async_create_task(self._restore_hardware_state())
+            # A background task (see _restore_hardware_state's own docstring:
+            # it is meant to run detached) so it is cancelled outright on
+            # Home Assistant shutdown instead of being awaited by it like a
+            # plain async_create_task() task would be.
+            self.hass.async_create_background_task(
+                self._restore_hardware_state(),
+                f"{DOMAIN} LED hardware state restore",
+            )
 
         self._was_available = is_now_available
         self.async_write_ha_state()

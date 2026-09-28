@@ -56,6 +56,7 @@ from .const import (
     SchellenbergConfigEntry,
 )
 from .device_registry_compat import (
+    async_device_on_subentry_compat,
     async_get_device_by_identifier_compat,
     async_reassign_device_subentry_compat,
 )
@@ -235,8 +236,8 @@ async def async_setup_entry(
                         f"secondary statuses {len(secondary_status_identities)})"
                     ),
                 )
-            elif subentry.subentry_id not in device.config_entries_subentries.get(
-                entry.entry_id, set()
+            elif not async_device_on_subentry_compat(
+                device, entry.entry_id, subentry.subentry_id
             ):
                 async_reassign_device_subentry_compat(
                     device_registry, device, entry.entry_id, subentry.subentry_id
@@ -1079,7 +1080,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             raise HomeAssistantError(f"Failed to close {self._device_name}: {reason}")
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the cover immediately and freeze the estimated position."""
+        """Stop the cover immediately and freeze the estimated position.
+
+        Sent via control_blind(), exactly like async_open_cover() and
+        async_close_cover() above - one direct write, no transmit lock, no
+        busy-retry. Only the two automatic follow-up stop frames used to
+        bypass the lock (via send_priority_stop); they are gone now, since
+        confirmed real-hardware testing showed one of them could still
+        collide with an in-flight open/close command's own busy-retry,
+        fighting over the stick's one RF transmitter. With open/close no
+        longer using that busy-retry cycle either, there is nothing left to
+        insure against with a second or third stop frame.
+        """
         _LOGGER.debug(
             "Stopping cover %s (command_id=%s enum=%s)",
             self._device_name,
@@ -1117,12 +1129,21 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # likely still is - restore the pre-stop moving state instead of
             # leaving it frozen at this instant, so the ongoing elapsed-time
             # estimate (based on the original move start) keeps working
-            # instead of a prematurely frozen position.
+            # instead of a prematurely frozen position. Restoring the state
+            # alone is not enough: the position-tracking task that would
+            # actually advance that estimate and clear these flags at the
+            # target/0/100 was already cancelled above, and restoring
+            # _move_start_time etc. does not resurrect it - it must be
+            # restarted explicitly, or the entity is left reporting
+            # is_opening/is_closing forever with a frozen position until an
+            # unrelated later command happens to start tracking again.
             self._attr_is_opening = previous_is_opening
             self._attr_is_closing = previous_is_closing
             self._move_start_time = previous_move_start_time
             self._move_start_position = previous_move_start_position
             self._target_position = previous_target_position
+            if previous_is_opening or previous_is_closing:
+                self._start_position_tracking()
             self.async_write_ha_state()
             reason = self._api.transmit_block_reason or "the command was not sent"
             raise HomeAssistantError(f"Failed to stop {self._device_name}: {reason}")

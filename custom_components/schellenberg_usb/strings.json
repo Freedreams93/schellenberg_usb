@@ -1,13 +1,6 @@
 {
   "config": {
     "step": {
-      "menu": {
-        "title": "Schellenberg USB setup",
-        "menu_options": {
-          "user": "Set up USB hub",
-          "pair_device_menu": "Pair new device"
-        }
-      },
       "user": {
         "title": "Set up Schellenberg USB Stick",
         "description": "Enter the serial port path for your Schellenberg USB stick.",
@@ -29,9 +22,7 @@
       "unknown": "Unexpected error occurred"
     },
     "abort": {
-      "already_configured": "Device is already configured",
-      "no_hub": "No USB hub found. Please set up the USB hub first.",
-      "reconfigure_successful": "Calibration completed successfully"
+      "already_configured": "Device is already configured"
     }
   },
   "config_subentries": {
@@ -298,10 +289,6 @@
     }
   },
   "services": {
-    "pair": {
-      "name": "Pair device",
-      "description": "Activate pairing mode on the Schellenberg USB stick to pair a new blind motor. After calling this service, press the pairing button on your blind motor within 10 seconds."
-    },
     "test_command": {
       "name": "Test blind command",
       "description": "Send open, close, or stop to a device enum without creating a cover."
