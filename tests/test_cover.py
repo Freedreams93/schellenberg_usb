@@ -33,7 +33,7 @@ def _build_cover(hass: HomeAssistant, api: Any, **overrides: Any) -> Schellenber
     cover = SchellenbergCover(**kwargs)
     cover.hass = hass
     cover.entity_id = "cover.living_room_blind"
-    cover.async_write_ha_state = MagicMock()  # type: ignore[method-assign]
+    cover.async_write_ha_state = MagicMock()  # type: ignore[misc]
     return cover
 
 

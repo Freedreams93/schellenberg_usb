@@ -112,11 +112,15 @@ def async_reassign_device_subentry_compat(
         # mypy type-checks this call against the *installed* Home Assistant
         # release's concrete async_update_device signature. On any release
         # older than 2026.8 that signature has no new_config_entry_id/
-        # new_config_subentry_id parameters at all, which mypy correctly
-        # reports against such a release - it cannot see that the
+        # new_config_subentry_id parameters at all, which mypy would then
+        # correctly report against such a release - it cannot see that the
         # inspect.signature() check above already guarantees this call only
-        # runs on a release new enough to actually have them.
-        device_registry.async_update_device(  # type: ignore[call-arg]
+        # runs on a release new enough to actually have them. The pinned
+        # test toolchain's installed release is new enough that the call
+        # matches directly, so no type: ignore is currently needed here -
+        # but reintroducing one (with the call-arg code) is expected and
+        # correct if a future toolchain bump lands on an older release again.
+        device_registry.async_update_device(
             device.id,
             new_config_entry_id=config_entry_id,
             new_config_subentry_id=new_subentry_id,

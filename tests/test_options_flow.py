@@ -37,6 +37,7 @@ async def test_init_shows_a_form_prefilled_with_the_current_port(
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
+    assert result["data_schema"] is not None
     assert result["data_schema"]({})[CONF_SERIAL_PORT] == "/dev/ttyUSB3"
 
 

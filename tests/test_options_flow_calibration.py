@@ -70,7 +70,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import ConfigSubentry, SubentryFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.dispatcher import (
@@ -138,7 +138,7 @@ def _build_hub_with_blind(
 
 async def _start_calibrate_flow(
     hass: HomeAssistant, entry: MockConfigEntry, blind: ConfigSubentry
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """Reach the calibration_close form via reconfigure -> calibrate."""
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_BLIND),
@@ -212,7 +212,7 @@ async def _advance_through_open_leg(
     hass: HomeAssistant,
     flow_id: str,
     wait_for_registration: Callable[[], Awaitable[None]],
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """From calibration_close's form, drive through the whole open leg."""
     result = await hass.config_entries.subentries.async_configure(
         flow_id, user_input={}

@@ -15,14 +15,15 @@ this file's. Only calls needing a controlled return value for branching
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from types import MappingProxyType
-from typing import Any
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 import serial
 from conftest import written
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import ConfigSubentry, SubentryFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
@@ -156,6 +157,7 @@ async def test_usb_discovery_shows_a_confirm_form_prefilled_with_the_device_path
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "usb_confirm"
+    assert result["data_schema"] is not None
     assert result["data_schema"]({})[CONF_SERIAL_PORT] == "/dev/ttyUSB7"
 
 
@@ -249,7 +251,7 @@ def _add_existing_blind(hass: HomeAssistant, entry: MockConfigEntry) -> ConfigSu
 
 async def _start_pairing_flow(
     hass: HomeAssistant, entry: MockConfigEntry
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """Reach the blind subentry's initial pairing-choice menu.
 
     Real Home Assistant starts a *new* subentry flow with
@@ -265,13 +267,17 @@ async def _start_pairing_flow(
     )
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
-    assert set(result["menu_options"]) == {"pair_test", "pair_device", "manual"}
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "pair_test",
+        "pair_device",
+        "manual",
+    }
     return result
 
 
 async def _start_reconfigure_flow(
     hass: HomeAssistant, entry: MockConfigEntry, blind: ConfigSubentry
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """Reach an existing blind's reconfigure menu."""
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_BLIND),
@@ -279,7 +285,7 @@ async def _start_reconfigure_flow(
     )
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "reconfigure"
-    assert set(result["menu_options"]) == {
+    assert set(cast(Iterable[str], result["menu_options"])) == {
         "edit",
         "test_existing",
         "developer_tools",
@@ -390,7 +396,10 @@ async def test_pair_test_hybrid_workflow_runs_test_motor_before_calibration_choi
     )
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "test_success"
-    assert set(result["menu_options"]) == {"calibration_close", "manual_times"}
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "calibration_close",
+        "manual_times",
+    }
 
 
 async def test_manual_workflow_validates_and_creates_entry_via_save_manual(
@@ -415,7 +424,10 @@ async def test_manual_workflow_validates_and_creates_entry_via_save_manual(
         },
     )
     assert result["step_id"] == "manual_next"
-    assert set(result["menu_options"]) == {"test_motor", "save_manual"}
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "test_motor",
+        "save_manual",
+    }
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input={"next_step_id": "save_manual"}
@@ -803,7 +815,7 @@ async def test_developer_tools_shows_the_full_diagnostics_menu(
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "developer_tools"
-    assert set(result["menu_options"]) == {
+    assert set(cast(Iterable[str], result["menu_options"])) == {
         "test_open",
         "test_close",
         "test_stop",
@@ -975,6 +987,7 @@ async def test_developer_tools_send_raw_command_success(
         result["flow_id"], user_input={"next_step_id": "send_raw_command"}
     )
     assert result["step_id"] == "send_raw_command"
+    assert result["data_schema"] is not None
     payload = result["data_schema"]({})["payload"]
 
     result = await hass.config_entries.subentries.async_configure(
@@ -1045,6 +1058,7 @@ async def test_developer_tools_copy_diagnostics_shows_a_text_snapshot_then_retur
         result["flow_id"], user_input={"next_step_id": "copy_diagnostics"}
     )
     assert result["step_id"] == "copy_diagnostics"
+    assert result["data_schema"] is not None
     diagnostics_text = result["data_schema"]({})["diagnostics"]
     assert "Living Room Blind" in diagnostics_text
 
