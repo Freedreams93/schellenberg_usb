@@ -269,9 +269,7 @@ async def test_full_open_and_close_legs_reach_the_summary_with_measured_times(
     assert result["step_id"] == "calibration_close_instruction"
 
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     await wait_for_registration()  # _wait_for_movement_start is now listening
     async_dispatcher_send(
@@ -301,9 +299,7 @@ async def test_recalibrating_persists_new_times_and_notifies_the_live_entity(
     )
 
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     await wait_for_registration()  # _wait_for_movement_start is now listening
     async_dispatcher_send(
@@ -387,9 +383,7 @@ def _build_bare_handler(
     """
     flow = MagicMock()
     flow.hass = hass
-    flow._get_reconfigure_subentry.return_value = MagicMock(
-        data=existing_subentry_data
-    )
+    flow._get_reconfigure_subentry.return_value = MagicMock(data=existing_subentry_data)
     handler = CalibrationFlowHandler(flow)
     handler._selected_device = {
         "id": DEVICE_ID,
@@ -566,9 +560,7 @@ async def test_open_instruction_stop_timeout_shows_error_and_reshows_form(
 
     wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     # wait_for_registration() resolves the instant _wait_for_movement_start()
     # registers its listener, however long that actually takes - not after a

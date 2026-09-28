@@ -858,9 +858,7 @@ async def test_developer_tools_set_position_open_and_closed_sync_without_sending
     # id the cover platform has registered on the api; these tests drive the
     # subentry flow directly without setting up that platform, so register
     # it by hand the way cover.py's async_added_to_hass() normally would.
-    connected_api.register_existing_devices(
-        [{"id": DEVICE_ID, "enum": DEVICE_ENUM}]
-    )
+    connected_api.register_existing_devices([{"id": DEVICE_ID, "enum": DEVICE_ENUM}])
 
     for action, expected_position in (
         ("set_position_open", 100),
@@ -891,9 +889,7 @@ async def test_developer_tools_set_position_manual_accepts_an_exact_value(
     # sending_rf: manual_sync_position() requires the device to be
     # registered as a "live" cover, which this direct flow-driven test
     # never does on its own.
-    connected_api.register_existing_devices(
-        [{"id": DEVICE_ID, "enum": DEVICE_ENUM}]
-    )
+    connected_api.register_existing_devices([{"id": DEVICE_ID, "enum": DEVICE_ENUM}])
     result = await _start_reconfigure_flow(hass, entry, blind)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input={"next_step_id": "developer_tools"}
@@ -933,8 +929,9 @@ async def test_developer_tools_teach_motor_success_sends_teach_open_and_stop(
     )
 
     assert result["step_id"] == "developer_tools"
-    assert "Teach, Open, and Stop were transmitted" in (
-        result["description_placeholders"]["result"]
+    assert (
+        "Teach, Open, and Stop were transmitted"
+        in (result["description_placeholders"]["result"])
     )
     # teach_motor() itself is a two-phase transmit (teach_60, finish_40),
     # followed by open and stop: 4 writes in total.
@@ -946,9 +943,7 @@ async def test_developer_tools_teach_motor_failure_shows_failure_notice(
     connected_api: SchellenbergUsbApi,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        connected_api, "teach_motor", AsyncMock(return_value=False)
-    )
+    monkeypatch.setattr(connected_api, "teach_motor", AsyncMock(return_value=False))
     entry = _build_hub_entry(hass, connected_api)
     blind = _add_existing_blind(hass, entry)
     result = await _start_reconfigure_flow(hass, entry, blind)
