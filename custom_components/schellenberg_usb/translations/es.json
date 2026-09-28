@@ -1,13 +1,6 @@
 {
   "config": {
     "step": {
-      "menu": {
-        "title": "Configuración de Schellenberg USB",
-        "menu_options": {
-          "user": "Configurar hub USB",
-          "pair_device_menu": "Emparejar nuevo dispositivo"
-        }
-      },
       "user": {
         "title": "Configurar memoria USB Schellenberg",
         "description": "Introduzca la ruta del puerto serie para su memoria USB Schellenberg.",
@@ -29,9 +22,7 @@
       "unknown": "Se produjo un error inesperado"
     },
     "abort": {
-      "already_configured": "El dispositivo ya está configurado",
-      "no_hub": "No se encontró ningún hub USB. Por favor, configure primero el hub USB.",
-      "reconfigure_successful": "Calibración completada con éxito"
+      "already_configured": "El dispositivo ya está configurado"
     }
   },
   "config_subentries": {
@@ -298,10 +289,6 @@
     }
   },
   "services": {
-    "pair": {
-      "name": "Emparejar dispositivo",
-      "description": "Active el modo de emparejamiento en la memoria USB Schellenberg para emparejar un nuevo motor de persiana. Después de llamar a este servicio, presione el botón de emparejamiento en su motor de persiana en los próximos 10 segundos."
-    },
     "test_command": {
       "name": "Probar comando de persiana",
       "description": "Envía abrir, cerrar o detener a un enum de dispositivo sin crear una persiana."

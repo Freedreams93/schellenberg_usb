@@ -1,13 +1,6 @@
 {
   "config": {
     "step": {
-      "menu": {
-        "title": "Schellenberg USB Einrichtung",
-        "menu_options": {
-          "user": "USB-Hub einrichten",
-          "pair_device_menu": "Neues Gerät koppeln"
-        }
-      },
       "user": {
         "title": "Schellenberg USB-Stick einrichten",
         "description": "Geben Sie den seriellen Anschlusspfad für Ihren Schellenberg USB-Stick ein.",
@@ -29,9 +22,7 @@
       "unknown": "Unerwarteter Fehler aufgetreten"
     },
     "abort": {
-      "already_configured": "Gerät ist bereits konfiguriert",
-      "no_hub": "Kein USB-Hub gefunden. Bitte richten Sie zuerst den USB-Hub ein.",
-      "reconfigure_successful": "Kalibrierung erfolgreich abgeschlossen"
+      "already_configured": "Gerät ist bereits konfiguriert"
     }
   },
   "config_subentries": {
@@ -298,10 +289,6 @@
     }
   },
   "services": {
-    "pair": {
-      "name": "Gerät koppeln",
-      "description": "Aktivieren Sie den Kopplungsmodus am Schellenberg USB-Stick, um einen neuen Rollladenmotor zu koppeln. Drücken Sie nach dem Aufrufen dieses Dienstes innerhalb von 10 Sekunden die Kopplungstaste an Ihrem Rollladenmotor."
-    },
     "test_command": {
       "name": "Testbefehl für Rollladen",
       "description": "Sendet Auf, Zu oder Stopp an einen Geräte-Enum, ohne einen Rollladen anzulegen."
