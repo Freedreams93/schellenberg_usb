@@ -330,6 +330,30 @@ Legacy blind entries are migrated automatically. After migration, Home Assistant
 should allow renaming, area assignment, icon changes, and other entity registry
 settings.
 
+### Developer tools refuse commands (pending transmit or busy stick)
+
+In v1.0.3, two bookkeeping bugs in the USB stick handling (`api.py`) could make
+**Developer tools** refuse commands although the stick was working. Both are
+fixed in v1.0.4. Neither of them switched cover control off: apart from the
+single dropped command described below, cover commands were still sent normally.
+
+- **`transmit is pending for payload sr`** (or `!?`, `hello`, and similar):
+  plain requests to the stick, such as the device ID query, were remembered as a
+  pending RF transmission. Only the `t0` acknowledgement of a real transmission
+  clears that state, so after connecting, the Developer tools commands,
+  **Teach motor**, and the ready state shown by diagnostics and by
+  **Reset stick / reconnect serial** reported the stick as not ready until a
+  blind had completed one normal transmission. If you cannot update yet, operate
+  a blind once, for example with **Stop**, and try again.
+- **`stick reported busy repeatedly and needs a reset`**: the retry counter for
+  "stick busy" answers was never reset after a successful transmission. It
+  counted over the whole connection instead of per command, so the fourth busy
+  answer since the connection was opened, however long after the first, was not
+  retried. That one command was dropped and the blind did not move, the log
+  showed `Transmit retry limit reached ... latching busy state`, and Developer
+  tools stayed blocked. If you cannot update yet, use
+  **Developer tools > Reset stick / reconnect serial** or restart Home Assistant.
+
 ## Advanced settings
 
 Most users do not need these values. They are available for unusual installations
@@ -723,16 +747,204 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
   previous moves.
-- Because these scripts nudge the motor often, you may see extra
-  `Transmit error - stick busy` warnings in your log. You can silence just
-  that line without hiding other warnings:
+- Every open, close, and stop command - including the ones these scripts
+  send - goes out exactly once, immediately, with no retry and no waiting
+  for the stick to be idle. The Schellenberg RF link never confirms that a
+  motor actually received a frame to begin with (only the USB stick's own
+  transmitter on/off is ever visible), so there is nothing meaningful to
+  retry against for these three commands specifically. If the stick happens
+  to answer that it is still busy with a previous command right as one of
+  these scripts fires the next one (`Transmit error - stick busy`), that
+  reply is only logged, not acted on - it is not a sign of a problem, just
+  the stick momentarily catching up. This differs from other, non-movement
+  requests (raw RF payload testing, teach/pairing, and similar), which still
+  wait for an idle stick and retry up to three times as before.
+
+## Optional: synchronizing multiple blinds from one switch (example automation)
+
+> [!NOTE]
+> This is not part of the integration itself. It is an example automation
+> contributed by a user, anonymized here to remove personal device
+> identifiers and translated to English. Device IDs, entity IDs, and delay
+> values below are examples — replace them with your own.
+
+A single Schellenberg USB stick transmits one RF command at a time, and this
+integration estimates each blind's position purely from timing — how long a
+motor has been commanded to run, using the open and close travel times you
+measured during [calibration](#calibration-explained-simply). There is no
+position feedback from the motor itself.
+
+That has one practical consequence when you trigger several blinds from a
+single switch press with `cover.set_cover_position`: if every blind starts
+moving at the same instant, they will *not* stop moving at the same instant,
+because each blind's own travel time — and how far it has to move for the
+requested position change — is different. A blind that only has to move a
+short distance stops long before one that has to travel its full range.
+
+The two automations below (one per button on a wall switch) work around this
+by starting each blind's move with a small, deliberately staggered `delay`,
+so the *slower* moves start first (`delay: 0s`) and the *faster* ones start
+later — timed so that all of them finish at close to the same moment instead
+of visibly stopping one after another.
 
 ```yaml
-logger:
-  filters:
-    custom_components.schellenberg_usb.api:
-      - "Transmit error - stick busy"
+alias: All blinds down (hallway switch, button 3)
+description: ""
+triggers:
+  - device_id: YOUR_SWITCH_DEVICE_ID
+    domain: hue
+    type: initial_press
+    subtype: 3
+    unique_id: YOUR_SWITCH_BUTTON_UNIQUE_ID
+    trigger: device
+conditions:
+  - condition: time
+    after: "07:00:00"
+    before: "21:59:00"
+actions:
+  - parallel:
+      - sequence:
+          - action: cover.set_cover_position
+            data:
+              position: 100
+            target:
+              entity_id: cover.living_room_blind
+      - sequence:
+          - delay:
+              seconds: 2
+          - action: cover.set_cover_position
+            data:
+              position: 35
+            target:
+              entity_id: cover.kitchen_blind_1
+      - sequence:
+          - delay:
+              seconds: 6
+          - action: cover.set_cover_position
+            data:
+              position: 100
+            target:
+              entity_id: cover.kitchen_blind_2
+      - sequence:
+          - delay:
+              seconds: 9
+          - action: cover.set_cover_position
+            data:
+              position: 7
+            target:
+              entity_id: cover.kitchen_blind_3
+      - sequence:
+          - delay:
+              seconds: 12
+          - action: cover.set_cover_position
+            data:
+              position: 100
+            target:
+              entity_id: cover.bedroom_blind
+      - sequence:
+          - delay:
+              seconds: 15
+          - action: cover.set_cover_position
+            data:
+              position: 52
+            target:
+              entity_id: cover.bathroom_blind
+mode: single
 ```
+
+```yaml
+alias: All blinds up (hallway switch, button 2)
+description: ""
+triggers:
+  - device_id: YOUR_SWITCH_DEVICE_ID
+    domain: hue
+    type: initial_press
+    subtype: 2
+    unique_id: YOUR_SWITCH_BUTTON_UNIQUE_ID
+    trigger: device
+conditions:
+  - condition: time
+    after: "07:00:00"
+    before: "21:59:00"
+actions:
+  - parallel:
+      - sequence:
+          - action: cover.set_cover_position
+            data:
+              position: 0
+            target:
+              entity_id: cover.kitchen_blind_2
+      - sequence:
+          - delay:
+              seconds: 2
+          - action: cover.set_cover_position
+            data:
+              position: 0
+            target:
+              entity_id: cover.kitchen_blind_1
+      - sequence:
+          - delay:
+              seconds: 4
+          - action: cover.set_cover_position
+            data:
+              position: 0
+            target:
+              entity_id: cover.kitchen_blind_3
+      - sequence:
+          - delay:
+              seconds: 8
+          - action: cover.set_cover_position
+            data:
+              position: 18
+            target:
+              entity_id: cover.living_room_blind
+      - sequence:
+          - delay:
+              seconds: 10
+          - action: cover.set_cover_position
+            data:
+              position: 17
+            target:
+              entity_id: cover.bedroom_blind
+      - sequence:
+          - delay:
+              seconds: 12
+          - action: cover.set_cover_position
+            data:
+              position: 0
+            target:
+              entity_id: cover.bathroom_blind
+mode: single
+```
+
+### Working out your own delays
+
+There's no universal formula, because it depends on each blind's own
+calibrated travel time and how far *this particular move* takes it — but the
+approach is:
+
+1. For each blind, work out roughly how long the requested move will take:
+   `(distance as a fraction of full travel) × (that blind's measured open or
+   close time from calibration)`. A blind moving from fully open to 50% takes
+   about half its full close time; one moving from 90% to 100% only takes a
+   fraction of it.
+2. Find the *longest* of those move times across all the blinds in the
+   automation.
+3. For every other blind, set its `delay` to roughly `longest move time −
+   this blind's own move time`, so the blind with the longest move starts
+   immediately (`delay: 0`) and every other blind starts later, timed to
+   finish around the same moment.
+4. Treat the result as a starting point and adjust by watching your blinds —
+   small differences in mechanical speed, mounting, or how the position was
+   last tracked mean the exact numbers are usually tuned by eye rather than
+   computed once and forgotten.
+
+Because the USB stick can only transmit one command at a time, sending many
+`set_cover_position` calls in the same second can also make the stick report
+that it is briefly busy; see
+[Developer tools refuse commands](#developer-tools-refuse-commands-pending-transmit-or-busy-stick).
+Spreading the moves out, as the `delay` steps above already do, avoids that
+in practice.
 
 ## Advanced protocol notes
 
