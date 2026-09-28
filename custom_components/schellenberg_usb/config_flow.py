@@ -117,7 +117,9 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     # -------------------------
     # USER-INITIATED FLOW
     # -------------------------
-    async def async_step_user(self, user_input: dict | None = None) -> ConfigFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step started by the user."""
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -180,7 +182,7 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_usb_confirm()
 
     async def async_step_usb_confirm(
-        self, user_input: dict | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm USB-discovered device and create the entry."""
         errors: dict[str, str] = {}
@@ -279,20 +281,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Await a calibration step and cast to SubentryFlowResult for mypy."""
         return cast(SubentryFlowResult, await step_coro)
-
-    async def async_step_blind(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Entry point when the user clicks the 'Add blind' button.
-
-        Home Assistant calls async_step_{subentry_type}() where subentry_type is
-        the key returned by async_get_supported_subentry_types. Since our type is
-        'blind', we implement async_step_blind(). Previously this was named
-        async_step_pairing, which caused the flow to fall back and the
-        translation key for the initiate button to be missing.
-        """
-        _LOGGER.debug("Subentry blind flow initiated")
-        return await self.async_step_user(user_input)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -647,11 +635,23 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         if self._pairing_workflow == "existing":
             return self.async_abort(reason="command_test_successful")
         if self._pairing_workflow == "hybrid":
-            return self.async_show_menu(
-                step_id="test_success",
-                menu_options=["calibration_close", "manual_times"],
-            )
+            return await self.async_step_test_success()
         return await self.async_step_save_manual()
+
+    async def async_step_test_success(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Offer calibration or manual timing after a successful motor test.
+
+        Home Assistant requires a menu's step_id to match a real
+        async_step_<id>() handler on this class (mirrors async_step_manual_next
+        above); a bare async_show_menu(step_id="test_success", ...) call with no
+        such method raises UnknownStep as soon as the menu is shown.
+        """
+        return self.async_show_menu(
+            step_id="test_success",
+            menu_options=["calibration_close", "manual_times"],
+        )
 
     async def async_step_manual_times(
         self, user_input: dict[str, Any] | None = None

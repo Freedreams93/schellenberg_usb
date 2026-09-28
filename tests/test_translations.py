@@ -22,7 +22,8 @@ EXPECTED_MENU_OPTIONS = {
 
 def _load_json(path: Path) -> dict[str, Any]:
     """Load one integration translation document."""
-    return json.loads(path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
 
 
 def _leaf_paths(value: Any, prefix: str = "") -> set[str]:

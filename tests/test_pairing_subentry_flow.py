@@ -40,7 +40,9 @@ instead, not here.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import MappingProxyType
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.config_entries import SOURCE_USER, ConfigSubentry
@@ -71,7 +73,12 @@ from custom_components.schellenberg_usb.const import (
 )
 
 
-def make_flow(hass: HomeAssistant, *, api: MagicMock | None = None, subentries=()):
+def make_flow(
+    hass: HomeAssistant,
+    *,
+    api: MagicMock | None = None,
+    subentries: Iterable[Any] = (),
+) -> Any:
     """Build a subentry flow with _get_entry() stubbed to a fake hub entry."""
     flow = SchellenbergPairingSubentryFlow()
     flow.hass = hass

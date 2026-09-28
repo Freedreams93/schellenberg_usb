@@ -19,8 +19,6 @@ from custom_components.schellenberg_usb.const import (
     CONF_OPEN_TIME,
     CONF_OPEN_TIME_SECONDS,
     CONF_SERIAL_PORT,
-    DATA_API_INSTANCE,
-    DATA_UNSUB_DISPATCHER,
     DOMAIN,
     PAIRING_TIMEOUT,
     PLATFORMS,
@@ -56,12 +54,6 @@ def test_configuration_constants() -> None:
     assert CONF_OPEN_TIME_SECONDS == "open_time_seconds"
     assert CONF_CLOSE_TIME_SECONDS == "close_time_seconds"
     assert CONF_CLOSE_TIME == "close_time"
-
-
-def test_data_constants() -> None:
-    """Test data storage constants."""
-    assert DATA_API_INSTANCE == "api_instance"
-    assert DATA_UNSUB_DISPATCHER == "unsub_dispatcher"
 
 
 def test_device_commands() -> None:

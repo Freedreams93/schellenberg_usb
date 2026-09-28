@@ -1,13 +1,6 @@
 {
   "config": {
     "step": {
-      "menu": {
-        "title": "Configuration Schellenberg USB",
-        "menu_options": {
-          "user": "Configurer le hub USB",
-          "pair_device_menu": "Appairer un nouvel appareil"
-        }
-      },
       "user": {
         "title": "Configurer la clé USB Schellenberg",
         "description": "Entrez le chemin du port série pour votre clé USB Schellenberg.",
@@ -29,9 +22,7 @@
       "unknown": "Une erreur inattendue s'est produite"
     },
     "abort": {
-      "already_configured": "L'appareil est déjà configuré",
-      "no_hub": "Aucun hub USB trouvé. Veuillez d'abord configurer le hub USB.",
-      "reconfigure_successful": "Calibration terminée avec succès"
+      "already_configured": "L'appareil est déjà configuré"
     }
   },
   "config_subentries": {
@@ -298,10 +289,6 @@
     }
   },
   "services": {
-    "pair": {
-      "name": "Appairer l'appareil",
-      "description": "Activez le mode d'appairage sur la clé USB Schellenberg pour appairer un nouveau moteur de volet. Après avoir appelé ce service, appuyez sur le bouton d'appairage de votre moteur de volet dans les 10 secondes."
-    },
     "test_command": {
       "name": "Tester une commande de volet",
       "description": "Envoie ouvrir, fermer ou arrêter à une énumération d'appareil sans créer de volet."

@@ -69,8 +69,9 @@ RESET_SETTLE_DELAY = 0.25
 DIAGNOSTIC_TRANSMIT_SOURCES = frozenset({"developer_tools", "service"})
 
 # A "stick busy" (tE) response is retried after a short delay, up to this many
-# times, before the command is abandoned and busy_latched is set so the
-# integration surfaces a stuck stick instead of retrying forever.
+# times in a row, before the command is abandoned and busy_latched is set so the
+# integration surfaces a stuck stick instead of retrying forever. The count
+# starts over whenever the stick accepts a transmission (t1).
 TRANSMIT_MAX_RETRIES = 3
 # How long to wait for a transmitter-idle (t0) ACK after a write before
 # giving up on that particular wait. Multi-step sequences (teach, raw
@@ -170,6 +171,28 @@ class SchellenbergUsbApi:
         self._retry_task: asyncio.Task[None] | None = None
         self._retry_count = 0
         self._last_transmit_source = "internal"
+
+        # control_blind() (open/close/stop) deliberately writes straight to
+        # the transport with no lock and no retry - see its own docstring -
+        # so it never touches _pending_retry_command either. That leaves one
+        # real ambiguity: the stick's tE/t1/t0 replies carry no id saying
+        # which write they are about, so if a control_blind() write lands
+        # while a send_command()-tracked transmission (teach, pairing,
+        # raw-transmit, verify) is still waiting on its own t0, a tE that
+        # arrives next could be about either one - not necessarily the
+        # pending command _handle_message would otherwise assume it is.
+        # Blindly retrying the pending command in that situation risks
+        # resending it for no reason; for teach specifically, its own
+        # docstring already warns that repeating command 60 outside the
+        # motor programming sequence can change the motor's rotation
+        # direction. This flag lets _handle_message tell the ambiguous case
+        # apart from the ordinary one instead of guessing: control_blind()
+        # sets it when it writes while a command is pending, send_command()
+        # clears it when a fresh pending command's own window opens, and
+        # _handle_message clears it again after acting on one ambiguous tE,
+        # so only that one reply is affected - a later, unambiguous tE for
+        # the same still-pending command is retried normally.
+        self._control_blind_write_pending_conflict = False
 
         # Set on a "t1" transmitter-on ACK and cleared on "t0" (see
         # _handle_message); reflects the stick's own report of its
@@ -378,6 +401,9 @@ class SchellenbergUsbApi:
             self._transmitter_active = is_start
             if is_start:
                 self._transmitter_idle.clear()
+                # The stick accepted a transmission, so it is not stuck: the
+                # retry limit counts busy answers in a row, not per connection.
+                self._retry_count = 0
                 _LOGGER.log(
                     level,
                     "ACK start response=%s source=%s",
@@ -403,9 +429,40 @@ class SchellenbergUsbApi:
                 if self._last_transmit_source in DIAGNOSTIC_TRANSMIT_SOURCES
                 else logging.DEBUG
             )
-            _LOGGER.log(level, "Transmit error - stick busy, will retry in 100ms")
             if not self._pending_retry_command:
+                # control_blind() (open/close/stop) never sets this - see
+                # its own docstring - so a busy reply to one of those three
+                # is expected sometimes and not actionable here: there is no
+                # in-flight retryable command to resend.
+                _LOGGER.log(
+                    level, "Transmit error - stick busy, no pending command to retry"
+                )
                 return
+            if self._control_blind_write_pending_conflict:
+                # A control_blind() write went out while this command was
+                # still waiting on its own t0 (see
+                # _control_blind_write_pending_conflict's comment in
+                # __init__), so this busy reply could be about either
+                # transmission - the protocol gives no way to tell which.
+                # Retrying here risks resending the pending command for no
+                # reason (harmful for teach specifically, whose own
+                # docstring warns that repeating it can change the motor's
+                # rotation direction), so this one ambiguous reply is
+                # skipped instead of guessed at. Only this reply is
+                # affected: the flag is cleared here, so a later,
+                # unambiguous tE for the same still-pending command is
+                # retried normally.
+                self._control_blind_write_pending_conflict = False
+                _LOGGER.log(
+                    level,
+                    "Transmit error - stick busy, but a blind command was also "
+                    "sent while source=%s payload=%s was still pending; "
+                    "ambiguous which one this is about, not retrying",
+                    self._last_transmit_source,
+                    self._pending_retry_command,
+                )
+                return
+            _LOGGER.log(level, "Transmit error - stick busy, will retry in 100ms")
             if self._retry_task is not None and not self._retry_task.done():
                 # A retry is already scheduled for the current pending
                 # command. A duplicate busy signal must not cancel and
@@ -427,9 +484,26 @@ class SchellenbergUsbApi:
             self._retry_count += 1
             command = self._pending_retry_command
             source = self._last_transmit_source
-            self._retry_task = asyncio.create_task(
-                self._retry_command_after_delay(command, source)
+            retry_task = self.hass.async_create_task(
+                self._retry_command_after_delay(command, source),
+                name="schellenberg-retry-command",
             )
+            # Home Assistant's task factories run a task "eagerly": it
+            # starts executing synchronously, right up to its first real
+            # suspension point, before async_create_task() even returns
+            # the Task object here. _retry_command_after_delay's only
+            # suspension points are awaits (asyncio.sleep, an idle-wait,
+            # the write itself) - when none of them actually suspends
+            # (for example a test that mocks asyncio.sleep to resolve
+            # immediately), the whole retry runs to completion, including
+            # its own `finally: self._retry_task = None`, before this line
+            # runs. Assigning unconditionally afterwards would then stomp
+            # that completed cleanup and leave a stale, already-done Task
+            # in self._retry_task forever. Only assign when the task is
+            # still genuinely in flight; otherwise leave the None its own
+            # finally block already set.
+            if not retry_task.done():
+                self._retry_task = retry_task
             return
         # Handle device ID response (format: sr5D3E7C where 5D3E7C is the device ID)
         if message.startswith("sr") and len(message) >= 8:
@@ -625,14 +699,26 @@ class SchellenbergUsbApi:
         level = (
             logging.WARNING if source in DIAGNOSTIC_TRANSMIT_SOURCES else logging.INFO
         )
+        # Only RF transmissions are answered with t1/t0, or with tE while the
+        # stick is busy. Other requests (device id, version, LED, ...) get
+        # their own replies, so they are neither retried nor "pending".
+        is_transmit = command.startswith(CMD_TRANSMIT)
         async with self._transmit_lock:
             self._transmit_busy = True
             try:
-                # Store command for potential retry on "stick busy" error,
-                # and remember who asked so a later, asynchronous t1/t0/tE
-                # can still be logged with the right source.
-                self._pending_retry_command = command
-                self._last_transmit_source = source
+                if is_transmit:
+                    # Remember who asked so a later, asynchronous t1/t0/tE can
+                    # still be logged with the right source.
+                    self._last_transmit_source = source
+                    # Store command for potential retry on "stick busy"
+                    # error. A plain request must not get here: no t0
+                    # would ever clear it, and it would replace the
+                    # payload of a transmission that is still in flight.
+                    self._pending_retry_command = command
+                    # Fresh window for this pending command: any conflict
+                    # flagged by control_blind() belonged to a previous
+                    # pending command, if any, and does not apply here.
+                    self._control_blind_write_pending_conflict = False
 
                 full_command = f"{command}\r\n".encode("ascii")
                 _LOGGER.log(
@@ -649,7 +735,8 @@ class SchellenbergUsbApi:
                         source,
                         command,
                     )
-                    self._pending_retry_command = None
+                    if is_transmit:
+                        self._pending_retry_command = None
                     return False
                 _LOGGER.log(
                     level,
@@ -662,7 +749,10 @@ class SchellenbergUsbApi:
                 self._transmit_busy = False
 
     async def _wait_for_transmitter_idle(
-        self, reason: str, *, timeout: float = TRANSMIT_IDLE_TIMEOUT
+        self,
+        reason: str,
+        *,
+        timeout: float = TRANSMIT_IDLE_TIMEOUT,  # noqa: ASYNC109
     ) -> bool:
         """Wait for the stick to report its transmitter idle (a t0 ACK).
 
@@ -673,6 +763,13 @@ class SchellenbergUsbApi:
         so they never send the next payload while the previous one is
         still in flight. Returns False if the idle ACK doesn't arrive
         within `timeout` seconds.
+
+        ASYNC109 suggests dropping `timeout` in favor of callers wrapping
+        each call in `asyncio.timeout()`. Not applied here: all six call
+        sites share the same bool-returning "did it go idle in time?"
+        contract with the default timeout: moving the try/except to each
+        of them would replace one centralized wait with six duplicates of
+        it, for no real gain.
         """
         if self._transmitter_idle.is_set():
             return True
@@ -870,7 +967,7 @@ class SchellenbergUsbApi:
             self._pairing_future = None
             # Await pairing shutdown. A delayed background `sp` used to race the
             # first test command and could leave the stick busy/programming.
-            stop_task = asyncio.create_task(
+            stop_task = self.hass.async_create_task(
                 self._stop_pairing_mode(delay=paired),
                 name="schellenberg-stop-pairing",
             )
@@ -1064,7 +1161,27 @@ class SchellenbergUsbApi:
         device_id: str | None = None,
         source: str = "cover",
     ) -> bool:
-        """Send a control command to a specific blind."""
+        """Send an open/close/stop command straight to the serial port.
+
+        One write, immediately, never queued behind _transmit_lock and never
+        entered into the tE busy-retry cycle - open, close, and stop are all
+        sent exactly this same way. Confirmed against real hardware that
+        routing stop through a separate lock-bypassing path while open/close
+        went through a locked, retried path let the two fight over the
+        stick's one RF transmitter: a move's own busy-retry could still be
+        re-sending its payload seconds after a stop had already gone out,
+        and on exhausting its retries would latch a busy fault that had
+        nothing to do with the stop. This link gives no delivery
+        confirmation for any of these three commands to begin with - the
+        stick's t1/t0 report only its own transmitter on/off, never what the
+        motor did - so there is nothing worth queueing or retrying for:
+        every call here sends once and returns.
+
+        Still refuses to transmit when the stick fundamentally cannot right
+        now (disconnected, closing transport, pairing active, not in
+        listening mode) - see _transmit_capability_block_reason(). Returns
+        whether the frame was handed to the transport; never raises.
+        """
         if action not in (CMD_UP, CMD_DOWN, CMD_STOP):
             _LOGGER.error(
                 "Blind command blocked reason=invalid_action source=%s action=%s",
@@ -1113,25 +1230,37 @@ class SchellenbergUsbApi:
             normalized_enum,
             raw_payload,
         )
-        sent = await self.send_command(raw_payload, source=source)
-        if sent:
-            _LOGGER.log(
-                visible_level,
-                "Blind transmit write result source=%s command=%s payload=%s "
-                "result=written awaiting_ack=t1/t0",
-                source,
-                action_name,
-                raw_payload,
-            )
-        else:
-            _LOGGER.error(
+        full_command = f"{raw_payload}\r\n".encode("ascii")
+        try:
+            # _transmit_capability_block_reason() above already established
+            # self._transport is a live, non-closing transport.
+            assert self._transport is not None
+            self._transport.write(full_command)
+        except (OSError, RuntimeError):
+            _LOGGER.exception(
                 "Blind transmit write result source=%s command=%s payload=%s "
                 "result=failed",
                 source,
                 action_name,
                 raw_payload,
             )
-        return sent
+            return False
+        _LOGGER.log(
+            visible_level,
+            "Blind transmit write result source=%s command=%s payload=%s "
+            "result=written_no_lock_no_ack_wait",
+            source,
+            action_name,
+            raw_payload,
+        )
+        if self._pending_retry_command is not None:
+            # A send_command()-tracked transmission (teach, pairing,
+            # raw-transmit, verify) is still waiting on its own t0 - see
+            # _control_blind_write_pending_conflict's own comment in
+            # __init__ for why that makes the *next* tE ambiguous rather
+            # than clearly about that pending command.
+            self._control_blind_write_pending_conflict = True
+        return True
 
     def initialize_next_device_enum(self) -> str:
         """Get the next available device enum based on registered devices.
@@ -1457,6 +1586,7 @@ class SchellenbergUsbApi:
         self._device_mode = None
         self._pairing_active = False
         self._pending_retry_command = None
+        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False
@@ -1721,6 +1851,7 @@ class SchellenbergUsbApi:
         self._cancel_scheduled_reconnect()
 
         self._pending_retry_command = None
+        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False

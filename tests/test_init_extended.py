@@ -283,7 +283,8 @@ async def test_async_setup_entry_starts_connection(hass: HomeAssistant) -> None:
         await async_setup_entry(hass, entry)
 
         # Connection should be started (task created)
-        # We can't directly verify the task was created, but we know connect would be called
+        # We can't directly verify the task was created, but we know connect
+        # would be called
         # The actual call happens asynchronously via hass.async_create_task
 
 

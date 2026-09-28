@@ -1,8 +1,13 @@
 [project]
-name = "schellenber_usb"
-version = "1.0.0"
+name = "schellenberg_usb"
+version = "1.0.4"
 readme = "README.md"
-requires-python = ">=3.13.2"
+# Floor for the dev/CI toolchain below (uv, mypy, pytest-homeassistant-
+# custom-component) - unrelated to the *integration's* own minimum
+# supported Home Assistant version, which stays governed by hacs.json's
+# "homeassistant" key (2025.3.0) so users on older Core installs are not
+# dropped by this bump.
+requires-python = ">=3.14.2"
 dependencies = [
     "pyserial-asyncio-fast==0.16",
 ]
@@ -20,7 +25,7 @@ test = [
     "polyfactory~=3.1.0",
     "PyYAML~=6.0.2",
     # Need specific versions
-    "pytest-homeassistant-custom-component==0.13.299",
+    "pytest-homeassistant-custom-component==0.13.367",
     # Versions handled by pytest-homeassistant-custom-component
     "freezegun",
     "pytest",
@@ -44,17 +49,27 @@ exclude_lines = [
     "pragma: no cover",
     "raise NotImplemented()",
     "if __name__ == '__main__':",
-    "main()",
+    "if TYPE_CHECKING:",
 ]
 show_missing = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".git"]
+# Without this, bare `pytest`/`uv run pytest` cannot import `custom_components`:
+# `tests/` has no `__init__.py` (by design - it isn't itself a package), so
+# pytest's default import mode only ever adds `tests/` to sys.path, never the
+# repository root. `python -m pytest` masks this (the -m flag adds the cwd to
+# sys.path itself), which is likely why this went unnoticed - but the "Run
+# pytest" step in build-test.yaml and the local pre-commit hook both invoke
+# the bare `pytest` entry point via `uv run pytest`, not `-m pytest`.
+pythonpath = ["."]
 addopts = """
 -n4
 --strict-markers
---cov=custom_components"""
+--cov=custom_components
+--timeout=60
+--timeout-method=thread"""
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
@@ -62,13 +77,32 @@ filterwarnings = [
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 pretty = true
 follow_imports = "silent"
 ignore_missing_imports = true
 warn_incomplete_stub = true
 warn_redundant_casts = true
 warn_unused_configs = true
+strict = true
 
-[tool.ruff.lint.pycodestyle]
-max-line-length = 80
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "UP",    # pyupgrade - modern Python syntax
+    "B",     # flake8-bugbear - likely bugs
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify
+    "I",     # isort - import sorting
+    "ASYNC", # flake8-async - blocking calls in async code
+    "RUF",   # ruff-specific rules
+]
+
+# No line-length override here: this previously pinned pycodestyle to 80
+# columns, but E501 was never in `select` so it was silently unenforced,
+# while `ruff format` (already a pre-commit hook) has always wrapped at the
+# default 88. Selecting "E" above without fixing this would put the linter
+# and the formatter in permanent conflict. 88 is ruff's own default for
+# both, so leaving line-length unset here keeps them in sync.
