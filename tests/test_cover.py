@@ -33,7 +33,7 @@ def _build_cover(hass: HomeAssistant, api: Any, **overrides: Any) -> Schellenber
     cover = SchellenbergCover(**kwargs)
     cover.hass = hass
     cover.entity_id = "cover.living_room_blind"
-    cover.async_write_ha_state = MagicMock()  # type: ignore[misc]
+    cover.async_write_ha_state = MagicMock()  # type: ignore[method-assign, misc]
     return cover
 
 
@@ -97,7 +97,7 @@ async def test_async_stop_cover_restarts_tracking_when_stop_fails_while_moving(
     cover._move_start_time = 123.0
     cover._move_start_position = 80
     cover._target_position = 0
-    cover._start_position_tracking = MagicMock()  # type: ignore[misc]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     with pytest.raises(HomeAssistantError):
         await cover.async_stop_cover()
@@ -123,7 +123,7 @@ async def test_async_stop_cover_does_not_restart_tracking_when_already_idle(
     api.control_blind = AsyncMock(return_value=False)
     api.transmit_block_reason = "serial stick is disconnected"
     cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[misc]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     with pytest.raises(HomeAssistantError):
         await cover.async_stop_cover()
