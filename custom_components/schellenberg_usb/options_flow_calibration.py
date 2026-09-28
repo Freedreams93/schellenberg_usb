@@ -14,7 +14,15 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
-    async_dispatcher_connect,
+    # Re-exported (not just imported) on purpose: tests/test_options_flow_
+    # calibration.py's _spy_on_dispatcher_connect() reaches into this module
+    # as calibration_module.async_dispatcher_connect to monkeypatch the same
+    # name this module calls below, so mypy's strict implicit-reexport check
+    # needs to see this as a deliberate public re-export, not a private
+    # import.
+    async_dispatcher_connect as async_dispatcher_connect,
+)
+from homeassistant.helpers.dispatcher import (
     async_dispatcher_send,
 )
 

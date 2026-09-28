@@ -9,6 +9,7 @@ for async_setup_entry's own subentry-grouping logic).
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -97,7 +98,7 @@ async def test_sensor_updates_on_dispatcher_signal(hass: HomeAssistant) -> None:
     sensor = SchellenbergConnectionSensor(api, entry)
     sensor.hass = hass
     sensor.entity_id = "sensor.schellenberg_usb_stick_connection"
-    sensor.async_write_ha_state = MagicMock()  # type: ignore[method-assign]
+    sensor.async_write_ha_state = MagicMock()  # type: ignore[misc]
 
     await sensor.async_added_to_hass()
     async_dispatcher_send(hass, SIGNAL_STICK_STATUS_UPDATED)
@@ -115,14 +116,22 @@ async def test_async_setup_entry_creates_three_sensors_grouped_under_hub(
     entry = _build_entry(hass)
     entry.runtime_data = api
     hub_subentry = ConfigSubentry(
-        data={}, subentry_type=SUBENTRY_TYPE_HUB, title="Hub", unique_id="hub"
+        data=MappingProxyType({}),
+        subentry_type=SUBENTRY_TYPE_HUB,
+        title="Hub",
+        unique_id="hub",
     )
     hass.config_entries.async_add_subentry(entry, hub_subentry)
 
     added: list[Any] = []
     subentry_ids: list[str | None] = []
 
-    def fake_add_entities(entities: Any, config_subentry_id: str | None = None) -> None:
+    def fake_add_entities(
+        entities: Any,
+        update_before_add: bool = False,
+        *,
+        config_subentry_id: str | None = None,
+    ) -> None:
         added.extend(entities)
         subentry_ids.append(config_subentry_id)
 

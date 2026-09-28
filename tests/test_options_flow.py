@@ -37,6 +37,7 @@ async def test_init_shows_a_form_prefilled_with_the_current_port(
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
+    assert result["data_schema"] is not None
     assert result["data_schema"]({})[CONF_SERIAL_PORT] == "/dev/ttyUSB3"
 
 
@@ -47,9 +48,7 @@ async def test_submitting_the_same_port_creates_entry_without_checking_it(
     check_spy = Mock()
     monkeypatch.setattr(options_flow_module, "check_serial_port", check_spy)
     reload_spy = Mock()
-    monkeypatch.setattr(
-        hass.config_entries, "async_schedule_reload", reload_spy
-    )
+    monkeypatch.setattr(hass.config_entries, "async_schedule_reload", reload_spy)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(

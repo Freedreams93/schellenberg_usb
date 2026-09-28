@@ -150,9 +150,7 @@ async def test_control_blind_write_while_command_pending_marks_next_tE_ambiguous
     assert await connected_api.send_command(f"{CMD_TRANSMIT}109{CMD_UP}0000") is True
     assert len(written(connected_api)) == 1
 
-    assert (
-        await connected_api.control_blind("20", CMD_STOP, device_id="112233") is True
-    )
+    assert await connected_api.control_blind("20", CMD_STOP, device_id="112233") is True
     assert len(written(connected_api)) == 2
 
     connected_api._handle_message("tE")

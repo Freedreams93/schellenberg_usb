@@ -70,7 +70,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import ConfigSubentry, SubentryFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.dispatcher import (
@@ -138,7 +138,7 @@ def _build_hub_with_blind(
 
 async def _start_calibrate_flow(
     hass: HomeAssistant, entry: MockConfigEntry, blind: ConfigSubentry
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """Reach the calibration_close form via reconfigure -> calibrate."""
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_BLIND),
@@ -212,7 +212,7 @@ async def _advance_through_open_leg(
     hass: HomeAssistant,
     flow_id: str,
     wait_for_registration: Callable[[], Awaitable[None]],
-) -> dict[str, Any]:
+) -> SubentryFlowResult:
     """From calibration_close's form, drive through the whole open leg."""
     result = await hass.config_entries.subentries.async_configure(
         flow_id, user_input={}
@@ -269,9 +269,7 @@ async def test_full_open_and_close_legs_reach_the_summary_with_measured_times(
     assert result["step_id"] == "calibration_close_instruction"
 
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     await wait_for_registration()  # _wait_for_movement_start is now listening
     async_dispatcher_send(
@@ -301,9 +299,7 @@ async def test_recalibrating_persists_new_times_and_notifies_the_live_entity(
     )
 
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     await wait_for_registration()  # _wait_for_movement_start is now listening
     async_dispatcher_send(
@@ -387,9 +383,7 @@ def _build_bare_handler(
     """
     flow = MagicMock()
     flow.hass = hass
-    flow._get_reconfigure_subentry.return_value = MagicMock(
-        data=existing_subentry_data
-    )
+    flow._get_reconfigure_subentry.return_value = MagicMock(data=existing_subentry_data)
     handler = CalibrationFlowHandler(flow)
     handler._selected_device = {
         "id": DEVICE_ID,
@@ -566,9 +560,7 @@ async def test_open_instruction_stop_timeout_shows_error_and_reshows_form(
 
     wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
     task = asyncio.ensure_future(
-        hass.config_entries.subentries.async_configure(
-            result["flow_id"], user_input={}
-        )
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
     )
     # wait_for_registration() resolves the instant _wait_for_movement_start()
     # registers its listener, however long that actually takes - not after a
