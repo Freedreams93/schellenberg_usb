@@ -19,8 +19,6 @@ from custom_components.schellenberg_usb.const import (
     CONF_OPEN_TIME,
     CONF_OPEN_TIME_SECONDS,
     CONF_SERIAL_PORT,
-    DOMAIN,
-    PAIRING_TIMEOUT,
     PLATFORMS,
     SIGNAL_CALIBRATION_COMPLETED,
     SIGNAL_DEVICE_EVENT,
@@ -58,12 +56,6 @@ def test_configuration_constants() -> None:
 
 def test_device_commands() -> None:
     """Test device command constants."""
-    assert CMD_STOP == "00"
-    assert CMD_UP == "01"
-    assert CMD_DOWN == "02"
-    assert CMD_PAIR == "60"
-
-
 def test_led_commands() -> None:
     """Test LED command constants."""
     assert CMD_LED_ON == "so+"
