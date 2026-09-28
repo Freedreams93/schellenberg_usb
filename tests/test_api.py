@@ -12,13 +12,13 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import written
 
 from custom_components.schellenberg_usb.api import (
     TRANSMIT_MAX_RETRIES,
     SchellenbergUsbApi,
 )
 from custom_components.schellenberg_usb.const import CMD_STOP, CMD_TRANSMIT, CMD_UP
+from tests.conftest import written
 
 
 async def test_send_command_writes_ascii_with_crlf_terminator(

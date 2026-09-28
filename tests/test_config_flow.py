@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import serial
-from conftest import written
 from homeassistant.config_entries import ConfigSubentry, SubentryFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -46,6 +45,7 @@ from custom_components.schellenberg_usb.const import (
     DOMAIN,
     SUBENTRY_TYPE_BLIND,
 )
+from tests.conftest import written
 
 DEVICE_ID = "ABCDEF"
 DEVICE_ENUM = "10"
@@ -526,6 +526,7 @@ async def test_did_motor_move_false_returns_to_the_manual_form_prefilled(
     # path), so vol.Required() with no default means probing the schema with
     # an empty dict would raise MultipleInvalid; supply both to inspect the
     # unrelated device_id default.
+    assert result["data_schema"] is not None
     probe = result["data_schema"](
         {CONF_OPEN_TIME_SECONDS: 25.0, CONF_CLOSE_TIME_SECONDS: 22.0}
     )
@@ -828,6 +829,7 @@ async def test_developer_tools_shows_the_full_diagnostics_menu(
         "teach_motor",
         "send_raw_command",
     }
+    assert result["description_placeholders"] is not None
     assert result["description_placeholders"]["selected_blind"] == "Living Room Blind"
     assert result["description_placeholders"]["command_device_id"] == DEVICE_ID
 
@@ -851,6 +853,7 @@ async def test_developer_tools_test_open_close_stop_each_send_one_command(
 
         assert result["step_id"] == "developer_tools"
         assert len(written(connected_api)) == before + 1
+        assert result["description_placeholders"] is not None
         assert "written successfully" in result["description_placeholders"]["result"]
         # On real hardware the stick's own t0 ACK clears the pending-transmit
         # latch shortly after each write; FakeTransport never talks back, so
@@ -889,6 +892,7 @@ async def test_developer_tools_set_position_open_and_closed_sync_without_sending
         assert result["step_id"] == "developer_tools"
         # Manual position confirmation never transmits an RF command.
         assert len(written(connected_api)) == before
+        assert result["description_placeholders"] is not None
         assert str(expected_position) in result["description_placeholders"]["result"]
 
 
@@ -916,6 +920,7 @@ async def test_developer_tools_set_position_manual_accepts_an_exact_value(
     )
 
     assert result["step_id"] == "developer_tools"
+    assert result["description_placeholders"] is not None
     assert "42" in result["description_placeholders"]["result"]
 
 
@@ -941,6 +946,7 @@ async def test_developer_tools_teach_motor_success_sends_teach_open_and_stop(
     )
 
     assert result["step_id"] == "developer_tools"
+    assert result["description_placeholders"] is not None
     assert (
         "Teach, Open, and Stop were transmitted"
         in (result["description_placeholders"]["result"])
@@ -971,6 +977,7 @@ async def test_developer_tools_teach_motor_failure_shows_failure_notice(
     )
 
     assert result["step_id"] == "developer_tools"
+    assert result["description_placeholders"] is not None
     assert "failed" in result["description_placeholders"]["result"]
 
 
@@ -1035,6 +1042,7 @@ async def test_developer_tools_reset_stick(
     )
 
     assert result["step_id"] == "developer_tools"
+    assert result["description_placeholders"] is not None
     assert "reset" in result["description_placeholders"]["result"].lower()
     # reset_and_reconnect() tried a real connect() against the fake port
     # above, which fails (no such device) and schedules a 5s retry via
