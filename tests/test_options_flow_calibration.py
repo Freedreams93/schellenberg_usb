@@ -237,6 +237,7 @@ async def test_calibrate_menu_choice_shows_the_close_instruction_form(
 
     result = await _start_calibrate_flow(hass, entry, blind)
 
+    assert result["description_placeholders"] is not None
     assert result["description_placeholders"]["device_name"] == "Living Room Blind"
 
 
@@ -282,6 +283,7 @@ async def test_full_open_and_close_legs_reach_the_summary_with_measured_times(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "calibration_complete"
     # Both times are real (small but non-zero) durations, floored at 0.1s.
+    assert result["description_placeholders"] is not None
     assert float(result["description_placeholders"]["open_time"]) >= 0.1
     assert float(result["description_placeholders"]["close_time"]) >= 0.1
 

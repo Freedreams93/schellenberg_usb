@@ -7,7 +7,6 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from conftest import written
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
@@ -38,6 +37,7 @@ from custom_components.schellenberg_usb.const import (
     SERVICE_TEST_COMMAND,
     SUBENTRY_TYPE_BLIND,
 )
+from tests.conftest import written
 
 EXPECTED_STOP_PAYLOAD = f"{CMD_TRANSMIT}109{CMD_STOP}0000\r\n".encode("ascii")
 

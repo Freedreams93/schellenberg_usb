@@ -17,7 +17,7 @@ def _build_switch(hass: HomeAssistant, api: Any) -> SchellenbergLedSwitch:
     switch = SchellenbergLedSwitch(api, entry)
     switch.hass = hass
     switch.entity_id = "switch.schellenberg_usb_stick_led"
-    switch.async_write_ha_state = MagicMock()  # type: ignore[misc]
+    switch.async_write_ha_state = MagicMock()  # type: ignore[method-assign]
     return switch
 
 
