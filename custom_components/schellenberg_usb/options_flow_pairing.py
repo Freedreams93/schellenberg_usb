@@ -58,7 +58,7 @@ class PairingFlowHandler:
                 errors=errors,
             )
 
-        # Pairing successful! Store device_id and device_enum, then ask for friendly name
+        # Pairing successful: store device_id/device_enum, then ask for friendly name
         self._device_id, self._device_enum = pairing_result
         return await self.async_step_name_device()
 
