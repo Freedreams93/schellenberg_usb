@@ -20,6 +20,9 @@ from .const import (
     SUBENTRY_TYPE_HUB,
     SchellenbergConfigEntry,
 )
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +44,7 @@ async def async_setup_entry(
         None,
     )
     async_add_entities(
-        [SchellenbergLedSwitch(api, entry)],
+        [SchellenbergLedSwitch(api, entry, hass)],
         config_subentry_id=hub_subentry_id,
     )
 
@@ -56,15 +59,27 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
     # mypy assignment error.
     _attr_translation_key: str | None = "led"
 
-    def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
-        """Initialize the LED switch."""
+    def __init__(
+        self,
+        api: SchellenbergUsbApi,
+        entry: SchellenbergConfigEntry,
+        hass: HomeAssistant | None = None,
+    ) -> None:
+        """Initialize the LED switch.
+
+        `hass` is accepted here (optionally - tests build this entity before
+        hass is attached, exactly like async_setup_entry's normal entity
+        lifecycle) only to translate the device's "model" string at the
+        language Home Assistant is configured in; self.hass is not assigned
+        yet at this point in the entity lifecycle either way.
+        """
         self.api = api
         self._attr_unique_id = f"{entry.entry_id}_led"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},  # Hub device identifier
             name="Schellenberg USB Stick",
             manufacturer="Schellenberg",
-            model="USB Stick",
+            model=_runtime_translation_text(hass, "device_model"),
             sw_version=api.device_version,
         )
         self._is_on = False
@@ -95,7 +110,14 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
 
     @callback
     def _handle_status_update(self) -> None:
-        """Handle status update from API."""
+        """React to the USB stick's connection status changing.
+
+        Fired on every status signal, not just reconnects. On an
+        unavailable-to-available transition specifically, schedules a
+        detached background task to push the switch's current (or
+        just-restored) state back to the hardware, since the stick may
+        have missed commands sent while it was disconnected.
+        """
         # Detect when connection is re-established (transition from
         # unavailable to available)
         is_now_available = self.api.is_connected
@@ -145,7 +167,11 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
         """Turn the LED on."""
         if not await self.api.led_on():
             raise HomeAssistantError(
-                "Failed to turn on the LED: the command was not sent"
+                _runtime_translation_text(
+                    self.hass,
+                    "led_on_failed",
+                    reason=_runtime_translation_text(self.hass, "command_not_sent"),
+                )
             )
         self._is_on = True
         self.async_write_ha_state()
@@ -154,7 +180,11 @@ class SchellenbergLedSwitch(RestoreEntity, SwitchEntity):
         """Turn the LED off."""
         if not await self.api.led_off():
             raise HomeAssistantError(
-                "Failed to turn off the LED: the command was not sent"
+                _runtime_translation_text(
+                    self.hass,
+                    "led_off_failed",
+                    reason=_runtime_translation_text(self.hass, "command_not_sent"),
+                )
             )
         self._is_on = False
         self.async_write_ha_state()

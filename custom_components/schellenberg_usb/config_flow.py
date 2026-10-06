@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
+from types import MappingProxyType
 from typing import Any, cast
 
-import serial  # NOTE: blocking open used only to sanity-check connectivity
+import serialx  # NOTE: only for the SerialException type used below
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import (
     ConfigFlowResult,
+    ConfigSubentry,
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
@@ -61,6 +63,12 @@ from .identities import (
 )
 from .options_flow import SchellenbergOptionsFlowHandler
 from .options_flow_calibration import CalibrationFlowHandler
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
+from .runtime_translation_text import translate_block_reason as _translate_block_reason
+from .runtime_translation_text import translate_phrase as _translate_phrase
+from .runtime_translation_text import yes_no as _yes_no
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,7 +142,7 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=f"Schellenberg USB ({port})", data=user_input
                 )
-            except serial.SerialException:
+            except (OSError, TimeoutError, serialx.SerialException):
                 errors["base"] = "cannot_connect"
                 _LOGGER.error("Failed to connect to serial port %s", port)
             except AbortFlow:
@@ -152,7 +160,15 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     # USB DISCOVERY FLOW
     # -------------------------
     async def async_step_usb(self, discovery_info: UsbServiceInfo) -> ConfigFlowResult:
-        """Handle discovery from the USB subsystem."""
+        """Handle a USB-subsystem discovery of a possible Schellenberg stick.
+
+        Derives the most stable identifier available (serial number if
+        the OS reports one, else a vid:pid:device fallback) and uses
+        it to deduplicate against an already-configured entry, updating
+        its stored port if the OS now maps the same device differently.
+        Otherwise stashes the discovered port/title and continues on
+        to the confirmation step.
+        """
         # Try to get the most stable unique identifier we can (serial
         # number if present).
         unique = getattr(discovery_info, "serial_number", None) or (
@@ -206,7 +222,7 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=title, data={CONF_SERIAL_PORT: port}
                 )
-            except serial.SerialException:
+            except (OSError, TimeoutError, serialx.SerialException):
                 errors["base"] = "cannot_connect"
                 _LOGGER.error("Failed to connect to serial port %s", port)
             except AbortFlow:
@@ -250,7 +266,21 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize the subentry flow."""
+        """Initialize the subentry flow's pairing/teaching state.
+
+        Besides the lazily-created `calibration_handler`, the
+        `_pending_*` attributes describe a new blind being paired
+        (eventually written to a new subentry). See the comments on
+        the individual attributes below for the less obvious ones.
+
+        (There used to be a second, `_teach_target_*` group backing
+        an `add_shutter_to_remote` entry point - teaching an existing
+        blind's channel to one more motor or remote control - but
+        that entry point was removed: the protocol has no way to
+        teach a handheld remote anything, only a motor, and the
+        remaining motor-only case is already covered by
+        add_shutter_from_remote's own repeat-pairing offer.)
+        """
         super().__init__()
         self.calibration_handler: CalibrationFlowHandler | None = None
         self._pending_blind_id = generate_blind_id()
@@ -267,7 +297,21 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pending_close_time: float | None = None
         self._pending_invert_direction = False
         self._pairing_workflow = "legacy"
-        self._developer_notice = "No test command sent in this session."
+        # Set only by async_step_add_shutter_from_remote(): a real remote
+        # channel can have more than one motor taught to it (several
+        # shutters moved together by one channel), so this entry point
+        # offers a "pair another blind on this same channel" choice right
+        # before the subentry would normally be created - see
+        # _finish_pairing_or_offer_repeat(). pair_device/manual leave this
+        # False and create the subentry immediately, unchanged.
+        self._offer_repeat_pairing = False
+        self._last_ready_blind_data: dict[str, Any] | None = None
+        self._last_ready_blind_title: str | None = None
+        # Resolved lazily (via runtime_translation_text()) at display time instead of
+        # translated here, because self.hass is not attached to a flow
+        # handler yet at __init__ time - None means "nothing to report
+        # yet", shown as the translated no_test_command placeholder text.
+        self._developer_notice: str | None = None
 
     def _get_calibration_handler(self) -> CalibrationFlowHandler:
         """Return (and lazily create) the calibration flow handler."""
@@ -285,9 +329,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Choose between pairing/calibration and manual setup."""
+        """Choose how to pair/calibrate a new device."""
         return self.async_show_menu(
-            step_id="user", menu_options=["pair_test", "pair_device", "manual"]
+            step_id="user",
+            menu_options=[
+                "pair_device",
+                "add_shutter_from_remote",
+            ],
         )
 
     async def async_step_pair_device(
@@ -297,12 +345,22 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pairing_workflow = "legacy"
         return await self._async_pair_device("pair_device", user_input)
 
-    async def async_step_pair_test(
+    async def async_step_add_shutter_from_remote(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Pair a blind and verify outgoing control before calibration."""
+        """Pair a blind and verify it, offering to pair another on request.
+
+        A real remote channel can have more than one motor taught to it
+        (several shutters moved together by one channel), so this entry
+        point offers a "pair another blind on this channel" choice right
+        after each successful pairing, without restarting this menu - see
+        _finish_pairing_or_offer_repeat(). pair_device/manual leave
+        _offer_repeat_pairing False and create the subentry immediately,
+        unchanged.
+        """
         self._pairing_workflow = "hybrid"
-        return await self._async_pair_device("pair_test", user_input)
+        self._offer_repeat_pairing = True
+        return await self._async_pair_device("add_shutter_from_remote", user_input)
 
     async def _async_pair_device(
         self, step_id: str, user_input: dict[str, Any] | None
@@ -383,6 +441,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_STATUS_DEVICE_ID] = "invalid_device_id"
             if status_enum and not self._is_hex_value(status_enum, 2):
                 errors[CONF_STATUS_ENUM] = "invalid_device_enum"
+            # _manual_schema() deliberately has no selector-level `min` for
+            # either field, so a non-positive value reaches here instead of
+            # being rejected earlier as a raw, untranslated schema error
+            # that would abort the whole flow rather than re-showing this
+            # form with a normal, translated field error.
             if open_time <= 0:
                 errors[CONF_OPEN_TIME_SECONDS] = "invalid_travel_time"
             if close_time <= 0:
@@ -480,9 +543,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                         self._pending_secondary_status_identities
                     ),
                 ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+                # No `min` here: async_step_manual()'s own validation below
+                # (`invalid_travel_time`) is what rejects a non-positive
+                # value, with a translated, in-form error. A selector-level
+                # `min` would reject it first instead, as a raw, untranslated
+                # schema error that aborts the whole flow rather than
+                # re-showing this form - see that validation's own comment.
                 open_time_key: selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=0.1,
                         step=0.1,
                         unit_of_measurement="s",
                         mode=selector.NumberSelectorMode.BOX,
@@ -490,7 +558,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 ),
                 close_time_key: selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=0.1,
                         step=0.1,
                         unit_of_measurement="s",
                         mode=selector.NumberSelectorMode.BOX,
@@ -533,6 +600,120 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             data[CONF_STATUS_ENUM] = self._pending_status_enum
         return data
 
+    def _pairing_unique_id(self) -> str | None:
+        """Return the unique_id to use for the subentry being created.
+
+        add_shutter_from_remote's "pair another blind on this channel" path can
+        create several blinds that intentionally share the same
+        command_device_id (several motors taught to the same remote
+        channel), so each one needs its own unique_id instead or the
+        second would collide with the first. Every other path (exactly
+        one blind per channel) keeps using the command device id itself,
+        unchanged.
+        """
+        if self._offer_repeat_pairing:
+            return self._pending_blind_id
+        return self._pending_device_id
+
+    def _finish_pairing_or_offer_repeat(
+        self, *, title: str, data: dict[str, Any]
+    ) -> SubentryFlowResult:
+        """Create the subentry, or offer to pair another on this channel.
+
+        Only add_shutter_from_remote sets _offer_repeat_pairing (see
+        async_step_add_shutter_from_remote); every other path creates the
+        subentry immediately here, exactly as before this existed.
+        """
+        if not self._offer_repeat_pairing:
+            return self.async_create_entry(
+                title=title, data=data, unique_id=self._pairing_unique_id()
+            )
+        self._last_ready_blind_title = title
+        self._last_ready_blind_data = data
+        return self.async_show_menu(
+            step_id="pairing_repeat_choice",
+            menu_options=["finish_pairing", "pair_another_on_channel"],
+            description_placeholders={"device_name": title},
+        )
+
+    async def async_step_pairing_repeat_choice(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Offer to finish, or pair another blind on the same channel.
+
+        Reached only through _finish_pairing_or_offer_repeat(); Home
+        Assistant requires a menu's step_id to match a real
+        async_step_<id>() handler (see async_step_test_success above), so
+        this exists even though it only ever re-shows the same menu.
+        """
+        return self.async_show_menu(
+            step_id="pairing_repeat_choice",
+            menu_options=["finish_pairing", "pair_another_on_channel"],
+            description_placeholders={
+                "device_name": self._last_ready_blind_title or ""
+            },
+        )
+
+    async def async_step_finish_pairing(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Create the subentry for the last fully configured blind."""
+        if self._last_ready_blind_data is None or self._last_ready_blind_title is None:
+            return self.async_abort(reason="device_not_found")
+        return self.async_create_entry(
+            title=self._last_ready_blind_title,
+            data=MappingProxyType(self._last_ready_blind_data),
+            unique_id=self._pairing_unique_id(),
+        )
+
+    async def async_step_pair_another_on_channel(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Persist the finished blind directly, then name the next one.
+
+        A real remote channel can have more than one motor taught to it,
+        so the blind just configured is added straight to this hub entry
+        (bypassing the one-result-per-flow create_entry/abort mechanism,
+        which can't return twice) while the flow itself loops back to
+        async_step_name_device() for a second blind on the exact same
+        command_device_id/command_enum - the shared channel identity is
+        left untouched; only the per-blind pending state is reset.
+        """
+        if self._last_ready_blind_data is None or self._last_ready_blind_title is None:
+            return self.async_abort(reason="device_not_found")
+
+        hub_entry = self._get_entry()
+        self.hass.config_entries.async_add_subentry(
+            hub_entry,
+            ConfigSubentry(
+                data=MappingProxyType(self._last_ready_blind_data),
+                subentry_type=SUBENTRY_TYPE_BLIND,
+                title=self._last_ready_blind_title,
+                unique_id=self._pairing_unique_id(),
+            ),
+        )
+        _LOGGER.info(
+            "Pair-remote added %s on shared channel %s/%s; continuing to "
+            "pair another blind on the same channel",
+            self._last_ready_blind_title,
+            self._pending_device_id,
+            self._pending_device_enum,
+        )
+
+        self._last_ready_blind_data = None
+        self._last_ready_blind_title = None
+        self._pending_blind_id = generate_blind_id()
+        self._pending_device_name = None
+        self._pending_status_device_id = None
+        self._pending_status_enum = None
+        self._pending_secondary_status_identities = []
+        self._pending_status_identity_source = STATUS_IDENTITY_SOURCE_UNKNOWN
+        self._pending_open_time = None
+        self._pending_close_time = None
+        # _pending_device_id/_pending_device_enum are deliberately left
+        # untouched: the next blind is taught on this same remote channel.
+        return await self.async_step_name_device()
+
     async def async_step_manual_next(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
@@ -558,16 +739,59 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             unique_id=self._pending_device_id,
         )
 
+    def _test_motor_toward_open(self) -> bool:
+        """Decide which direction the short motor test should briefly drive.
+
+        For a blind that already has a tracked position (a re-test of an
+        existing, already-configured blind from the reconfigure menu),
+        test away from its last known position: briefly open if it is
+        currently closed, briefly close if it is currently open or
+        partway open. That way the test both shows visible movement and
+        never drives further into an end-stop the blind may already be
+        resting at.
+
+        A brand-new pairing has no tracked position yet - no cover entity
+        exists for it until after this very test - so get_last_position_update()
+        returns None and this falls back to the same fixed default used
+        before this distinction existed: briefly open.
+        """
+        if self._pending_device_id is None:
+            return True
+        api = self._get_entry().runtime_data
+        last_position = api.get_last_position_update(self._pending_device_id)
+        current_position = (
+            last_position.get("new_position") if last_position is not None else None
+        )
+        if isinstance(current_position, int):
+            return current_position <= 0
+        return True
+
     async def async_step_test_motor(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Send a short logical-open command followed by stop."""
+        """Ask for confirmation, then send a short direction-aware test move.
+
+        Nothing is transmitted until the person submits this form - that
+        submission *is* the confirmation. The direction tested (open-then-
+        stop, or close-then-stop) is decided by _test_motor_toward_open()
+        and shown in the confirmation text via the "test_action"
+        placeholder before it is sent, so the person knows what is about
+        to happen rather than being surprised by it.
+        """
         if not self._pending_device_id or not self._pending_device_enum:
             return self.async_abort(reason="device_not_found")
+
+        test_toward_open = self._test_motor_toward_open()
+        open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
+        close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
+        action = open_action if test_toward_open else close_action
 
         placeholders = {
             "device_id": self._pending_device_id,
             "device_enum": self._pending_device_enum,
+            "test_action": _translate_phrase(
+                self.hass, "open" if test_toward_open else "close"
+            ),
         }
         if user_input is None:
             return self.async_show_form(
@@ -577,7 +801,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             )
 
         api = self._get_entry().runtime_data
-        action = CMD_DOWN if self._pending_invert_direction else CMD_UP
         if not await api.control_blind(
             self._pending_device_enum,
             action,
@@ -621,8 +844,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     }
                 ),
                 description_placeholders={
-                    "device_id": self._pending_device_id or "unknown",
-                    "device_enum": self._pending_device_enum or "unknown",
+                    "device_id": self._pending_device_id
+                    or _translate_phrase(self.hass, "unknown"),
+                    "device_enum": self._pending_device_enum
+                    or _translate_phrase(self.hass, "unknown"),
+                    "test_action": _translate_phrase(
+                        self.hass,
+                        "open" if self._test_motor_toward_open() else "close",
+                    ),
                 },
             )
 
@@ -714,7 +943,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         if not device_id or not device_enum:
             return self.async_abort(reason="pairing_failed")
 
-        device_name = user_input.get(CONF_DEVICE_NAME) or f"Blind {device_id}"
+        device_name = user_input.get(CONF_DEVICE_NAME) or _runtime_translation_text(
+            self.hass, "device_fallback_name", device_id=device_id
+        )
         self._pending_device_name = device_name
 
         handler = self._get_calibration_handler()
@@ -781,7 +1012,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 data.get(CONF_STATUS_ENUM) or command_enum,
             )
         primary_status_device_id = (
-            primary_identity[0] if primary_identity is not None else "Unknown"
+            primary_identity[0]
+            if primary_identity is not None
+            else _runtime_translation_text(self.hass, "unknown_label")
         )
         primary_status_enum = (
             primary_identity[1] if primary_identity is not None else "--"
@@ -794,41 +1027,40 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             *secondary_status_identities,
         )
         source_label = {
-            STATUS_IDENTITY_SOURCE_MANUAL: "manually entered",
-            STATUS_IDENTITY_SOURCE_CALIBRATION: (
-                "automatically discovered during calibration"
+            STATUS_IDENTITY_SOURCE_MANUAL: _runtime_translation_text(
+                self.hass, "manually_entered"
             ),
-            STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY: (
-                "automatically discovered from original remote"
+            STATUS_IDENTITY_SOURCE_CALIBRATION: _runtime_translation_text(
+                self.hass, "source_calibration"
             ),
-            STATUS_IDENTITY_SOURCE_UNKNOWN: "unknown / not discovered",
-        }.get(configured_source, "legacy configuration / unverified")
+            STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY: _runtime_translation_text(
+                self.hass, "source_remote_discovery"
+            ),
+            STATUS_IDENTITY_SOURCE_UNKNOWN: _runtime_translation_text(
+                self.hass, "source_unknown"
+            ),
+        }.get(configured_source, _runtime_translation_text(self.hass, "source_legacy"))
         last_calibration_value = data.get(CONF_LAST_CALIBRATION)
         last_calibration = (
             last_calibration_value if isinstance(last_calibration_value, dict) else {}
         )
         calibration_frames = last_calibration.get("frames", [])
         calibration_groups = last_calibration.get("groups", [])
-        calibration_frames_text = (
-            "\n".join(
-                f"{frame.get('time', '--')} "
-                f"{frame.get('device_id', 'Unknown')}/{frame.get('enum', '--')} "
-                f"cmd={frame.get('command', '--')} "
-                f"phase={frame.get('phase', 'unknown')}"
-                for frame in calibration_frames
-                if isinstance(frame, dict)
-            )
-            or "None recorded"
-        )
-        calibration_candidates_text = (
-            "\n".join(
-                f"{group.get('device_id', 'Unknown')}/{group.get('enum', '--')}: "
-                f"{','.join(group.get('commands', []))}"
-                for group in calibration_groups
-                if isinstance(group, dict)
-            )
-            or "None"
-        )
+        unknown_label = _runtime_translation_text(self.hass, "unknown_label")
+        calibration_frames_text = "\n".join(
+            f"{frame.get('time', '--')} "
+            f"{frame.get('device_id', unknown_label)}/{frame.get('enum', '--')} "
+            f"cmd={frame.get('command', '--')} "
+            f"phase={_translate_phrase(self.hass, frame.get('phase', 'unknown'))}"
+            for frame in calibration_frames
+            if isinstance(frame, dict)
+        ) or _runtime_translation_text(self.hass, "none_recorded")
+        calibration_candidates_text = "\n".join(
+            f"{group.get('device_id', unknown_label)}/{group.get('enum', '--')}: "
+            f"{','.join(group.get('commands', []))}"
+            for group in calibration_groups
+            if isinstance(group, dict)
+        ) or _runtime_translation_text(self.hass, "none_word")
         return {
             "name": subentry.title,
             "command_device_id": command_device_id,
@@ -841,15 +1073,22 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             "status_identity_source": source_label,
             "secondary_status_identities": secondary_status_identities,
             "secondary_status_identities_text": (
-                format_status_identities(secondary_status_identities) or "None"
+                format_status_identities(secondary_status_identities)
+                or _runtime_translation_text(self.hass, "none_word")
             ),
             "status_identities": status_identities,
             "invert_direction": bool(data.get(CONF_INVERT_DIRECTION, False)),
             "open_time": float(data.get(CONF_OPEN_TIME, DEFAULT_TRAVEL_TIME_SECONDS)),
             "close_time": float(data.get(CONF_CLOSE_TIME, DEFAULT_TRAVEL_TIME_SECONDS)),
-            "last_calibration_time": str(last_calibration.get("completed_at", "Never")),
-            "calibration_end_reason": str(
-                last_calibration.get("end_reason", "Not recorded")
+            "last_calibration_time": (
+                str(last_calibration["completed_at"])
+                if last_calibration.get("completed_at")
+                else _runtime_translation_text(self.hass, "never")
+            ),
+            "calibration_end_reason": (
+                _translate_phrase(self.hass, str(last_calibration["end_reason"]))
+                if last_calibration.get("end_reason")
+                else _runtime_translation_text(self.hass, "not_recorded")
             ),
             "calibration_frames_text": calibration_frames_text,
             "calibration_candidates_text": calibration_candidates_text,
@@ -869,7 +1108,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         details = self._developer_details()
         api = self._get_entry().runtime_data
         empty_frame = {
-            "device_id": "No matching frame received",
+            "device_id": _runtime_translation_text(self.hass, "frame_none_received"),
             "enum": "--",
             "command": "--",
             "time": "--",
@@ -888,7 +1127,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             details["secondary_status_identities"]
         ) or dict(empty_frame)
         last_position = api.get_last_position_update(details["command_device_id"]) or {
-            "source": "No position update recorded",
+            "source": _runtime_translation_text(self.hass, "position_none_recorded"),
             "direction": "--",
             "position_source": "unknown",
             "confirmed_since_restart": False,
@@ -903,7 +1142,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         if not isinstance(last_manual_sync, dict):
             last_manual_sync = {
                 "new_position": None,
-                "time": "Never",
+                "time": _runtime_translation_text(self.hass, "never"),
             }
         return (
             details,
@@ -927,6 +1166,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             last_manual_sync,
         ) = self._developer_snapshot()
         api = self._get_entry().runtime_data
+        hass = self.hass
         return self.async_show_menu(
             step_id="developer_tools",
             menu_options=DEVELOPER_TOOLS_MENU_OPTIONS,
@@ -948,23 +1188,36 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 "secondary_status_identities": details[
                     "secondary_status_identities_text"
                 ],
-                "last_identity_role": last_received["identity_role"],
-                "last_interpretation": last_received["interpreted_command"],
-                "last_position_tracking": str(last_received["position_tracking"]),
+                "last_identity_role": _translate_phrase(
+                    hass, last_received["identity_role"]
+                ),
+                "last_interpretation": _translate_phrase(
+                    hass, last_received["interpreted_command"]
+                ),
+                "last_position_tracking": _yes_no(
+                    hass, last_received["position_tracking"]
+                ),
                 "primary_last_device_id": last_primary["device_id"],
                 "primary_last_enum": last_primary["enum"],
                 "primary_last_command": last_primary["command"],
-                "primary_last_interpretation": last_primary["interpreted_command"],
+                "primary_last_interpretation": _translate_phrase(
+                    hass, last_primary["interpreted_command"]
+                ),
                 "primary_last_time": last_primary["time"],
                 "secondary_last_device_id": last_secondary["device_id"],
                 "secondary_last_enum": last_secondary["enum"],
                 "secondary_last_command": last_secondary["command"],
-                "secondary_last_interpretation": last_secondary["interpreted_command"],
-                "secondary_last_time": last_secondary["time"],
-                "position_source": last_position.get(
-                    "position_source", last_position["source"]
+                "secondary_last_interpretation": _translate_phrase(
+                    hass, last_secondary["interpreted_command"]
                 ),
-                "position_direction": last_position["direction"],
+                "secondary_last_time": last_secondary["time"],
+                "position_source": _translate_phrase(
+                    hass,
+                    last_position.get("position_source", last_position["source"]),
+                ),
+                "position_direction": _translate_phrase(
+                    hass, last_position["direction"]
+                ),
                 "position_previous": (
                     "--"
                     if last_position["previous_position"] is None
@@ -975,7 +1228,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     if last_position["new_position"] is None
                     else f"{last_position['new_position']}%"
                 ),
-                "position_status": last_position["status"],
+                "position_status": _translate_phrase(hass, last_position["status"]),
                 "position_time": last_position["time"],
                 "current_position": (
                     "--"
@@ -984,18 +1237,19 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 ),
                 "last_manual_sync_time": last_manual_sync["time"],
                 "position_confidence": (
-                    last_position["status"]
+                    _translate_phrase(hass, last_position["status"])
                     if last_position["new_position"] is not None
-                    else "unknown"
+                    else _translate_phrase(hass, "unknown")
                 ),
-                "position_confirmed_since_restart": (
-                    "Yes" if last_position.get("confirmed_since_restart") else "No"
+                "position_confirmed_since_restart": _yes_no(
+                    hass, bool(last_position.get("confirmed_since_restart"))
                 ),
-                "stick_connected": str(api.is_connected),
-                "stick_mode": str(api.device_mode or "unknown"),
-                "stick_ready": str(api.transmit_ready),
-                "stick_busy": str(api.busy_latched),
-                "result": self._developer_notice,
+                "stick_connected": _yes_no(hass, api.is_connected),
+                "stick_mode": _translate_phrase(hass, api.device_mode or "unknown"),
+                "stick_ready": _yes_no(hass, api.transmit_ready),
+                "stick_busy": _yes_no(hass, api.busy_latched),
+                "result": self._developer_notice
+                or _runtime_translation_text(hass, "no_test_command"),
             },
         )
 
@@ -1033,9 +1287,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 command,
                 reason,
             )
-            self._developer_notice = (
-                f"{command.title()} command blocked: {reason}. "
-                "Use Reset stick / reconnect serial if the condition does not clear."
+            self._developer_notice = _runtime_translation_text(
+                self.hass,
+                "notice_command_blocked",
+                command=_translate_phrase(self.hass, command).capitalize(),
+                reason=_translate_block_reason(self.hass, reason),
             )
             return await self.async_step_developer_tools()
 
@@ -1078,7 +1334,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 details["name"],
                 command,
             )
-            self._developer_notice = f"{command.title()} command written successfully."
+            self._developer_notice = _runtime_translation_text(
+                self.hass,
+                "notice_command_sent",
+                command=_translate_phrase(self.hass, command).capitalize(),
+            )
         else:
             _LOGGER.error(
                 "Developer Tools command result selected_blind=%s "
@@ -1086,8 +1346,10 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 details["name"],
                 command,
             )
-            self._developer_notice = (
-                f"{command.title()} command failed; check the integration logs."
+            self._developer_notice = _runtime_translation_text(
+                self.hass,
+                "notice_command_failed",
+                command=_translate_phrase(self.hass, command).capitalize(),
             )
         return await self.async_step_developer_tools()
 
@@ -1132,13 +1394,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             synced = False
 
         if synced:
-            self._developer_notice = (
-                f"Position manually confirmed at {position}%. No RF command was sent."
+            self._developer_notice = _runtime_translation_text(
+                self.hass, "notice_position_confirmed", position=position
             )
         else:
-            self._developer_notice = (
-                "Manual position sync failed because the live cover entity is not "
-                "registered. Reload the integration and try again."
+            self._developer_notice = _runtime_translation_text(
+                self.hass, "notice_position_sync_unregistered"
             )
         return await self.async_step_developer_tools()
 
@@ -1227,25 +1488,27 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         primary = result.get("primary")
         secondary = result.get("secondary", [])
         unknown = result.get("unknown_commands", [])
+        unknown_label = _runtime_translation_text(self.hass, "unknown_label")
+        none_word = _runtime_translation_text(self.hass, "none_word")
         return {
             "command_identity": (
-                f"{self._pending_device_id or 'Unknown'}/"
+                f"{self._pending_device_id or unknown_label}/"
                 f"{self._pending_device_enum or '--'}"
             ),
             "primary_identity": (
                 f"{primary['device_id']}/{primary['enum']}"
                 if primary is not None
-                else "Not discovered"
+                else _runtime_translation_text(self.hass, "not_discovered")
             ),
             "primary_commands": (
                 ", ".join(primary.get("commands", []))
                 if primary is not None
-                else "None"
+                else none_word
             ),
             "primary_timestamps": (
                 ", ".join(primary.get("timestamps", []))
                 if primary is not None
-                else "None"
+                else none_word
             ),
             "secondary_identities": (
                 "\n".join(
@@ -1253,7 +1516,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     f"{','.join(group.get('commands', []))}"
                     for group in secondary
                 )
-                or "None"
+                or none_word
             ),
             "unknown_commands": (
                 "\n".join(
@@ -1261,15 +1524,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     f"{','.join(group.get('commands', []))}"
                     for group in unknown
                 )
-                or "None"
+                or none_word
             ),
             "position_tracking": (
-                "Available from received 00/01/02 status frames"
+                _runtime_translation_text(self.hass, "position_tracking_available")
                 if primary is not None
-                else (
-                    "No remote/status tracking identity was discovered. The blind "
-                    "can still be controlled, but position tracking will use Home "
-                    "Assistant commands only."
+                else _runtime_translation_text(
+                    self.hass, "position_tracking_unavailable"
                 )
             ),
             "frame_count": str(len(result.get("frames", []))),
@@ -1281,17 +1542,20 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         """Guide an original-remote sequence and capture all received identities."""
         if not self._pending_device_id:
             self._prepare_existing_status_discovery()
+        unknown_label = _runtime_translation_text(self.hass, "unknown_label")
+        placeholders = {
+            "selected_blind": self._pending_device_name
+            or _runtime_translation_text(self.hass, "device_generic"),
+            "command_identity": (
+                f"{self._pending_device_id or unknown_label}/"
+                f"{self._pending_device_enum or '--'}"
+            ),
+        }
         if user_input is None:
             return self.async_show_form(
                 step_id="discover_status",
                 data_schema=vol.Schema({}),
-                description_placeholders={
-                    "selected_blind": self._pending_device_name or "Blind",
-                    "command_identity": (
-                        f"{self._pending_device_id or 'Unknown'}/"
-                        f"{self._pending_device_enum or '--'}"
-                    ),
-                },
+                description_placeholders=placeholders,
             )
 
         api = self._get_entry().runtime_data
@@ -1302,26 +1566,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 step_id="discover_status",
                 data_schema=vol.Schema({}),
                 errors={"base": "status_discovery_unavailable"},
-                description_placeholders={
-                    "selected_blind": self._pending_device_name or "Blind",
-                    "command_identity": (
-                        f"{self._pending_device_id or 'Unknown'}/"
-                        f"{self._pending_device_enum or '--'}"
-                    ),
-                },
+                description_placeholders=placeholders,
             )
         except RuntimeError:
             return self.async_show_form(
                 step_id="discover_status",
                 data_schema=vol.Schema({}),
                 errors={"base": "status_discovery_busy"},
-                description_placeholders={
-                    "selected_blind": self._pending_device_name or "Blind",
-                    "command_identity": (
-                        f"{self._pending_device_id or 'Unknown'}/"
-                        f"{self._pending_device_enum or '--'}"
-                    ),
-                },
+                description_placeholders=placeholders,
             )
         self._apply_remote_status_discovery(result)
         return await self.async_step_confirm_status_discovery()
@@ -1362,10 +1614,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             or self._pending_close_time is None
         ):
             return self.async_abort(reason="device_not_found")
-        return self.async_create_entry(
-            title=self._pending_device_name,
-            data=self._pending_data(),
-            unique_id=self._pending_device_id,
+        return self._finish_pairing_or_offer_repeat(
+            title=self._pending_device_name, data=self._pending_data()
         )
 
     async def async_step_teach_motor(
@@ -1391,7 +1641,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 details["name"],
                 reason,
             )
-            self._developer_notice = f"Motor teach blocked: {reason}."
+            self._developer_notice = _runtime_translation_text(
+                self.hass,
+                "notice_teach_blocked",
+                reason=_translate_block_reason(self.hass, reason),
+            )
             return await self.async_step_developer_tools()
 
         _LOGGER.warning(
@@ -1435,13 +1689,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             taught = opened = stopped = False
 
         if taught and opened and stopped:
-            self._developer_notice = (
-                "Teach, Open, and Stop were transmitted. Stick ACKs confirm only "
-                "radio transmission; verify that the motor reacted."
+            self._developer_notice = _runtime_translation_text(
+                self.hass, "notice_teach_test_sent"
             )
         else:
-            self._developer_notice = (
-                "Teach/test transmission failed; inspect the integration logs."
+            self._developer_notice = _runtime_translation_text(
+                self.hass, "notice_teach_test_failed"
             )
         return await self.async_step_developer_tools()
 
@@ -1467,9 +1720,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 sent = False
                 errors["payload"] = "invalid_raw_payload"
             if sent:
-                self._developer_notice = (
-                    f"Raw payload {payload} was written. Stick ACKs do not confirm "
-                    "motor movement."
+                self._developer_notice = _runtime_translation_text(
+                    self.hass, "notice_raw_sent", payload=payload
                 )
                 return await self.async_step_developer_tools()
             if not errors:
@@ -1498,12 +1750,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         api = self._get_entry().runtime_data
         ready = await api.reset_and_reconnect()
         self._developer_notice = (
-            "Stick reset and serial reconnect completed; ready for transmit."
+            _runtime_translation_text(self.hass, "notice_reset_ready")
             if ready
-            else (
-                "Stick reset/reconnect did not become ready "
-                f"(connected={api.is_connected}, mode={api.device_mode or 'unknown'}). "
-                "Check the integration logs and USB connection."
+            else _runtime_translation_text(
+                self.hass,
+                "notice_reset_not_ready",
+                connected=_yes_no(self.hass, api.is_connected),
+                mode=_translate_phrase(self.hass, api.device_mode or "unknown"),
             )
         )
         return await self.async_step_developer_tools()
@@ -1524,84 +1777,139 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             last_manual_sync,
         ) = self._developer_snapshot()
         api = self._get_entry().runtime_data
+        hass = self.hass
+
+        def _t(key: str, **kwargs: Any) -> str:
+            return _runtime_translation_text(hass, key, **kwargs)
+
         diagnostics = "\n".join(
             (
-                "Schellenberg USB blind diagnostics",
-                f"Selected blind: {details['name']}",
+                _t("diag_title"),
+                _t("diag_selected_blind", value=details["name"]),
                 "",
-                "Stick state:",
-                f"Connected: {api.is_connected}",
-                f"Mode: {api.device_mode or 'unknown'}",
-                f"Ready: {api.transmit_ready}",
-                f"Pairing active: {api.pairing_active}",
-                f"Transmitter active: {api.transmitter_active}",
-                f"Busy latched: {api.busy_latched}",
+                _t("diag_section_stick_state"),
+                _t("diag_connected", value=_yes_no(hass, api.is_connected)),
+                _t(
+                    "diag_mode",
+                    value=_translate_phrase(hass, api.device_mode or "unknown"),
+                ),
+                _t("diag_ready", value=_yes_no(hass, api.transmit_ready)),
+                _t("diag_pairing_active", value=_yes_no(hass, api.pairing_active)),
+                _t(
+                    "diag_transmitter_active",
+                    value=_yes_no(hass, api.transmitter_active),
+                ),
+                _t("diag_busy_latched", value=_yes_no(hass, api.busy_latched)),
                 "",
-                "ACK semantics:",
-                "t1/t0 confirm only that the USB stick transmitter turned on/off.",
-                "Motor reception and movement remain unverified (unidirectional RF).",
+                _t("diag_section_ack_semantics"),
+                _t("diag_ack_note_1"),
+                _t("diag_ack_note_2"),
                 "",
-                "Last matched frame:",
-                f"Device ID: {last_received['device_id']}",
-                f"Enum: {last_received['enum']}",
-                f"Identity role: {last_received['identity_role']}",
-                f"Command: {last_received['command']}",
-                f"Interpretation: {last_received['interpreted_command']}",
-                f"Position tracking: {last_received['position_tracking']}",
-                f"Time: {last_received['time']}",
+                _t("diag_section_last_matched_frame"),
+                _t("diag_device_id", value=last_received["device_id"]),
+                _t("diag_enum", value=last_received["enum"]),
+                _t(
+                    "diag_identity_role",
+                    value=_translate_phrase(hass, last_received["identity_role"]),
+                ),
+                _t("diag_command", value=last_received["command"]),
+                _t(
+                    "diag_interpretation",
+                    value=_translate_phrase(hass, last_received["interpreted_command"]),
+                ),
+                _t(
+                    "diag_position_tracking_value",
+                    value=_yes_no(hass, last_received["position_tracking"]),
+                ),
+                _t("diag_time", value=last_received["time"]),
                 "",
-                "Last primary tracking frame:",
-                f"Device ID: {last_primary['device_id']}",
-                f"Enum: {last_primary['enum']}",
-                f"Command: {last_primary['command']}",
-                f"Interpretation: {last_primary['interpreted_command']}",
-                f"Time: {last_primary['time']}",
+                _t("diag_section_last_primary_frame"),
+                _t("diag_device_id", value=last_primary["device_id"]),
+                _t("diag_enum", value=last_primary["enum"]),
+                _t("diag_command", value=last_primary["command"]),
+                _t(
+                    "diag_interpretation",
+                    value=_translate_phrase(hass, last_primary["interpreted_command"]),
+                ),
+                _t("diag_time", value=last_primary["time"]),
                 "",
-                "Last secondary frame:",
-                f"Device ID: {last_secondary['device_id']}",
-                f"Enum: {last_secondary['enum']}",
-                f"Command: {last_secondary['command']}",
-                f"Interpretation: {last_secondary['interpreted_command']}",
-                f"Time: {last_secondary['time']}",
+                _t("diag_section_last_secondary_frame"),
+                _t("diag_device_id", value=last_secondary["device_id"]),
+                _t("diag_enum", value=last_secondary["enum"]),
+                _t("diag_command", value=last_secondary["command"]),
+                _t(
+                    "diag_interpretation",
+                    value=_translate_phrase(
+                        hass, last_secondary["interpreted_command"]
+                    ),
+                ),
+                _t("diag_time", value=last_secondary["time"]),
                 "",
-                "Last position update:",
-                "Source: "
-                + str(last_position.get("position_source", last_position["source"])),
-                f"Details: {last_position['source']}",
-                f"Direction: {last_position['direction']}",
-                f"Previous position: {last_position['previous_position']}",
-                f"New position: {last_position['new_position']}",
-                f"Status: {last_position['status']}",
-                f"Time: {last_position['time']}",
+                _t("diag_section_last_position_update"),
+                _t(
+                    "diag_source",
+                    value=_translate_phrase(
+                        hass,
+                        last_position.get("position_source", last_position["source"]),
+                    ),
+                ),
+                _t(
+                    "diag_details",
+                    value=_translate_phrase(hass, last_position["source"]),
+                ),
+                _t(
+                    "diag_direction",
+                    value=_translate_phrase(hass, last_position["direction"]),
+                ),
+                _t("diag_previous_position", value=last_position["previous_position"]),
+                _t("diag_new_position", value=last_position["new_position"]),
+                _t(
+                    "diag_status",
+                    value=_translate_phrase(hass, last_position["status"]),
+                ),
+                _t("diag_time", value=last_position["time"]),
                 "",
-                "Position confidence:",
-                f"Current estimated position: {last_position['new_position']}",
-                f"Last manual sync time: {last_manual_sync['time']}",
-                f"Confidence: {last_position['status']}",
-                "Confirmed since restart: "
-                + ("Yes" if last_position.get("confirmed_since_restart") else "No"),
+                _t("diag_section_position_confidence"),
+                _t(
+                    "diag_current_estimated_position",
+                    value=last_position["new_position"],
+                ),
+                _t("diag_last_manual_sync_time", value=last_manual_sync["time"]),
+                _t(
+                    "diag_confidence",
+                    value=_translate_phrase(hass, last_position["status"]),
+                ),
+                _t(
+                    "diag_confirmed_since_restart",
+                    value=_yes_no(
+                        hass, bool(last_position.get("confirmed_since_restart"))
+                    ),
+                ),
                 "",
-                "Current transmit target:",
-                f"Device ID: {details['command_device_id']}",
-                f"Enum: {details['command_enum']}",
+                _t("diag_section_current_transmit_target"),
+                _t("diag_device_id", value=details["command_device_id"]),
+                _t("diag_enum", value=details["command_enum"]),
                 "",
-                "Configured primary status identity:",
-                f"Device ID: {details['primary_status_device_id']}",
-                f"Enum: {details['primary_status_enum']}",
-                f"Source: {details['status_identity_source']}",
-                "Configured secondary status identities:",
+                _t("diag_section_configured_primary_identity"),
+                _t("diag_device_id", value=details["primary_status_device_id"]),
+                _t("diag_enum", value=details["primary_status_enum"]),
+                _t("diag_source", value=details["status_identity_source"]),
+                _t("diag_section_configured_secondary_identities"),
                 details["secondary_status_identities_text"],
                 "",
-                "Last calibration run:",
-                f"Completed: {details['last_calibration_time']}",
-                f"End reason: {details['calibration_end_reason']}",
-                "Frames observed during calibration:",
+                _t("diag_section_last_calibration_run"),
+                _t("diag_completed", value=details["last_calibration_time"]),
+                _t("diag_end_reason", value=details["calibration_end_reason"]),
+                _t("diag_frames_observed"),
                 details["calibration_frames_text"],
-                "Candidate status identities:",
+                _t("diag_candidate_identities"),
                 details["calibration_candidates_text"],
-                f"Open time: {details['open_time']:.2f} seconds",
-                f"Close time: {details['close_time']:.2f} seconds",
-                f"Invert direction: {details['invert_direction']}",
+                _t("diag_open_time", value=f"{details['open_time']:.2f}"),
+                _t("diag_close_time", value=f"{details['close_time']:.2f}"),
+                _t(
+                    "diag_invert_direction",
+                    value=_yes_no(hass, details["invert_direction"]),
+                ),
             )
         )
         return self.async_show_form(
@@ -1729,6 +2037,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_STATUS_DEVICE_ID] = "invalid_device_id"
             if status_enum and not self._is_hex_value(status_enum, 2):
                 errors[CONF_STATUS_ENUM] = "invalid_device_enum"
+            # Mirrors async_step_manual()'s own schema: deliberately no
+            # selector-level `min` for either field, so a non-positive
+            # value reaches here instead of being rejected earlier as a
+            # raw, untranslated schema error that would abort the whole
+            # flow rather than re-showing this form with a normal,
+            # translated field error.
             if open_time <= 0:
                 errors[CONF_OPEN_TIME_SECONDS] = "invalid_travel_time"
             if close_time <= 0:
@@ -1810,6 +2124,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     ): selector.TextSelector(
                         selector.TextSelectorConfig(multiline=True)
                     ),
+                    # No `min` here either - see the matching comment on
+                    # this step's own `invalid_travel_time` validation above.
                     vol.Required(
                         CONF_OPEN_TIME_SECONDS,
                         default=current_data.get(
@@ -1817,7 +2133,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                         ),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0.1,
                             step=0.1,
                             unit_of_measurement="s",
                             mode=selector.NumberSelectorMode.BOX,
@@ -1830,7 +2145,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                         ),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0.1,
                             step=0.1,
                             unit_of_measurement="s",
                             mode=selector.NumberSelectorMode.BOX,
@@ -1869,7 +2183,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             if isinstance(subentry.unique_id, str) and subentry.unique_id
             else command_device_id
         )
-        device_name = subentry.title or f"Blind {stable_id}"
+        device_name = subentry.title or _runtime_translation_text(
+            self.hass, "device_fallback_name", device_id=stable_id
+        )
         handler.set_selected_device(
             {
                 "id": status_device_id,

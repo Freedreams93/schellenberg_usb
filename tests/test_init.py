@@ -1,15 +1,24 @@
-"""Tests for integration setup/unload and the test_command service handler."""
+"""Tests for integration setup/unload and the test_command service handler.
+
+Also covers async_setup_entry()'s own device-registry bookkeeping (hub
+subentry/device creation vs. reuse, reassigning a device found on the
+wrong subentry, and the firmware-version tracking callback) and the
+non-hub-entry guard, config-entry-id-forwarding, and initial-connect-task
+scheduling around it - see the section near the end of this file.
+"""
 
 from __future__ import annotations
 
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.schellenberg_usb import (
@@ -34,8 +43,15 @@ from custom_components.schellenberg_usb.const import (
     CONF_OPEN_TIME,
     CONF_SERIAL_PORT,
     DOMAIN,
+    PLATFORMS,
     SERVICE_TEST_COMMAND,
+    SIGNAL_STICK_STATUS_UPDATED,
     SUBENTRY_TYPE_BLIND,
+    SUBENTRY_TYPE_HUB,
+)
+from custom_components.schellenberg_usb.device_registry_compat import (
+    async_device_on_subentry_compat,
+    async_get_device_by_identifier_compat,
 )
 from tests.conftest import written
 
@@ -103,6 +119,34 @@ async def test_service_requires_config_entry_id_when_multiple_are_loaded(
     entry_b = MockConfigEntry(domain=DOMAIN, data={})
     entry_b.add_to_hass(hass)
     entry_b.runtime_data = connected_api_factory("/dev/fake-b")
+
+    await async_setup(hass, {})
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_TEST_COMMAND,
+            {CONF_DEVICE_ID: "ABCDEF", CONF_ENUM: "10", CONF_COMMAND: "stop"},
+            blocking=True,
+        )
+
+
+async def test_service_raises_when_control_blind_fails_to_queue(
+    hass: HomeAssistant,
+) -> None:
+    """The third ServiceValidationError branch: control_blind() refused.
+
+    test_service_rejects_an_entry_that_is_not_loaded and
+    test_service_requires_config_entry_id_when_multiple_are_loaded above
+    cover the other two branches of _handle_test_command; this covers the
+    one where a single loaded entry is found but the stick itself refuses
+    to transmit right now. A never-connected API already refuses on its
+    own (see _transmit_capability_block_reason in api.py), so no
+    FakeTransport is needed to provoke this.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    entry.runtime_data = SchellenbergUsbApi(hass, "/dev/fake-schellenberg")
 
     await async_setup(hass, {})
 
@@ -245,3 +289,212 @@ def test_backfill_blind_ids_is_a_noop_once_ids_are_already_valid(
 
     assert changed is False
     assert entry.subentries[subentry.subentry_id].data[CONF_BLIND_ID] == valid_id
+
+
+# ---------------------------------------------------------------------------
+# async_setup_entry(): the non-hub-entry guard, hub subentry/device
+# creation vs. reuse, reassigning a device found on the wrong subentry, the
+# firmware-version tracking callback, forwarding setup to all platforms,
+# and scheduling the initial connect as its own task.
+# ---------------------------------------------------------------------------
+
+
+async def test_async_setup_entry_ignores_a_non_hub_entry(hass: HomeAssistant) -> None:
+    """A config entry with no CONF_SERIAL_PORT is not this integration's hub
+    entry and must be skipped rather than crashing on the missing port.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, entry) is False
+
+
+async def test_async_setup_entry_creates_a_hub_subentry_and_device_when_none_exist(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    hub_subentries = [
+        s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_HUB
+    ]
+    assert len(hub_subentries) == 1
+    device_registry = dr.async_get(hass)
+    hub_device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, entry.entry_id), entry.entry_id
+    )
+    assert hub_device is not None
+    assert async_device_on_subentry_compat(
+        hub_device, entry.entry_id, hub_subentries[0].subentry_id
+    )
+
+
+async def test_async_setup_entry_reuses_an_existing_hub_subentry(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hub entry that already has its hub subentry (e.g. on reload) must
+    not grow a second one.
+    """
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+    existing_hub = ConfigSubentry(
+        data=MappingProxyType({}),
+        subentry_type=SUBENTRY_TYPE_HUB,
+        title="Hub",
+        unique_id=None,
+    )
+    hass.config_entries.async_add_subentry(entry, existing_hub)
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    hub_subentries = [
+        s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_HUB
+    ]
+    assert len(hub_subentries) == 1
+    assert hub_subentries[0].subentry_id == existing_hub.subentry_id
+
+
+async def test_async_setup_entry_reassigns_a_device_found_on_the_wrong_subentry(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hub device that already exists but sits on the wrong subentry (no
+    subentry at all, here - e.g. left over from a recreated hub subentry)
+    must be moved onto the current hub subentry, not duplicated or left
+    behind. This is the branch a real past bug used to crash on (see the
+    NOTE comment above the lookup in __init__.py).
+    """
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+    hub_subentry = ConfigSubentry(
+        data=MappingProxyType({}),
+        subentry_type=SUBENTRY_TYPE_HUB,
+        title="Hub",
+        unique_id=None,
+    )
+    hass.config_entries.async_add_subentry(entry, hub_subentry)
+    device_registry = dr.async_get(hass)
+    stale_device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Schellenberg USB Stick",
+    )
+    assert not async_device_on_subentry_compat(
+        stale_device, entry.entry_id, hub_subentry.subentry_id
+    )
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    updated_device = device_registry.async_get(stale_device.id)
+    assert updated_device is not None
+    assert async_device_on_subentry_compat(
+        updated_device,  # type: ignore[arg-type]
+        entry.entry_id,
+        hub_subentry.subentry_id,
+    )
+
+
+async def test_firmware_tracking_updates_the_device_once_a_version_is_known(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+    api: SchellenbergUsbApi = entry.runtime_data
+    # device_version is a read-only property; _handle_message() is what
+    # normally sets the backing attribute once the stick answers an RFTU_
+    # version query, so the private attribute is set directly here too.
+    api._device_version = "1.2.3"
+    async_dispatcher_send(hass, SIGNAL_STICK_STATUS_UPDATED)
+
+    device_registry = dr.async_get(hass)
+    hub_device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, entry.entry_id), entry.entry_id
+    )
+    assert hub_device is not None
+    assert hub_device.sw_version == "1.2.3"
+
+
+async def test_firmware_tracking_does_nothing_without_a_known_version(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before the stick has answered its version query, device_version is
+    still None - the callback must not touch the device registry at all,
+    rather than overwrite sw_version with that absence.
+    """
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+    device_registry = dr.async_get(hass)
+    update_spy = MagicMock(wraps=device_registry.async_update_device)
+    monkeypatch.setattr(device_registry, "async_update_device", update_spy)
+
+    async_dispatcher_send(hass, SIGNAL_STICK_STATUS_UPDATED)
+
+    update_spy.assert_not_called()
+
+
+async def test_async_setup_entry_forwards_setup_to_all_platforms(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    forward_spy = AsyncMock(return_value=True)
+    monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", forward_spy)
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+
+    assert await async_setup_entry(hass, entry)
+
+    forward_spy.assert_awaited_once_with(entry, PLATFORMS)
+
+
+async def test_async_setup_entry_schedules_the_initial_connect_as_its_own_task(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The initial connect attempt must be fired off as its own task rather
+    than awaited inline - a slow or unresponsive stick must not block
+    async_setup_entry (and therefore Home Assistant startup) on it.
+    """
+    monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_SERIAL_PORT: "/dev/fake"})
+    entry.add_to_hass(hass)
+    task_spy = MagicMock(wraps=hass.async_create_task)
+    monkeypatch.setattr(hass, "async_create_task", task_spy)
+
+    assert await async_setup_entry(hass, entry)
+    await hass.async_block_till_done()
+
+    task_spy.assert_called_once()
+    _args, kwargs = task_spy.call_args
+    assert kwargs.get("name") == "schellenberg-initial-connect"
