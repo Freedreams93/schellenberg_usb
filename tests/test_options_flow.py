@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
-import serial
+import serialx
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -85,7 +85,7 @@ async def test_submitting_an_unreachable_new_port_shows_cannot_connect(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def failing_check(port: str) -> None:
-        raise serial.SerialException("no such device")
+        raise serialx.SerialException("no such device")
 
     monkeypatch.setattr(options_flow_module, "check_serial_port", failing_check)
     entry = _build_entry(hass, port="/dev/ttyUSB0")
@@ -99,6 +99,32 @@ async def test_submitting_an_unreachable_new_port_shows_cannot_connect(
     assert result["errors"] == {"base": "cannot_connect"}
     # The rejected port must not have been persisted.
     assert entry.data[CONF_SERIAL_PORT] == "/dev/ttyUSB0"
+
+
+async def test_submitting_an_unreachable_new_port_via_oserror_shows_cannot_connect(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """serialx-specific: OSError/TimeoutError are also treated as connect failures.
+
+    v1.0.4's options_flow.py only caught serial.SerialException; the serialx
+    migration widened this to also catch plain OSError/TimeoutError (see
+    api.py's connect()), since serialx.serial_for_url() can raise those
+    directly for some backends. Both branches need coverage.
+    """
+
+    def failing_check(port: str) -> None:
+        raise OSError("no such device")
+
+    monkeypatch.setattr(options_flow_module, "check_serial_port", failing_check)
+    entry = _build_entry(hass, port="/dev/ttyUSB0")
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={CONF_SERIAL_PORT: "/dev/ttyUSB9"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
 
 
 async def test_submitting_a_new_port_with_an_unexpected_error_shows_unknown(

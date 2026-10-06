@@ -1,6 +1,6 @@
 [project]
 name = "schellenberg_usb"
-version = "1.0.4"
+version = "v1.1.0"
 readme = "README.md"
 # Floor for the dev/CI toolchain below (uv, mypy, pytest-homeassistant-
 # custom-component) - unrelated to the *integration's* own minimum
@@ -9,7 +9,13 @@ readme = "README.md"
 # dropped by this bump.
 requires-python = ">=3.14.2"
 dependencies = [
-    "pyserial-asyncio-fast==0.16",
+    # A minimum instead of an exact pin: Home Assistant Core's own serialx
+    # requirement moves forward on its own schedule (it went from 1.10.0 to
+    # 1.11.0 between two consecutive hassfest runs here), and hassfest
+    # rejects an exact pin that no longer matches Core's. >= stays
+    # compatible with whatever Core currently needs, same fix other HACS
+    # integrations have used for this exact class of hassfest failure.
+    "serialx>=1.10.0",
 ]
 
 [dependency-groups]
@@ -25,7 +31,7 @@ test = [
     "polyfactory~=3.1.0",
     "PyYAML~=6.0.2",
     # Need specific versions
-    "pytest-homeassistant-custom-component==0.13.367",
+    "pytest-homeassistant-custom-component==0.13.368",
     # Versions handled by pytest-homeassistant-custom-component
     "freezegun",
     "pytest",
@@ -34,9 +40,9 @@ test = [
 ]
 
 lint = [
-    "mypy~=1.18.2",
+    "mypy~=2.4.0",
     "pre-commit~=4.5.0",
-    "ruff~=0.14.1",
+    "ruff~=0.16.10",
     "types-PyYAML~=6.0.12.20250915",
 ]
 
@@ -85,6 +91,24 @@ warn_incomplete_stub = true
 warn_redundant_casts = true
 warn_unused_configs = true
 strict = true
+
+# Home Assistant Core replaced voluptuous with its own "probatio" validation
+# engine (2026.10) and aliases the `voluptuous` import to it in sys.modules
+# at runtime, so integration code needs no changes and keeps working
+# unmodified (`import voluptuous as vol` still works; see
+# https://developers.home-assistant.io/blog/2026/09/30/probatio-validation-engine).
+# mypy does not see that runtime alias, though: it still resolves `vol.Schema`
+# to the real voluptuous.schema_builder.Schema, which Home Assistant's own
+# typed APIs (FlowHandler.async_show_form, ServiceRegistry.async_register)
+# now declare as probatio.schema.Schema - an unrelated type as far as mypy is
+# concerned, hence "incompatible type" on every vol.Schema(...) we pass in.
+# Skipping type-checking of the voluptuous module itself (treating it as Any)
+# sidesteps that false mismatch without touching any integration code; this
+# only loosens checking *inside* voluptuous calls (e.g. a misspelled
+# attribute accessed on vol would no longer be caught), not anywhere else.
+[[tool.mypy.overrides]]
+module = "voluptuous.*"
+follow_imports = "skip"
 
 [tool.ruff.lint]
 select = [

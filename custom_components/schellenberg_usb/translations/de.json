@@ -27,27 +27,32 @@
   },
   "config_subentries": {
     "blind": {
-      "entry_type": "Rollladen",
+      "entry_type": "Gerät",
       "initiate_flow": {
-        "user": "Rollladen hinzufügen",
-        "reconfigure": "Kalibrieren"
+        "user": "Gerät hinzufügen",
+        "reconfigure": "Konfigurieren"
       },
       "step": {
         "user": {
-          "title": "Rollladen hinzufügen",
+          "title": "Gerät hinzufügen",
+          "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten. Geeignet für Rollladen, elektronische Gurtwickler, Markisenmotoren und andere Schellenberg-kompatible Motoren.",
           "menu_options": {
-            "pair_device": "Koppeln und kalibrieren (veraltet)",
-            "manual": "Manuell hinzufügen",
-            "pair_test": "Koppeln und testen (empfohlen)"
+            "pair_device": "Koppeln und kalibrieren",
+            "add_shutter_from_remote": "Rollladen von Fernbedienung hinzufügen (empfohlen)"
           }
         },
         "pair_device": {
-          "title": "Neues Gerät koppeln",
-          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat.",
+          "title": "Koppeln und kalibrieren",
+          "description": "Koppelt das Gerät und springt danach direkt zur Kalibrierung, ohne zwischendurch einen Testbefehl zu senden. Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat.",
+          "submit": "Koppeln"
+        },
+        "add_shutter_from_remote": {
+          "title": "Rollladen von Fernbedienung hinzufügen",
+          "description": "Diese Kopplungsmethode wird empfohlen für jeden kompatiblen Schellenbergfunkrollladen, egal ob es ein Funkrollladenmotor oder ein elektronischer Gurtwickler oder ein Markisenmotor ist. Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat. Steuert derselbe Fernbedienungskanal noch weitere Rollläden, können Sie jeden davon direkt im Anschluss hier ebenfalls hinzufügen, ohne diese Schritte zu wiederholen.",
           "submit": "Koppeln"
         },
         "manual": {
-          "title": "Rollladen manuell hinzufügen",
+          "title": "Gerät manuell hinzufügen",
           "description": "Die Befehlsidentität wird für die ausgehende Steuerung verwendet. Die optionale Statusidentität wird mit empfangenen Bewegungsmeldungen abgeglichen; lassen Sie sie leer, um die Befehlsidentität zu verwenden. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie zusätzliche Identitäten als GERÄTE-ID/ENUM ein, eine pro Zeile oder durch Kommas getrennt. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
           "data": {
             "device_name": "Name",
@@ -64,7 +69,7 @@
         },
         "name_device": {
           "title": "Gerät benennen",
-          "description": "Ein Kopplungskandidat wurde erkannt, und der Anlernbefehl des USB-Sticks wurde für Geräte-ID {device_id} gesendet. Die ACK-Bestätigung des Sticks belegt nicht, dass der Motor dies autorisiert hat. Benennen Sie den Rollladen und prüfen Sie anschließend die tatsächliche Bewegung.",
+          "description": "Ein Kopplungskandidat wurde erkannt, und der Anlernbefehl des USB-Sticks wurde für Geräte-ID {device_id} gesendet. Die ACK-Bestätigung des Sticks belegt nicht, dass der Motor dies autorisiert hat. Benennen Sie das Gerät und prüfen Sie anschließend die tatsächliche Bewegung.",
           "data": {
             "device_name": "Gerätename"
           }
@@ -86,16 +91,19 @@
         },
         "calibration_complete": {
           "title": "Kalibrierung abgeschlossen",
-          "description": "Kalibrierung für {device_name} abgeschlossen!\n\nGemessene Zeiten:\n- Öffnungszeit: {open_time} Sekunden\n- Schließzeit: {close_time} Sekunden\n\nDiese Zeiten werden verwendet, um die Rollladenposition genau zu verfolgen.\n\nStatuserkennung aus der Kalibrierung:\n- Primäre Statusidentität: {primary_status_identity}\n- Verwendete primäre Befehle: {primary_frames}\n- Sekundäre Identitäten: {secondary_status_identities}\n- Beobachtete Telegramme: {observed_frame_count}\n- Endegrund: {calibration_end_reason}\n- Positionsverfolgung: {position_tracking}\n\nWenn keine Empfangs-/Statusidentität erkannt wurde, kann der Rollladen weiterhin gesteuert werden; seine Position wird dann anhand der von Home Assistant gesendeten Befehle geschätzt.",
+          "description": "Kalibrierung für {device_name} abgeschlossen!\n\nGemessene Zeiten:\n- Öffnungszeit: {open_time} Sekunden\n- Schließzeit: {close_time} Sekunden\n\nDiese Zeiten werden verwendet, um die Rollladenposition genau zu verfolgen.\n\nStatuserkennung aus der Kalibrierung:\n- Primäre Statusidentität: {primary_status_identity}\n- Verwendete primäre Befehle: {primary_frames}\n- Sekundäre Identitäten: {secondary_status_identities}\n- Beobachtete Telegramme: {observed_frame_count}\n- Abbruchgrund: {calibration_end_reason}\n- Positionsverfolgung: {position_tracking}\n\nWenn keine Empfangs-/Statusidentität erkannt wurde, kann der Rollladen weiterhin gesteuert werden; seine Position wird dann anhand der von Home Assistant gesendeten Befehle geschätzt.",
           "submit": "Fertig"
         },
-        "pair_test": {
-          "title": "Koppeln und testen",
-          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Auf/Stopp-Test; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat.",
-          "submit": "Koppeln"
+        "pairing_repeat_choice": {
+          "title": "Rollladen hinzugefügt",
+          "description": "„{device_name}“ wurde hinzugefügt. Steuert der gerade gekoppelte Fernbedienungskanal noch einen weiteren Rollladen, können Sie ihn jetzt ebenfalls hinzufügen, ohne erneut auf Koppeln zu drücken.",
+          "menu_options": {
+            "pair_another_on_channel": "Weiteren Rollladen auf diesem Kanal hinzufügen",
+            "finish_pairing": "Fertig"
+          }
         },
         "manual_next": {
-          "title": "Manueller Rollladen bereit",
+          "title": "Manuelles Gerät bereit",
           "menu_options": {
             "test_motor": "Motorbefehl testen",
             "save_manual": "Ohne Test speichern"
@@ -103,12 +111,12 @@
         },
         "test_motor": {
           "title": "Motorbefehl testen",
-          "description": "Dies sendet einen kurzen Auf-Befehl und anschließend Stopp an die Befehlsidentität {device_id}/{device_enum}. Beobachten Sie den Motor und drücken Sie Test.",
+          "description": "Wenn Sie auf Test drücken, bewegt sich der Rollladen kurz in eine Richtung und stoppt danach automatisch wieder. Home Assistant wählt die Richtung selbst: War er zuletzt geschlossen, öffnet er kurz. War er offen, schließt er kurz. Ist die Position noch unbekannt, öffnet er. Angesprochen wird das Gerät {device_id}/{device_enum}. Beobachten Sie dabei den Motor.",
           "submit": "Test"
         },
         "did_motor_move": {
           "title": "Hat sich der Motor bewegt?",
-          "description": "Befehlsidentität {device_id}/{device_enum} getestet.",
+          "description": "Befehlsidentität {device_id}/{device_enum} getestet: kurz {test_action}, dann gestoppt.",
           "data": {
             "motor_moved": "Der Motor hat sich bewegt"
           },
@@ -131,7 +139,7 @@
           "submit": "Speichern"
         },
         "reconfigure": {
-          "title": "Rollladen konfigurieren",
+          "title": "Gerät konfigurieren",
           "menu_options": {
             "edit": "Identitäten und Laufzeiten bearbeiten",
             "test_existing": "Motorbefehl testen",
@@ -141,7 +149,7 @@
         },
         "developer_tools": {
           "title": "Entwicklerwerkzeuge",
-          "description": "Ausgewählter Rollladen: {selected_blind}\n\nLetztes passendes Telegramm (beliebige Identität):\nGeräte-ID: {last_device_id}\nEnum: {last_enum}\nBefehl: {last_command}\nIdentitätsrolle: {last_identity_role}\nInterpretation: {last_interpretation}\nPositionsverfolgung: {last_position_tracking}\nZeit: {last_time}\n\nLetztes primäres Verfolgungstelegramm:\nGeräte-ID: {primary_last_device_id}\nEnum: {primary_last_enum}\nBefehl: {primary_last_command}\nInterpretation: {primary_last_interpretation}\nZeit: {primary_last_time}\n\nLetztes sekundäres Telegramm:\nGeräte-ID: {secondary_last_device_id}\nEnum: {secondary_last_enum}\nBefehl: {secondary_last_command}\nInterpretation: {secondary_last_interpretation}\nZeit: {secondary_last_time}\n\nLetzte Positionsaktualisierung:\nQuelle: {position_source}\nRichtung: {position_direction}\nVorherige Position: {position_previous}\nNeue Position: {position_new}\nStatus: {position_status}\nZeit: {position_time}\n\nAktuelle Positionsdiagnose:\nAktuell geschätzte Position: {current_position}\nLetzte manuelle Abgleichzeit: {last_manual_sync_time}\nZuverlässigkeit: {position_confidence}\nSeit Neustart bestätigt: {position_confirmed_since_restart}\n\nAktuelles Sendeziel:\nGeräte-ID: {command_device_id}\nEnum: {command_enum}\n\nKonfigurierte Statusidentitäten:\nPrimär: {primary_status_device_id}/{primary_status_enum}\nQuelle: {status_identity_source}\nSekundär:\n{secondary_status_identities}\n\nLetzter Kalibrierungslauf:\nAbgeschlossen: {last_calibration_time}\nEndegrund: {calibration_end_reason}\nKandidatenidentitäten:\n{calibration_candidates}\nBeobachtete Telegramme:\n{calibration_frames}\n\nStick-Status:\nVerbunden: {stick_connected}\nModus: {stick_mode}\nBereit: {stick_ready}\nBusy-Zustand aktiv: {stick_busy}\n\n{result}\n\nAuf und Zu bewegen sich weiter, bis Stopp gedrückt wird oder eine Endposition erreicht ist.\n\nACK-Hinweis: t1/t0 bestätigt nur, dass sich der Sender des USB-Sticks ein-/ausgeschaltet hat. Der Empfang oder die Bewegung des Motors wird dadurch nicht bestätigt.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\n\nLetztes passendes Telegramm (beliebige Identität):\nGeräte-ID: {last_device_id}\nEnum: {last_enum}\nBefehl: {last_command}\nIdentitätsrolle: {last_identity_role}\nInterpretation: {last_interpretation}\nPositionsverfolgung: {last_position_tracking}\nZeit: {last_time}\n\nLetztes primäres Verfolgungstelegramm:\nGeräte-ID: {primary_last_device_id}\nEnum: {primary_last_enum}\nBefehl: {primary_last_command}\nInterpretation: {primary_last_interpretation}\nZeit: {primary_last_time}\n\nLetztes sekundäres Telegramm:\nGeräte-ID: {secondary_last_device_id}\nEnum: {secondary_last_enum}\nBefehl: {secondary_last_command}\nInterpretation: {secondary_last_interpretation}\nZeit: {secondary_last_time}\n\nLetzte Positionsaktualisierung:\nQuelle: {position_source}\nRichtung: {position_direction}\nVorherige Position: {position_previous}\nNeue Position: {position_new}\nStatus: {position_status}\nZeit: {position_time}\n\nAktuelle Positionsdiagnose:\nAktuell geschätzte Position: {current_position}\nLetzte manuelle Abgleichzeit: {last_manual_sync_time}\nZuverlässigkeit: {position_confidence}\nSeit Neustart bestätigt: {position_confirmed_since_restart}\n\nAktuelles Sendeziel:\nGeräte-ID: {command_device_id}\nEnum: {command_enum}\n\nKonfigurierte Statusidentitäten:\nPrimär: {primary_status_device_id}/{primary_status_enum}\nQuelle: {status_identity_source}\nSekundär:\n{secondary_status_identities}\n\nLetzter Kalibrierungslauf:\nAbgeschlossen: {last_calibration_time}\nAbbruchgrund: {calibration_end_reason}\nKandidatenidentitäten:\n{calibration_candidates}\nBeobachtete Telegramme:\n{calibration_frames}\n\nStick-Status:\nVerbunden: {stick_connected}\nModus: {stick_mode}\nBereit: {stick_ready}\nBusy-Zustand aktiv: {stick_busy}\n\n{result}\n\nAuf und Zu bewegen sich weiter, bis Stopp gedrückt wird oder eine Endposition erreicht ist.\n\nACK-Hinweis: t1/t0 bestätigt nur, dass sich der Sender des USB-Sticks ein-/ausgeschaltet hat. Der Empfang oder die Bewegung des Motors wird dadurch nicht bestätigt.",
           "menu_options": {
             "test_open": "Test: Öffnen",
             "test_close": "Test: Schließen",
@@ -158,7 +166,7 @@
         },
         "discover_status": {
           "title": "Status von Originalfernbedienung erkennen",
-          "description": "Ausgewählter Rollladen: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Rollladenkanal: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Motorkanal: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
           "submit": "Empfang starten"
         },
         "confirm_status_discovery": {
@@ -186,7 +194,7 @@
           "submit": "Zurück"
         },
         "edit": {
-          "title": "Rollladeneinstellungen bearbeiten",
+          "title": "Geräteeinstellungen bearbeiten",
           "description": "Das Ändern der Protokollidentitäten ändert nicht die eindeutige Entity-ID in Home Assistant. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie zusätzliche Identitäten als GERÄTE-ID/ENUM ein, eine pro Zeile oder durch Kommas getrennt. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
           "data": {
             "device_name": "Name",
@@ -203,12 +211,12 @@
         },
         "teach_motor": {
           "title": "Motor anlernen / USB-Sender aktivieren",
-          "description": "Ausgewählter Rollladen: {selected_blind}\nBefehlsidentität: {command_device_id}/{command_enum}\n\nVor dem Senden: Wählen Sie diesen Motor/Kanal an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Erst dann senden. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test durch. ACK-Bestätigungen des Sticks belegen nicht, dass der Motor gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motor-Programmiersequenz; er kann auch die Drehrichtung ändern.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehlsidentität: {command_device_id}/{command_enum}\n\nVor dem Senden: Wählen Sie diesen Motor/Kanal an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Erst dann senden. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test durch. ACK-Bestätigungen des Sticks belegen nicht, dass der Motor gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motor-Programmiersequenz; er kann auch die Drehrichtung ändern.",
           "submit": "Anlernbefehl senden und testen"
         },
         "send_raw_command": {
           "title": "Rohes Funktelegramm senden",
-          "description": "Ausgewählter Rollladen: {selected_blind}\nKonfigurierter Enum: {command_enum}\n\nGeben Sie genau 11 Zeichen ein: ss + zweistelliger Enum + Wiederholungsziffer + zweistelliger Befehl + 0000. Beispiel: ss109010000. Befehle sind 00 Stopp, 01 Auf/Öffnen, 02 Zu/Schließen, 40 Abschluss/Kopplung erlauben und 60 Anlernen/Richtung ändern. t1/t0 bestätigt nur den Sendezyklus des Sticks.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nKonfigurierter Enum: {command_enum}\n\nGeben Sie genau 11 Zeichen ein: ss + zweistelliger Enum + Wiederholungsziffer + zweistelliger Befehl + 0000. Beispiel: ss109010000. Befehle sind 00 Stopp, 01 Auf/Öffnen, 02 Zu/Schließen, 40 Abschluss/Kopplung erlauben und 60 Anlernen/Richtung ändern. t1/t0 bestätigt nur den Sendezyklus des Sticks.",
           "data": {
             "payload": "Rohes Funktelegramm"
           },
@@ -237,9 +245,9 @@
       "abort": {
         "pairing_timeout": "Kein Gerät hat innerhalb von 2 Minuten geantwortet. Bitte versuchen Sie es erneut.",
         "pairing_failed": "Kopplung fehlgeschlagen.",
-        "reconfigure_successful": "Kalibrierung erfolgreich abgeschlossen",
+        "reconfigure_successful": "Gerätekonfiguration erfolgreich aktualisiert",
         "command_test_successful": "Der Motorbefehlstest war erfolgreich.",
-        "device_not_found": "Der ausgewählte Rollladen konnte nicht gefunden werden. Bitte starten Sie diesen Schritt erneut."
+        "device_not_found": "Das ausgewählte Gerät konnte nicht gefunden werden. Bitte starten Sie diesen Schritt erneut."
       }
     }
   },
@@ -290,7 +298,7 @@
   },
   "services": {
     "test_command": {
-      "name": "Testbefehl für Rollladen",
+      "name": "Testbefehl für Gerät",
       "description": "Sendet Auf, Zu oder Stopp an einen Geräte-Enum, ohne einen Rollladen anzulegen."
     }
   }

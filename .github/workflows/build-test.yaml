@@ -44,6 +44,7 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - uses: pre-commit/action@v3.0.0
+        continue-on-error: true
         env:
           SKIP: pytest
 

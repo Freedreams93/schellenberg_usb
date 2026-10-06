@@ -43,6 +43,9 @@ from .device_registry_compat import (
     async_get_device_by_identifier_compat,
     async_reassign_device_subentry_compat,
 )
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +54,14 @@ _LOGGER = logging.getLogger(__name__)
 def _async_backfill_blind_ids(
     hass: HomeAssistant, entry: SchellenbergConfigEntry
 ) -> bool:
+    """Assign every blind subentry a stable, collision-free blind ID.
+
+    Needed for subentries created before the stable blind-ID migration
+    (or restored from an export that predates it), which have no
+    `CONF_BLIND_ID` of their own yet. Persists the assigned ID onto
+    the subentry so it survives this call. Returns whether any
+    subentry was actually changed.
+    """
     used_ids: set[str] = set()
     changed = False
     for subentry in list(entry.subentries.values()):
@@ -76,6 +87,12 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 def _validate_device_id(value: str) -> str:
+    """Normalize `value` to uppercase hex and reject anything else.
+
+    Used as a voluptuous validator for the `test_command` service's
+    device-ID field; raises `vol.Invalid` for anything that is not
+    exactly six hexadecimal characters.
+    """
     normalized = cv.string(value).strip().upper()
     if len(normalized) != 6 or any(
         character not in "0123456789ABCDEF" for character in normalized
@@ -85,6 +102,12 @@ def _validate_device_id(value: str) -> str:
 
 
 def _validate_device_enum(value: str) -> str:
+    """Normalize `value` to uppercase hex and reject anything else.
+
+    Used as a voluptuous validator for the `test_command` service's
+    enum field; raises `vol.Invalid` for anything that is not exactly
+    two hexadecimal characters.
+    """
     normalized = cv.string(value).strip().upper()
     if len(normalized) != 2 or any(
         character not in "0123456789ABCDEF" for character in normalized
@@ -104,9 +127,26 @@ TEST_COMMAND_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration-wide `test_command` service.
+
+    This runs once regardless of how many hub config entries exist;
+    per-hub setup (connecting to the stick, creating entities) happens
+    separately in `async_setup_entry` for each one.
+    """
     _LOGGER.info("Setting up Schellenberg USB integration")
 
     async def _handle_test_command(call: ServiceCall) -> None:
+        """Run the `test_command` service call against the right hub.
+
+        Resolves which loaded hub's API to use: the explicitly
+        requested `CONF_CONFIG_ENTRY_ID` if given, otherwise the
+        single loaded hub if there is exactly one - raising
+        `ServiceValidationError` to ask the caller to disambiguate
+        when neither applies. Also raises `ServiceValidationError` if
+        the stick rejects the write outright; a busy/offline stick
+        that still accepts the write and answers later is not treated
+        as a failure here.
+        """
         requested_entry_id = call.data.get(CONF_CONFIG_ENTRY_ID)
         loaded_entries: list[tuple[SchellenbergConfigEntry, SchellenbergUsbApi]] = []
         for candidate in hass.config_entries.async_entries(DOMAIN):
@@ -134,14 +174,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
             if api is None:
                 raise ServiceValidationError(
-                    f"No loaded Schellenberg USB entry {requested_entry_id}"
+                    _runtime_translation_text(
+                        hass,
+                        "service_entry_not_loaded",
+                        entry_id=requested_entry_id,
+                    )
                 )
         elif len(loaded_entries) == 1:
             api = loaded_entries[0][1]
         else:
             raise ServiceValidationError(
-                "Exactly one Schellenberg USB hub must be loaded, or config_entry_id "
-                "must be supplied"
+                _runtime_translation_text(hass, "service_need_single_entry")
             )
 
         requested_command = call.data[CONF_COMMAND]
@@ -179,7 +222,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 call.data[CONF_ENUM],
                 api.transmit_block_reason or "serial write failed",
             )
-            raise ServiceValidationError("The serial command could not be queued")
+            raise ServiceValidationError(
+                _runtime_translation_text(hass, "service_command_not_queued")
+            )
         _LOGGER.warning(
             "test_command service result command_requested=%s device_id=%s enum=%s "
             "result=written_awaiting_ack",
@@ -200,6 +245,22 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(
     hass: HomeAssistant, entry: SchellenbergConfigEntry
 ) -> bool:
+    """Set up one Schellenberg USB hub config entry.
+
+    Ignored for a non-hub entry (no `CONF_SERIAL_PORT`). Creates the
+    `SchellenbergUsbApi` and starts connecting to the stick as its own
+    background task rather than awaiting it here, so a slow or
+    failing serial port does not block setup. Ensures the hub's own
+    config subentry and device-registry device exist, creating or
+    reassigning them as needed, backfills stable blind IDs onto any
+    subentry that predates that migration, then forwards setup to the
+    cover/sensor/switch platforms. Finally wires an update listener
+    that reloads the whole entry - disconnecting and reconnecting the
+    stick - only when a subentry was actually added, removed, or had
+    a non-recalibration field change; see
+    `reload_ignored_subentry_data_keys` below for why pure calibration
+    updates are deliberately excluded from that comparison.
+    """
     if CONF_SERIAL_PORT not in entry.data:
         _LOGGER.warning(
             "Received async_setup_entry for non-hub entry %s, ignoring", entry.entry_id
@@ -249,7 +310,7 @@ async def async_setup_entry(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Schellenberg USB Stick",
             manufacturer="Schellenberg",
-            model="USB Stick",
+            model=_runtime_translation_text(hass, "device_model"),
         )
     elif not async_device_on_subentry_compat(
         hub_device, entry.entry_id, hub_subentry.subentry_id
@@ -304,6 +365,14 @@ async def async_setup_entry(
     def _subentry_reload_snapshot(
         current_entry: SchellenbergConfigEntry,
     ) -> dict[str, tuple[str, str, str | None, dict[str, Any]]]:
+        """Build a comparable snapshot of the entry's current subentries.
+
+        Used to detect whether a subentry was added, removed, or
+        meaningfully changed since the last comparison, deliberately
+        excluding `reload_ignored_subentry_data_keys` (see the comment
+        above this function) since those fields already propagate to
+        running entities on their own.
+        """
         return {
             subentry_id: (
                 subentry.subentry_type,
@@ -323,6 +392,14 @@ async def async_setup_entry(
     async def _on_entry_updated(
         hass_instance: HomeAssistant, updated_entry: SchellenbergConfigEntry
     ) -> None:
+        """Reload the entry if its subentries changed since last compared.
+
+        Registered as the config entry's update listener. Compares a
+        fresh `_subentry_reload_snapshot` against the one taken at the
+        last reload (or at setup) and, only on a real difference,
+        performs a full `async_reload` - disconnecting the serial port
+        and rebuilding every entity on this hub.
+        """
         nonlocal known_subentries
         current_subentries = _subentry_reload_snapshot(updated_entry)
         if current_subentries != known_subentries:
@@ -340,6 +417,12 @@ async def async_setup_entry(
 async def async_unload_entry(
     hass: HomeAssistant, entry: SchellenbergConfigEntry
 ) -> bool:
+    """Unload this hub's platforms and disconnect the USB stick.
+
+    Only disconnects the API if every platform unloaded successfully,
+    matching Home Assistant's convention that a failed unload leaves
+    the entry's runtime state untouched for a possible retry.
+    """
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
