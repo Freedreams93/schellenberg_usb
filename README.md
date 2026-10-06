@@ -102,27 +102,42 @@ such as `cover.extension_0_extension_0`.
 1. Go to **Settings > Devices & services**.
 2. Select **Add integration**, search for **Schellenberg USB**, and add it.
 3. Select the USB stick path. Prefer `/dev/serial/by-id/...` when offered.
-4. Open the Schellenberg USB integration and choose **Add blind**.
-5. Select **Pair and test**, the recommended setup method.
+4. Open the Schellenberg USB integration and choose **Add device**.
+5. Select **Add a Shutter or Shutters from a Remote to Schellenberg-USB
+   (recommended)**.
 6. Follow the on-screen instructions and put the correct motor or channel into
    learning mode using the original remote or motor manual.
 7. Start pairing. Home Assistant listens for pairing/status information and sends
    the teach sequence to the USB stick.
-8. Give the blind a friendly name, for example `Living room window`.
-9. Confirm whether the short movement test actually moved the blind.
-10. Run automatic calibration and save the blind.
+8. Give the device a friendly name, for example `Living room window`.
+9. Confirm whether the short movement test actually moved it. The test direction
+   is chosen automatically (closed drives it briefly open, open drives it briefly
+   closed), or defaults to open when the position isn't known yet.
+10. Run automatic calibration and save the device.
 
-If the blind does not move during the test, repeat the learning procedure. A
+If it does not move during the test, repeat the learning procedure. A
 successful USB stick ACK alone does not mean that the motor learned the stick.
+
+If that same remote channel also controls other shutters, you can add each of
+them right after this one finishes, without repeating steps 5-9 again - the
+integration offers this automatically once calibration completes.
 
 ### Other setup methods
 
-- **Pair and calibrate (legacy)** keeps the older guided pairing workflow. It is
-  still supported, but **Pair and test** is recommended because it verifies motor
-  movement before calibration.
-- **Add manually** is intended for advanced users who already know the command
-  identity, optional status identities, and travel times. You can still run teach,
-  test, discovery, and calibration actions afterward.
+Besides the recommended **Add a Shutter or Shutters from a Remote to
+Schellenberg-USB**, the menu offers:
+
+- **Pair a shutter and calibrate it** goes straight to calibration
+  with no movement test in between - use this only if you already know a
+  test is unnecessary. The test is normally worth keeping on the
+  recommended path above: it is what catches a motor that never actually
+  learned the stick, before calibration runs against a motor that isn't
+  listening.
+
+None of this is specific to roller-shutter blinds. The same pairing methods work
+for any Schellenberg RF receiver - electronic belt/strap winders, awning motors,
+and similar motorized devices included - which is why the menu and this guide
+both say "device" rather than "blind".
 
 ## Pairing and teach-in explained simply
 
@@ -228,6 +243,29 @@ Home Assistant estimates position using:
 There is no encoder or absolute physical position sensor in this integration. If
 the stick misses RF frames, or if the blind is moved outside Home Assistant without
 a recognized status frame, the estimate may drift.
+
+### Multiple remotes
+
+A Schellenberg motor can usually learn and answer to several remotes, or several
+remote channels, at once - that's a property of the motor's own hardware, not a
+limit of this integration. Home Assistant's own position tracking is narrower
+than that: it only recognizes the specific RF identities it has actually
+discovered and saved as the primary (and optional secondary) status identity,
+during calibration or **Discover status from original remote**.
+
+In practice:
+
+- Moving the blind with a remote or channel that was included when you ran
+  discovery/calibration keeps the estimated position in sync, the same as a
+  command sent from Home Assistant itself.
+- Moving it with a *different* remote or channel - one Home Assistant has never
+  seen a recognized frame from - still moves the blind normally, but Home
+  Assistant has no way to notice. The estimated position will drift until a
+  manual position sync or the next Home Assistant-initiated move corrects it.
+- If you regularly use more than one remote on the same motor, run **Discover
+  status from original remote** once per remote. A frame stream that doesn't
+  match the primary identity is kept as a secondary identity (visible in
+  [Diagnostics](#diagnostics)) instead of being mixed into position tracking.
 
 ## Manual position sync
 

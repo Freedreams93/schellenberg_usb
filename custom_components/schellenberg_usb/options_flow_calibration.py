@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import voluptuous as vol
 from homeassistant.config_entries import (
@@ -48,10 +48,25 @@ from .const import (
     EVENT_STOPPED,
     SIGNAL_CALIBRATION_COMPLETED,
     SIGNAL_DEVICE_EVENT,
+    SIGNAL_DEVICE_EVENT_CAPTURE,
     STATUS_IDENTITY_SOURCE_CALIBRATION,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
 )
 from .identities import normalize_status_identity
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
+from .runtime_translation_text import translate_phrase as _translate_phrase
+
+if TYPE_CHECKING:
+    # Import cycle guard: config_flow.py imports CalibrationFlowHandler from
+    # this module, so this back-reference is type-checking only, never
+    # executed at import time. Used solely to cast self.flow below for
+    # add_shutter_from_remote's repeat-pairing attributes, which live on the
+    # concrete subentry flow class, not on the generic ConfigSubentryFlow
+    # this handler is otherwise deliberately typed against (see the class
+    # docstring).
+    from .config_flow import SchellenbergPairingSubentryFlow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,13 +86,25 @@ class CalibrationFlowHandler:
     """
 
     def __init__(self, flow: ConfigSubentryFlow) -> None:
-        """Initialize the calibration flow handler."""
+        """Initialize the calibration run's timing and pending-data state.
+
+        `_selected_device` through `_close_time` track the in-progress
+        timed run itself (which device, when it started, the
+        start/stop dispatcher events being awaited, the measured
+        times). The `_pending_*` attributes mirror the owning pairing
+        flow's own pending blind data so `async_step_calibration_complete`
+        can build or update a subentry without reaching back into that
+        flow for it.
+        """
         self.flow = flow
         self._selected_device: dict[str, Any] | None = None
         self._calibration_start_time: float | None = None
         self._start_event: asyncio.Event | None = None
         self._stop_event: asyncio.Event | None = None
-        self._event_listener_unsub: Any | None = None
+        # A list because _wait_for_movement_start()/_wait_for_stop_event()
+        # each subscribe to two signals now (the device-id-specific one and
+        # the capture-wide fallback) and must unsubscribe both.
+        self._event_listener_unsubs: list[Any] = []
         self._open_time: float | None = None
         self._close_time: float | None = None
         self._create_subentry_after_calibration = False
@@ -164,16 +191,18 @@ class CalibrationFlowHandler:
 
     def _calibration_summary_placeholders(self) -> dict[str, str]:
         """Build a user-facing summary of measured times and received streams."""
+        hass = self.flow.hass
+        none_word = _runtime_translation_text(hass, "none_word")
         result = self._calibration_discovery_result or {}
         primary = result.get("primary")
         secondary = result.get("secondary", [])
         primary_text = (
             f"{primary['device_id']}/{primary['enum']}"
             if primary is not None
-            else "Not discovered"
+            else _runtime_translation_text(hass, "not_discovered")
         )
         primary_frames = (
-            ", ".join(primary.get("commands", [])) if primary is not None else "None"
+            ", ".join(primary.get("commands", [])) if primary is not None else none_word
         )
         secondary_text = (
             ", ".join(
@@ -181,21 +210,20 @@ class CalibrationFlowHandler:
                 f"({','.join(group.get('commands', []))})"
                 for group in secondary
             )
-            or "None"
+            or none_word
         )
         return {
             "primary_status_identity": primary_text,
             "primary_frames": primary_frames,
             "secondary_status_identities": secondary_text,
             "position_tracking": (
-                "Available from received status frames"
+                _runtime_translation_text(hass, "position_tracking_available")
                 if primary is not None
-                else (
-                    "Unavailable: HA commands can still estimate position, but "
-                    "remote/status tracking was not discovered"
-                )
+                else _runtime_translation_text(hass, "position_tracking_unavailable")
             ),
-            "calibration_end_reason": str(result.get("end_reason", "completed")),
+            "calibration_end_reason": _translate_phrase(
+                hass, str(result.get("end_reason", "completed"))
+            ),
             "observed_frame_count": str(len(result.get("frames", []))),
         }
 
@@ -413,7 +441,21 @@ class CalibrationFlowHandler:
     async def async_step_calibration_complete(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Display calibration complete with recorded times."""
+        """Confirm the recorded travel times, then persist or offer a repeat.
+
+        With no `user_input` yet, shows a confirmation form summarizing
+        the just-recorded open/close times. Once confirmed, notifies
+        the live cover entity of the new times and either finishes a
+        pairing flow - creating the new blind subentry, or letting it
+        offer one more "pair another blind" round instead, see
+        `_finish_pairing_or_offer_repeat` - or updates an already
+        existing subentry's recorded times for a plain recalibration.
+        A recalibration that re-discovers a *different* status identity
+        than the one already confirmed discards the new guess rather
+        than overwriting a working identity with what could just be RF
+        noise or a neighboring remote; see the comment further below
+        for why.
+        """
         if (
             self._selected_device is None
             or self._open_time is None
@@ -460,10 +502,19 @@ class CalibrationFlowHandler:
                     )
                 if calibration_record := self._calibration_record():
                     data[CONF_LAST_CALIBRATION] = calibration_record
-                return self.flow.async_create_entry(
-                    title=self._pending_device_name,
-                    data=data,
-                    unique_id=self._pending_device_id,
+                # Not a plain async_create_entry():
+                # add_shutter_from_remote's "pair another blind on this
+                # channel" option (see
+                # _finish_pairing_or_offer_repeat() on the flow) can offer
+                # one more round instead of creating the subentry here. The
+                # cast is needed because _finish_pairing_or_offer_repeat()
+                # lives on the concrete pairing flow, not on the generic
+                # ConfigSubentryFlow this handler is typed against (see the
+                # class docstring) - it is still always that concrete flow
+                # at runtime, only ever constructed by it.
+                pairing_flow = cast("SchellenbergPairingSubentryFlow", self.flow)
+                return pairing_flow._finish_pairing_or_offer_repeat(
+                    title=self._pending_device_name, data=data
                 )
 
             # Otherwise this is a recalibration of an already-existing blind
@@ -604,16 +655,48 @@ class CalibrationFlowHandler:
         # being removed for an incomplete one.
         @callback
         def handle_device_event(command: str) -> None:
-            """Handle device event."""
+            """Set `_start_event` once the awaited movement command arrives.
+
+            Scheduled via `call_soon_threadsafe` rather than called
+            directly, since this listener may run off the event loop
+            thread - see the comment above this method for why.
+            """
             if command == event_type and self._start_event:
                 self.flow.hass.loop.call_soon_threadsafe(self._start_event.set)
 
-        # Subscribe to device events
-        self._event_listener_unsub = async_dispatcher_connect(
-            self.flow.hass,
-            f"{SIGNAL_DEVICE_EVENT}_{device_id}",
-            handle_device_event,
-        )
+        @callback
+        def handle_capture_event(_captured_device_id: str, command: str) -> None:
+            """Fallback for a status identity that differs from `device_id`.
+
+            SIGNAL_DEVICE_EVENT above only fires for frames carrying
+            exactly `device_id` (the command/pairing identity). The
+            device actually being calibrated may broadcast its status
+            frames under a different identity (see
+            SIGNAL_DEVICE_EVENT_CAPTURE's comment in const.py) - without
+            this second listener, such a device would never satisfy the
+            wait below and calibration would always time out, even
+            though the motor really did move. `_captured_device_id` is
+            unused: a status-frame capture window is only ever open for
+            one calibration/discovery run on this hub at a time, so any
+            frame arriving here is assumed to belong to it.
+            """
+            if command == event_type and self._start_event:
+                self.flow.hass.loop.call_soon_threadsafe(self._start_event.set)
+
+        # Subscribe to device events: the exact device-id-specific signal,
+        # plus the capture-wide fallback for a differing status identity.
+        self._event_listener_unsubs = [
+            async_dispatcher_connect(
+                self.flow.hass,
+                f"{SIGNAL_DEVICE_EVENT}_{device_id}",
+                handle_device_event,
+            ),
+            async_dispatcher_connect(
+                self.flow.hass,
+                SIGNAL_DEVICE_EVENT_CAPTURE,
+                handle_capture_event,
+            ),
+        ]
 
         try:
             # Wait for movement start event with timeout
@@ -625,10 +708,10 @@ class CalibrationFlowHandler:
         else:
             return True
         finally:
-            # Clean up listener
-            if self._event_listener_unsub is not None:
-                self._event_listener_unsub()
-                self._event_listener_unsub = None
+            # Clean up both listeners
+            for unsub in self._event_listener_unsubs:
+                unsub()
+            self._event_listener_unsubs = []
             self._start_event = None
 
     async def _wait_for_stop_event(self) -> bool:
@@ -650,16 +733,39 @@ class CalibrationFlowHandler:
         # call_soon_threadsafe() rather than called directly.
         @callback
         def handle_device_event(command: str) -> None:
-            """Handle device event."""
+            """Set `_stop_event` once the awaited stop command arrives.
+
+            Scheduled via `call_soon_threadsafe` rather than called
+            directly, since this listener may run off the event loop
+            thread - see the comment above this method for why.
+            """
             if command == EVENT_STOPPED and self._stop_event:
                 self.flow.hass.loop.call_soon_threadsafe(self._stop_event.set)
 
-        # Subscribe to device events
-        self._event_listener_unsub = async_dispatcher_connect(
-            self.flow.hass,
-            f"{SIGNAL_DEVICE_EVENT}_{device_id}",
-            handle_device_event,
-        )
+        @callback
+        def handle_capture_event(_captured_device_id: str, command: str) -> None:
+            """Fallback for a status identity that differs from `device_id`.
+
+            See the matching comment in _wait_for_movement_start() above -
+            the same differing-identity gap applies to the stop event.
+            """
+            if command == EVENT_STOPPED and self._stop_event:
+                self.flow.hass.loop.call_soon_threadsafe(self._stop_event.set)
+
+        # Subscribe to device events: the exact device-id-specific signal,
+        # plus the capture-wide fallback for a differing status identity.
+        self._event_listener_unsubs = [
+            async_dispatcher_connect(
+                self.flow.hass,
+                f"{SIGNAL_DEVICE_EVENT}_{device_id}",
+                handle_device_event,
+            ),
+            async_dispatcher_connect(
+                self.flow.hass,
+                SIGNAL_DEVICE_EVENT_CAPTURE,
+                handle_capture_event,
+            ),
+        ]
 
         try:
             # Wait for stop event with timeout
@@ -669,10 +775,10 @@ class CalibrationFlowHandler:
         else:
             return True
         finally:
-            # Clean up listener
-            if self._event_listener_unsub is not None:
-                self._event_listener_unsub()
-                self._event_listener_unsub = None
+            # Clean up both listeners
+            for unsub in self._event_listener_unsubs:
+                unsub()
+            self._event_listener_unsubs = []
             self._stop_event = None
 
     async def _notify_calibration_completed(

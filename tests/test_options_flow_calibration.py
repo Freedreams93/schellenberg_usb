@@ -98,6 +98,7 @@ from custom_components.schellenberg_usb.const import (
     EVENT_STOPPED,
     SIGNAL_CALIBRATION_COMPLETED,
     SIGNAL_DEVICE_EVENT,
+    SIGNAL_DEVICE_EVENT_CAPTURE,
     STATUS_IDENTITY_SOURCE_CALIBRATION,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
@@ -283,6 +284,73 @@ async def test_full_open_and_close_legs_reach_the_summary_with_measured_times(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "calibration_complete"
     # Both times are real (small but non-zero) durations, floored at 0.1s.
+    assert result["description_placeholders"] is not None
+    assert float(result["description_placeholders"]["open_time"]) >= 0.1
+    assert float(result["description_placeholders"]["close_time"]) >= 0.1
+    # _calibration_summary_placeholders() fills these via the translated
+    # runtime text helpers; a translation lookup failure would raise rather
+    # than return an empty value, but assert they are actually populated
+    # rather than only checking that this step was reached at all.
+    assert result["description_placeholders"]["primary_status_identity"]
+    assert result["description_placeholders"]["position_tracking"]
+    assert result["description_placeholders"]["calibration_end_reason"]
+
+
+async def test_differing_status_identity_still_completes_via_capture_signal(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A motor whose status frames carry a different id than DEVICE_ID.
+
+    Regression test for the real root cause behind "no RF confirmation
+    during calibration": _wait_for_movement_start()/_wait_for_stop_event()
+    used to listen only on SIGNAL_DEVICE_EVENT_{DEVICE_ID} - the
+    command/pairing identity learned during pairing. A physical device
+    whose status (receive) identity differs from that command identity -
+    a protocol-documented possibility, see README.md's "Advanced protocol
+    notes" - then never satisfied that wait, so calibration always timed
+    out even though the motor genuinely moved. Every signal below is sent
+    only on the capture-wide SIGNAL_DEVICE_EVENT_CAPTURE channel, tagged
+    with a *different* device id ("FEDCBA") than the one being
+    calibrated (DEVICE_ID) - exactly what api.py's _handle_message() would
+    broadcast for such a device - and calibration must still reach
+    calibration_complete rather than time out.
+    """
+    entry, blind = _build_hub_with_blind(hass, connected_api)
+    result = await _start_calibrate_flow(hass, entry, blind)
+    wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    assert result["step_id"] == "calibration_open_instruction"
+
+    task = asyncio.ensure_future(
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
+    )
+    await wait_for_registration()  # _wait_for_movement_start is now listening
+    async_dispatcher_send(
+        hass, SIGNAL_DEVICE_EVENT_CAPTURE, "FEDCBA", EVENT_STARTED_MOVING_UP
+    )
+    await wait_for_registration()  # _wait_for_stop_event is now listening
+    async_dispatcher_send(hass, SIGNAL_DEVICE_EVENT_CAPTURE, "FEDCBA", EVENT_STOPPED)
+    result = await task
+    assert result["step_id"] == "calibration_close_instruction"
+
+    task = asyncio.ensure_future(
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
+    )
+    await wait_for_registration()  # _wait_for_movement_start is now listening
+    async_dispatcher_send(
+        hass, SIGNAL_DEVICE_EVENT_CAPTURE, "FEDCBA", EVENT_STARTED_MOVING_DOWN
+    )
+    await wait_for_registration()  # _wait_for_stop_event is now listening
+    async_dispatcher_send(hass, SIGNAL_DEVICE_EVENT_CAPTURE, "FEDCBA", EVENT_STOPPED)
+    result = await task
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_complete"
     assert result["description_placeholders"] is not None
     assert float(result["description_placeholders"]["open_time"]) >= 0.1
     assert float(result["description_placeholders"]["close_time"]) >= 0.1
