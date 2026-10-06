@@ -4,8 +4,8 @@ These tests exercise the integration's core logic (protocol handling, the
 transmit lock/retry/priority-stop bypass, device-registry compatibility
 helpers, and the cover entity's position/stop logic) without opening a real
 serial port: SchellenbergUsbApi is wired to a `_FakeTransport` instead of a
-real `serial_asyncio_fast` connection, which is what `connect()` would
-otherwise require a live USB stick for.
+real `serialx` connection, which is what `connect()` would otherwise require
+a live USB stick for.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def make_connected_api(
 ) -> SchellenbergUsbApi:
     """Build a SchellenbergUsbApi already wired to a ready FakeTransport.
 
-    Bypasses connect()/serial_asyncio_fast entirely by setting the private
+    Bypasses connect()/serialx entirely by setting the private
     connection-state attributes directly, exactly as a real connect() would
     have left them after a successful handshake (connected, in listening
     mode, transport ready to accept writes).

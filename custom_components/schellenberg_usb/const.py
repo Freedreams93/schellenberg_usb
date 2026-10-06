@@ -106,6 +106,18 @@ CMD_TRANSMIT = "ss"  # Schellenberg transmit prefix for device commands
 
 # Dispatcher signals
 SIGNAL_DEVICE_EVENT = f"{DOMAIN}_device_event"
+# Broadcast for every incoming "ss" frame while a status-frame capture
+# window is open (calibration, remote-status discovery, teach_motor),
+# regardless of which device_id the frame itself carries. The capture
+# window exists precisely because the device being calibrated/taught may
+# not yet have a confirmed status identity, and that status identity can
+# differ from the command/pairing identity learned during pairing (see
+# README.md's "Advanced protocol notes"). SIGNAL_DEVICE_EVENT above is
+# keyed to one specific device_id and therefore never fires for such a
+# device; this capture-wide signal is the fallback that lets
+# options_flow_calibration.py's movement-wait listeners still see the
+# device's real status frames during that single active capture window.
+SIGNAL_DEVICE_EVENT_CAPTURE = f"{DOMAIN}_device_event_capture"
 SIGNAL_DEVICE_PAIRED = f"{DOMAIN}_device_paired"
 SIGNAL_PAIRING_STARTED = f"{DOMAIN}_pairing_started"
 SIGNAL_PAIRING_TIMEOUT = f"{DOMAIN}_pairing_timeout"

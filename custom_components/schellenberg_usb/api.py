@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-import serial
-import serial_asyncio_fast
+import serialx
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
@@ -50,6 +49,7 @@ from .const import (
     PAIRING_DEVICE_ENUM_START,
     PAIRING_TIMEOUT,
     SIGNAL_DEVICE_EVENT,
+    SIGNAL_DEVICE_EVENT_CAPTURE,
     SIGNAL_MANUAL_POSITION_SYNC,
     SIGNAL_STICK_STATUS_UPDATED,
     STATUS_DISCOVERY_TIMEOUT,
@@ -89,8 +89,8 @@ def check_serial_port(port: str) -> None:
     the event loop. Shared by config_flow.py and options_flow.py so the
     sanity-check logic only needs to be maintained in one place.
     """
-    serial_conn = serial.Serial(port)
-    serial_conn.close()
+    with serialx.serial_for_url(port):
+        pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +128,14 @@ class SchellenbergUsbApi:
     """Manages all communication with the Schellenberg USB stick."""
 
     def __init__(self, hass: HomeAssistant, port: str) -> None:
-        """Initialize the Schellenberg USB API."""
+        """Initialize the API client in its disconnected, idle state.
+
+        Sets up the transport/connection state, the registered-entity
+        and last-received-frame tracking used for diagnostics and
+        position updates, and the pairing/retry/busy state machines -
+        each described in detail by the comment on its own attribute
+        group below.
+        """
         self.hass = hass
         self.port = port
         self._transport: asyncio.Transport | None = None
@@ -231,10 +238,10 @@ class SchellenbergUsbApi:
         self._protocol = None
         _LOGGER.info("Connecting to Schellenberg USB stick at %s", self.port)
         try:
-            transport, protocol = await serial_asyncio_fast.create_serial_connection(
+            transport, protocol = await serialx.create_serial_connection(
                 self.hass.loop,
                 lambda: SchellenbergProtocol(self._handle_message, self),
-                self.port,
+                url=self.port,
                 # 115200 8N1 is the stick's documented/standard rate. This was
                 # previously 112500 (not a standard baud rate - likely a typo
                 # for 115200). The stick's USB-CDC interface appears to
@@ -283,7 +290,7 @@ class SchellenbergUsbApi:
             else:
                 _LOGGER.warning("Failed to retrieve hub device ID")
             return True
-        except (serial.SerialException, OSError) as err:
+        except (OSError, TimeoutError, serialx.SerialException) as err:
             _LOGGER.error(
                 "Failed to connect to %s: %s. Retrying in %.0f seconds",
                 self.port,
@@ -344,7 +351,22 @@ class SchellenbergUsbApi:
 
     @callback
     def _handle_message(self, message: str) -> None:
-        """Handle incoming messages from the protocol."""
+        """Parse and dispatch one line of text received from the stick.
+
+        This is the protocol's single entry point for everything the
+        stick sends back, so it branches purely on the message's
+        prefix/shape: a `RFTU_` device-verification reply (records
+        firmware version and boot mode, resolves `_verify_future`);
+        `t1`/`t0` transmitter start/complete ACKs (drive the retry
+        latch and `_transmitter_idle`); a `tE` busy reply (schedules a
+        retry, or gives up and sets `_busy_latched` once
+        `TRANSMIT_MAX_RETRIES` is exceeded); a `sr` device-ID-query
+        reply; a `sl` pairing/list reply; and a `ss` status frame from
+        a motor, which is recorded for diagnostics/calibration and
+        fanned out as dispatcher signals to any matching cover entity.
+        See the comments on each branch below for the wire format and
+        the reasoning behind its edge cases.
+        """
         _LOGGER.debug("Received raw message: %s", message)
 
         # Handle device verification response (format: RFTU_V20 F:20180510_DFBD B:1)
@@ -421,6 +443,16 @@ class SchellenbergUsbApi:
                     self._pending_retry_command,
                 )
                 self._pending_retry_command = None
+                # A clean ACK cycle completed: the source that triggered it
+                # is done, so later unrelated t1/t0 traffic must not keep
+                # being logged (or not logged) under a stale source - and a
+                # stick that was previously latched busy has now plainly
+                # recovered on its own, so stop showing a stuck-state in
+                # diagnostics that no longer reflects reality. A stick that
+                # is genuinely still stuck will set busy_latched again on
+                # its own next failed attempt.
+                self._last_transmit_source = "internal"
+                self._busy_latched = False
             return
 
         if message == "tE":
@@ -679,6 +711,23 @@ class SchellenbergUsbApi:
                         self.hass,
                         f"{SIGNAL_DEVICE_EVENT}_{normalized_device_id}_"
                         f"{normalized_device_enum}",
+                        normalized_command,
+                    )
+                # Also broadcast on the capture-wide signal while a status-
+                # frame capture window is open, independent of
+                # normalized_device_id: the ID-only signal above only
+                # reaches a calibration/teach flow whose selected device's
+                # command/pairing identity happens to equal the identity
+                # this frame itself carries. Those two can genuinely differ
+                # for one physical device (see SIGNAL_DEVICE_EVENT_CAPTURE's
+                # own comment in const.py), in which case the signal above
+                # would never fire during that flow's calibration wait -
+                # this is the fallback that lets it still see the frame.
+                if self._status_discovery_frames is not None:
+                    async_dispatcher_send(
+                        self.hass,
+                        SIGNAL_DEVICE_EVENT_CAPTURE,
+                        normalized_device_id,
                         normalized_command,
                     )
             except (IndexError, ValueError) as err:
@@ -1610,17 +1659,24 @@ class SchellenbergUsbApi:
             self._schedule_reconnect()
 
     def _transmit_capability_block_reason(self) -> str | None:
-        """Return the exact reason RF transmission is currently unavailable."""
+        """Return why RF transmission is currently unavailable, as a stable code.
+
+        Returns a short, machine-stable code (e.g. "disconnected",
+        "wrong_mode:initial") instead of a ready-made English sentence, so
+        every caller can show a properly translated message via
+        runtime_translation_text.translate_block_reason() rather than leaking
+        hardcoded English into a non-English Home Assistant UI.
+        """
         if not self._is_connected:
-            return "serial stick is disconnected"
+            return "disconnected"
         if self._transport is None:
-            return "serial transport is unavailable"
+            return "transport_unavailable"
         if self._transport.is_closing():
-            return "serial transport is closing"
+            return "transport_closing"
         if self._pairing_active:
-            return "pairing is active"
+            return "pairing_active"
         if self._device_mode != "listening":
-            return f"stick mode is {self._device_mode or 'unknown'}, expected listening"
+            return f"wrong_mode:{self._device_mode or 'unknown'}"
         return None
 
     def _is_transmit_capable(self) -> bool:
@@ -1658,11 +1714,13 @@ class SchellenbergUsbApi:
 
         Set when a command's busy (tE) retries are exhausted, or when a
         sent command's transmitter-idle (t0) ACK never arrives within the
-        wait timeout. Unlike a single pending command (see
-        transmit_block_reason), this does not clear itself on the next
-        ACK - it stays set until the next connect/disconnect/reconnect,
-        so a genuinely stuck stick is surfaced rather than silently
-        retried forever.
+        wait timeout. Self-heals on the next clean transmit cycle (a t0
+        ACK with nothing ambiguous pending), as well as on connect/
+        disconnect/reconnect, so a stick that recovered on its own is not
+        left showing a stale stuck-state in diagnostics forever. A stick
+        that is genuinely still stuck sets this again on its own next
+        failed attempt - it is diagnostic-only and never blocks a new
+        command from being attempted.
         """
         return self._busy_latched
 
@@ -1673,13 +1731,19 @@ class SchellenbergUsbApi:
 
     @property
     def transmit_block_reason(self) -> str | None:
-        """Return why a new diagnostic command cannot be sent immediately."""
+        """Return why a new diagnostic command cannot be sent, as a stable code.
+
+        Returns a short, machine-stable code instead of a ready-made
+        English sentence - see _transmit_capability_block_reason(). Every
+        caller shows a translated message via
+        runtime_translation_text.translate_block_reason(hass, reason).
+        """
         if reason := self._transmit_capability_block_reason():
             return reason
         if self._busy_latched:
-            return "stick reported busy repeatedly and needs a reset"
+            return "busy_latched"
         if self._pending_retry_command is not None:
-            return f"transmit is pending for payload {self._pending_retry_command}"
+            return f"pending_retry:{self._pending_retry_command}"
         return None
 
     @property

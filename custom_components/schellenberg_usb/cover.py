@@ -61,6 +61,10 @@ from .device_registry_compat import (
     async_reassign_device_subentry_compat,
 )
 from .identities import normalize_status_identities, normalize_status_identity
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
+from .runtime_translation_text import translate_block_reason as _translate_block_reason
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +74,18 @@ async def async_setup_entry(
     entry: SchellenbergConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
+    """Set up cover entities from the hub's saved blind subentries.
+
+    Does nothing for a non-hub config entry (no `CONF_SERIAL_PORT`) or a
+    hub with no blind subentries yet. For each saved blind subentry,
+    resolves the stable device ID - falling back to the legacy
+    device/enum fields for blinds configured before the stable-ID
+    migration - and migrates a pre-existing entity registry entry onto
+    that stable unique ID if one is found under an older identifier.
+    Creates the device registry device on first load, or reassigns it
+    if it was somehow left on the wrong subentry, then registers the
+    device with the API and adds the `SchellenbergCover` entity itself.
+    """
     try:
         _LOGGER.info("Cover platform async_setup_entry called for: %s", entry.entry_id)
         _LOGGER.debug("Entry data: %s", entry.data)
@@ -222,7 +238,7 @@ async def async_setup_entry(
                 primary_status_text = (
                     f"{status_device_id}/{status_enum}"
                     if status_device_id
-                    else "unknown"
+                    else _runtime_translation_text(hass, "unknown_label")
                 )
                 device = device_registry.async_get_or_create(
                     config_entry_id=entry.entry_id,
@@ -230,10 +246,13 @@ async def async_setup_entry(
                     identifiers={(DOMAIN, stable_device_id)},
                     name=device_name,
                     manufacturer="Schellenberg",
-                    model=(
-                        f"USB Stick Motor (command {command_device_id}/{command_enum}, "
-                        f"primary status {primary_status_text}, "
-                        f"secondary statuses {len(secondary_status_identities)})"
+                    model=_runtime_translation_text(
+                        hass,
+                        "device_model_motor",
+                        command_device_id=command_device_id,
+                        command_enum=command_enum,
+                        primary_status_text=primary_status_text,
+                        secondary_count=len(secondary_status_identities),
                     ),
                 )
             elif not async_device_on_subentry_compat(
@@ -1022,8 +1041,17 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._move_start_position = None
             await self._async_cancel_position_tracking("open command failed")
             self.async_write_ha_state()
-            reason = self._api.transmit_block_reason or "the command was not sent"
-            raise HomeAssistantError(f"Failed to open {self._device_name}: {reason}")
+            reason = _translate_block_reason(
+                self.hass, self._api.transmit_block_reason
+            ) or _runtime_translation_text(self.hass, "command_not_sent")
+            raise HomeAssistantError(
+                _runtime_translation_text(
+                    self.hass,
+                    "cover_open_failed",
+                    name=self._device_name,
+                    reason=reason,
+                )
+            )
 
     async def async_close_cover(
         self, *, _preserve_target: bool = False, **kwargs: Any
@@ -1076,8 +1104,17 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._move_start_position = None
             await self._async_cancel_position_tracking("close command failed")
             self.async_write_ha_state()
-            reason = self._api.transmit_block_reason or "the command was not sent"
-            raise HomeAssistantError(f"Failed to close {self._device_name}: {reason}")
+            reason = _translate_block_reason(
+                self.hass, self._api.transmit_block_reason
+            ) or _runtime_translation_text(self.hass, "command_not_sent")
+            raise HomeAssistantError(
+                _runtime_translation_text(
+                    self.hass,
+                    "cover_close_failed",
+                    name=self._device_name,
+                    reason=reason,
+                )
+            )
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover immediately and freeze the estimated position.
@@ -1145,8 +1182,17 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             if previous_is_opening or previous_is_closing:
                 self._start_position_tracking()
             self.async_write_ha_state()
-            reason = self._api.transmit_block_reason or "the command was not sent"
-            raise HomeAssistantError(f"Failed to stop {self._device_name}: {reason}")
+            reason = _translate_block_reason(
+                self.hass, self._api.transmit_block_reason
+            ) or _runtime_translation_text(self.hass, "command_not_sent")
+            raise HomeAssistantError(
+                _runtime_translation_text(
+                    self.hass,
+                    "cover_stop_failed",
+                    name=self._device_name,
+                    reason=reason,
+                )
+            )
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position by chaining open/close."""
