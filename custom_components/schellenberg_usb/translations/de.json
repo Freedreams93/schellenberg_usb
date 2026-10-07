@@ -37,18 +37,18 @@
           "title": "Gerät hinzufügen",
           "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten. Geeignet für Rollladen, elektronische Gurtwickler, Markisenmotoren und andere Schellenberg-kompatible Motoren.",
           "menu_options": {
-            "pair_device": "Koppeln und kalibrieren",
+            "pair_device": "Gerät koppeln und kalibrieren",
             "add_shutter_from_remote": "Rollladen von Fernbedienung hinzufügen (empfohlen)"
           }
         },
         "pair_device": {
-          "title": "Koppeln und kalibrieren",
-          "description": "Koppelt das Gerät und springt danach direkt zur Kalibrierung, ohne zwischendurch einen Testbefehl zu senden. Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat.",
+          "title": "Gerät koppeln und kalibrieren",
+          "description": "Drücken Sie die Kopplungstaste bei ihren Schellenberg USB-Stick und danach drücken Sie innerhalb von 2 Minuten die Kopplungstaste oder die Kopplungstasten an Ihrem Gerät.",
           "submit": "Koppeln"
         },
         "add_shutter_from_remote": {
           "title": "Rollladen von Fernbedienung hinzufügen",
-          "description": "Diese Kopplungsmethode wird empfohlen für jeden kompatiblen Schellenbergfunkrollladen, egal ob es ein Funkrollladenmotor oder ein elektronischer Gurtwickler oder ein Markisenmotor ist. Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung: Wählen Sie den Motor/Kanal aus, drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat. Steuert derselbe Fernbedienungskanal noch weitere Rollläden, können Sie jeden davon direkt im Anschluss hier ebenfalls hinzufügen, ohne diese Schritte zu wiederholen.",
+          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Motor/Kanal aus. Drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat. Steuert derselbe Fernbedienungskanal noch weitere Rollläden, können Sie jeden davon direkt im Anschluss hier ebenfalls hinzufügen, ohne diese Schritte zu wiederholen.",
           "submit": "Koppeln"
         },
         "manual": {
@@ -211,7 +211,7 @@
         },
         "teach_motor": {
           "title": "Motor anlernen / USB-Sender aktivieren",
-          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehlsidentität: {command_device_id}/{command_enum}\n\nVor dem Senden: Wählen Sie diesen Motor/Kanal an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, drücken Sie dann Stopp und warten Sie, bis der Motor piept oder rattert. Erst dann senden. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test durch. ACK-Bestätigungen des Sticks belegen nicht, dass der Motor gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motor-Programmiersequenz; er kann auch die Drehrichtung ändern.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\\nBefehlsidentität: {command_device_id}/{command_enum}\\n\\nOptional: Wählen Sie vor dem Senden diesen Motor/Kanal an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test durch. ACK-Bestätigungen des Sticks belegen nicht, dass der Motor gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motor-Programmiersequenz; er kann auch die Drehrichtung ändern.",
           "submit": "Anlernbefehl senden und testen"
         },
         "send_raw_command": {

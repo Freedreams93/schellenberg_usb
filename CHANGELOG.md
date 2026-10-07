@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+* Fix calibration direction so it always measures physical Open first and physical Close second; `invert_direction` no longer reverses the calibration legs.
+
 ## v1.1.0
 
 * Add a clearly-named recommended pairing entry point, **Add a Shutter or Shutters from a Remote to Schellenberg-USB** (`add_shutter_from_remote`), and rename **Pair and calibrate** to **Learn from remote, skip test (legacy)** (unchanged behavior - still skips the movement test). The previous "Pair and test"/"Pair and calibrate" labels gave no hint of what either path actually did until you were already inside it. `add_shutter_from_remote` also now offers, right after a successful test, to pair another blind that shares the exact same remote channel - without repeating any of the pairing/naming/test steps for it. Each blind still gets its own generated unique ID rather than the shared RF identity itself, so two or more blinds sharing one remote channel never collide or overwrite each other's configuration
