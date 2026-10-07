@@ -103,38 +103,22 @@ such as `cover.extension_0_extension_0`.
 2. Select **Add integration**, search for **Schellenberg USB**, and add it.
 3. Select the USB stick path. Prefer `/dev/serial/by-id/...` when offered.
 4. Open the Schellenberg USB integration and choose **Add device**.
-5. Select **Add a Shutter or Shutters from a Remote to Schellenberg-USB
-   (recommended)**.
-6. Follow the on-screen instructions and put the correct motor or channel into
-   learning mode using the original remote or motor manual.
+5. Select **Pair a device and calibrate it**.
+6. Follow the on-screen instructions.
 7. Start pairing. Home Assistant listens for pairing/status information and sends
    the teach sequence to the USB stick.
-8. Give the device a friendly name, for example `Living room window`.
-9. Confirm whether the short movement test actually moved it. The test direction
-   is chosen automatically (closed drives it briefly open, open drives it briefly
-   closed), or defaults to open when the position isn't known yet.
-10. Run automatic calibration and save the device.
-
-If it does not move during the test, repeat the learning procedure. A
-successful USB stick ACK alone does not mean that the motor learned the stick.
-
-If that same remote channel also controls other shutters, you can add each of
-them right after this one finishes, without repeating steps 5-9 again - the
-integration offers this automatically once calibration completes.
+8. Give the device a friendly name, for example `Livingroomshutter`.
+9. Run the calibration and save the device.
 
 ### Other setup methods
 
-Besides the recommended **Add a Shutter or Shutters from a Remote to
-Schellenberg-USB**, the menu offers:
+Besides the recommended **Pair a device and calibrate it**, the menu offers:
 
-- **Pair a shutter and calibrate it** goes straight to calibration
-  with no movement test in between - use this only if you already know a
-  test is unnecessary. The test is normally worth keeping on the
-  recommended path above: it is what catches a motor that never actually
-  learned the stick, before calibration runs against a motor that isn't
-  listening.
+- **Add a shutter from a remote** can pair and then run a short movement test
+  before calibration. Its optional remote-programming step also does not require
+  waiting for an additional motor signal.
 
-None of this is specific to roller-shutter blinds. The same pairing methods work
+The same pairing method work
 for any Schellenberg RF receiver - electronic belt/strap winders, awning motors,
 and similar motorized devices included - which is why the menu and this guide
 both say "device" rather than "blind".
@@ -191,11 +175,16 @@ closed. Home Assistant uses those times to estimate its position:
 
 During calibration:
 
-1. Start with the blind in the position requested by the dialog.
-2. Follow the prompts to move it fully open.
-3. Let it finish moving.
-4. Follow the prompts to move it fully closed.
-5. Review and save the measured times.
+1. Start with the blind completely closed.
+2. Press the Open/Up control when the dialog asks you to start.
+3. The integration measures the physical open travel time until the blind stops.
+4. Follow the prompt to move the blind completely closed.
+5. Press the Close/Down control when asked; the integration measures the physical close travel time.
+6. Review and save the measured times.
+
+Calibration always measures physical Open first and physical Close second. The
+normal `invert_direction` setting does not reverse these two calibration legs.
+The optional pairing instructions do not require waiting for an additional motor signal.
 
 Calibration does not install or detect an absolute position sensor. It measures
 travel time and may also discover useful RF status messages.

@@ -42,13 +42,13 @@
           }
         },
         "pair_device": {
-          "title": "Emparejar y calibrar",
-          "description": "Empareja el dispositivo y pasa directamente a la calibración, sin ninguna prueba intermedia. Después de pulsar Emparejar, utilice un mando físico ya emparejado en un plazo de 2 minutos: seleccione el motor/canal, pulse su botón de programación hasta que el LED del canal parpadee, luego pulse Stop y espere a que el motor emita un pitido o traqueteo. Home Assistant detectará la trama y enviará el comando de aprendizaje 60 seguido del comando de finalización 40 en el mismo enum. Un ACK de la memoria USB no demuestra que el motor haya aprendido el transmisor.",
+          "title": "Emparejar dispositivo y calibrar",
+          "description": "Pulse el botón de emparejamiento en su memoria USB Schellenberg y, a continuación, en un plazo de 2 minutos, pulse el botón o los botones de emparejamiento de su dispositivo.",
           "submit": "Emparejar"
         },
         "add_shutter_from_remote": {
           "title": "Añadir persiana desde mando",
-          "description": "Este método de emparejamiento se recomienda para cualquier persiana de radiofrecuencia compatible con Schellenberg, ya sea un motor de persiana por radiofrecuencia, un enrollador de correa eléctrico o un motor de toldo. Después de pulsar Emparejar, utilice un mando físico ya emparejado en un plazo de 2 minutos: seleccione el motor/canal, pulse su botón de programación hasta que el LED del canal parpadee, luego pulse Stop y espere a que el motor emita un pitido o traqueteo. Home Assistant detectará la trama y enviará el comando de aprendizaje 60 seguido del comando de finalización 40 en el mismo enum. Un ACK de la memoria USB no demuestra que el motor haya aprendido el transmisor. A continuación se realiza una breve prueba; confirme si el motor se movió realmente. Si ese mismo canal del mando también controla otras persianas, puede añadir cada una de ellas aquí mismo, justo después de esta, sin repetir estos pasos.",
+          "description": "Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el motor/canal. Pulse su botón de programación hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el motor haya aprendido el transmisor. A continuación se realiza una breve prueba; confirme si el motor se movió realmente. Si el mismo canal del mando a distancia controla persianas adicionales, también puede añadir cada una de ellas justo después aquí, sin repetir estos pasos.",
           "submit": "Emparejar"
         },
         "manual": {
@@ -211,7 +211,7 @@
         },
         "teach_motor": {
           "title": "Programar motor / activar transmisor USB",
-          "description": "Dispositivo seleccionado: {selected_blind}\nIdentidad de comando: {command_device_id}/{command_enum}\n\nAntes de enviar: seleccione este motor/canal en un mando físico ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee, luego pulse Stop y espere a que el motor emita un pitido o traqueteo. Envíe solo entonces. Home Assistant envía el comando de aprendizaje 60, espera el ACK de la memoria, envía el comando de finalización 40 en el mismo enum y luego realiza una breve prueba de Abrir/Stop. Los ACK de la memoria no demuestran que el motor haya aprendido o se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar el sentido de giro.",
+          "description": "Dispositivo seleccionado: {selected_blind}\\nIdentidad de comando: {command_device_id}/{command_enum}\\n\\nOpcional: antes de enviar, seleccione este motor/canal en un mando físico ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee y luego pulse Stop. No es necesario esperar a que el motor emita un pitido o traqueteo. Home Assistant envía el comando de aprendizaje 60, espera el ACK de la memoria, envía el comando de finalización 40 en el mismo enum y luego realiza una breve prueba de Abrir/Stop. Los ACK de la memoria no demuestran que el motor haya aprendido o se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar el sentido de giro.",
           "submit": "Enviar comando de aprendizaje y probar"
         },
         "send_raw_command": {

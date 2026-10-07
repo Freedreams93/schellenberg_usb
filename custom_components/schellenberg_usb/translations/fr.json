@@ -42,13 +42,13 @@
           }
         },
         "pair_device": {
-          "title": "Appairer et calibrer",
-          "description": "Appaire l'appareil et passe directement à la calibration, sans test intermédiaire. Après avoir appuyé sur Appairer, utilisez une télécommande physique déjà appairée dans les 2 minutes : sélectionnez le moteur/canal, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop et attendez que le moteur émette un bip ou un cliquetis. Home Assistant détectera la trame et enverra la commande d'apprentissage 60 suivie de la commande de fin 40 sur la même énumération. Un ACK de la clé USB ne prouve pas que le moteur a appris l'émetteur.",
+          "title": "Appairer l’appareil et calibrer",
+          "description": "Appuyez sur le bouton d'appairage de votre clé USB Schellenberg, puis, dans les 2 minutes, appuyez sur le bouton ou les boutons d'appairage de votre appareil.",
           "submit": "Appairer"
         },
         "add_shutter_from_remote": {
           "title": "Ajouter volet depuis télécommande",
-          "description": "Cette méthode d'appairage est recommandée pour tout volet radiofréquence compatible Schellenberg, qu'il s'agisse d'un moteur de volet radiofréquence, d'un enrouleur à sangle électrique ou d'un moteur de store banne. Après avoir appuyé sur Appairer, utilisez une télécommande physique déjà appairée dans les 2 minutes : sélectionnez le moteur/canal, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop et attendez que le moteur émette un bip ou un cliquetis. Home Assistant détectera la trame et enverra la commande d'apprentissage 60 suivie de la commande de fin 40 sur la même énumération. Un ACK de la clé USB ne prouve pas que le moteur a appris l'émetteur. Un court test suit ensuite ; confirmez si le moteur a réellement bougé. Si ce même canal de la télécommande commande aussi d'autres volets, vous pouvez ajouter chacun d'eux ici, juste après celui-ci, sans répéter ces étapes.",
+          "description": "Après avoir appuyé sur Appairer, utilisez une télécommande d'origine déjà appairée dans les 2 minutes et sélectionnez le moteur/canal. Appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant détectera la trame et enverra la commande d'apprentissage 60, suivie de la commande de fin 40 sur la même valeur d'énumération. Un accusé de réception ACK de la clé USB ne prouve pas que le moteur a appris l'émetteur. Un court test suit ensuite ; confirmez si le moteur a réellement bougé. Si le même canal de télécommande commande d'autres volets, vous pouvez également ajouter chacun d'eux directement après ici, sans répéter ces étapes.",
           "submit": "Appairer"
         },
         "manual": {
@@ -211,7 +211,7 @@
         },
         "teach_motor": {
           "title": "Appairer le moteur / activer l’émetteur USB",
-          "description": "Appareil sélectionné : {selected_blind}\nIdentité de commande : {command_device_id}/{command_enum}\n\nAvant d'envoyer : sélectionnez ce moteur/canal sur une télécommande physique déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop et attendez que le moteur émette un bip ou un cliquetis. Envoyez seulement à ce moment-là. Home Assistant envoie la commande d'apprentissage 60, attend l'ACK de la clé, envoie la commande de fin 40 sur la même énumération, puis effectue un court test Ouvrir/Stop. Les ACK de la clé ne prouvent pas que le moteur a appris ou a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut aussi changer le sens de rotation.",
+          "description": "Appareil sélectionné : {selected_blind}\\nIdentité de commande : {command_device_id}/{command_enum}\\n\\nFacultatif : avant d'envoyer, sélectionnez ce moteur/canal sur une télécommande physique déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Il n'est pas nécessaire d'attendre un bip ou un cliquetis du moteur. Home Assistant envoie la commande d'apprentissage 60, attend l'ACK de la clé, envoie la commande de fin 40 sur la même énumération, puis effectue un court test Ouvrir/Stop. Les ACK de la clé ne prouvent pas que le moteur a appris ou a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut aussi changer le sens de rotation.",
           "submit": "Envoyer la commande d'apprentissage et tester"
         },
         "send_raw_command": {
