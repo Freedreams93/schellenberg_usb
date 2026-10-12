@@ -84,6 +84,7 @@ def make_flow(hass: HomeAssistant) -> Any:
     api.reset_and_reconnect = AsyncMock(return_value=True)
     api.manual_sync_position = MagicMock(return_value=True)
     api.teach_motor = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     api.send_raw_transmit = AsyncMock(return_value=True)
     api.async_discover_status_identities = AsyncMock(
         return_value={

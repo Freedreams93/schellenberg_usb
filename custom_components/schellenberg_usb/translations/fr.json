@@ -43,29 +43,13 @@
         },
         "pair_device": {
           "title": "Appairer l’appareil et calibrer",
-          "description": "Appuyez sur le bouton d'appairage de votre clé USB Schellenberg, puis, dans les 2 minutes, appuyez sur le bouton ou les boutons d'appairage de votre appareil.",
+          "description": "Appuyez sur le bouton ou les boutons d'appairage de votre appareil dans les 2 minutes.",
           "submit": "Appairer"
         },
         "add_shutter_from_remote": {
           "title": "Ajouter volet depuis télécommande",
           "description": "Après avoir appuyé sur Appairer, utilisez une télécommande d'origine déjà appairée dans les 2 minutes et sélectionnez le moteur/canal. Appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant détectera la trame et enverra la commande d'apprentissage 60, suivie de la commande de fin 40 sur la même valeur d'énumération. Un accusé de réception ACK de la clé USB ne prouve pas que le moteur a appris l'émetteur. Un court test suit ensuite ; confirmez si le moteur a réellement bougé. Si le même canal de télécommande commande d'autres volets, vous pouvez également ajouter chacun d'eux directement après ici, sans répéter ces étapes.",
           "submit": "Appairer"
-        },
-        "manual": {
-          "title": "Ajouter un appareil manuellement",
-          "description": "L'identité de commande est utilisée pour le contrôle sortant. L'identité de statut facultative est comparée aux messages de mouvement reçus ; laissez-la vide pour utiliser l'identité de commande. L'identité de statut principale pilote le suivi de position. Saisissez les identités supplémentaires sous la forme ID_APPAREIL/ÉNUMÉRATION, une par ligne ou séparées par des virgules. Les identités secondaires sont utilisées à des fins de diagnostic mais ne modifient pas la position. Laissez les deux champs de statut principal vides s'ils sont inconnus ; l'identité de transmission ne sera pas utilisée comme statut sauf si elle a été réellement observée ou si vous la saisissez manuellement.",
-          "data": {
-            "device_name": "Nom",
-            "device_id": "ID de l'appareil",
-            "device_enum": "Énumération",
-            "open_time_seconds": "Durée d'ouverture",
-            "close_time_seconds": "Durée de fermeture",
-            "status_device_id": "ID d’état principale (facultatif)",
-            "status_enum": "Énumération d’état principale (facultatif)",
-            "invert_direction": "Inverser le sens d'ouverture/fermeture",
-            "secondary_status_identities": "Identités d’état supplémentaires (facultatif)"
-          },
-          "submit": "Ajouter"
         },
         "name_device": {
           "title": "Nommer votre appareil",
@@ -75,17 +59,20 @@
           }
         },
         "calibration_close": {
-          "title": "Étape 1 : Fermer le volet",
-          "description": "Tout d'abord, assurez-vous que {device_name} est complètement fermé (tout en bas). Appuyez sur 'Suivant' lorsque vous êtes prêt.",
+          "title": "Avant de commencer",
+          "description": "Pour mesurer {device_name} avec précision, Home Assistant doit savoir quelle direction tester en premier.",
+          "data": {
+            "initial_state": "Quel est l'état actuel du volet ?"
+          },
           "submit": "Suivant"
         },
         "calibration_open_instruction": {
-          "title": "Étape 2 : Ouvrir le volet",
+          "title": "Ouvrir le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour ouvrir {device_name}. Appuyez sur Démarrer **puis** appuyez sur le bouton d'ouverture de la commande pour commencer la mesure. Pas besoin de vous précipiter, le chronomètre ne démarre que lorsque nous recevons un message de montée du volet.",
           "submit": "Démarrer"
         },
         "calibration_close_instruction": {
-          "title": "Étape 3 : Fermer le volet",
+          "title": "Fermer le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour fermer {device_name}. Appuyez sur Démarrer **puis** appuyez sur le bouton de fermeture de la commande pour commencer la mesure. Pas besoin de vous précipiter, le chronomètre ne démarre que lorsque nous recevons un message de descente du volet.",
           "submit": "Démarrer"
         },
@@ -102,16 +89,12 @@
             "finish_pairing": "Terminer"
           }
         },
-        "manual_next": {
-          "title": "Appareil manuel prêt",
-          "menu_options": {
-            "test_motor": "Tester la commande du moteur",
-            "save_manual": "Enregistrer sans tester"
-          }
-        },
         "test_motor": {
           "title": "Tester la commande du moteur",
-          "description": "En appuyant sur Tester, le volet se déplace brièvement dans une direction puis s'arrête automatiquement. Home Assistant choisit la direction lui-même : s'il était fermé, il ouvre brièvement ; s'il était ouvert, il ferme brièvement ; si la position n'est pas encore connue, il ouvre. Cela concerne l'appareil {device_id}/{device_enum}. Observez le moteur pendant ce temps.",
+          "description": "Choisissez une direction, puis appuyez sur Tester : le volet se déplacera brièvement dans cette direction avant de s'arrêter automatiquement. Cela concerne l'appareil {device_id}/{device_enum}. Observez le moteur pendant ce temps.{retry_notice}",
+          "data": {
+            "test_direction": "Quelle direction faut-il tester ?"
+          },
           "submit": "Tester"
         },
         "did_motor_move": {
@@ -211,7 +194,7 @@
         },
         "teach_motor": {
           "title": "Appairer le moteur / activer l’émetteur USB",
-          "description": "Appareil sélectionné : {selected_blind}\\nIdentité de commande : {command_device_id}/{command_enum}\\n\\nFacultatif : avant d'envoyer, sélectionnez ce moteur/canal sur une télécommande physique déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Il n'est pas nécessaire d'attendre un bip ou un cliquetis du moteur. Home Assistant envoie la commande d'apprentissage 60, attend l'ACK de la clé, envoie la commande de fin 40 sur la même énumération, puis effectue un court test Ouvrir/Stop. Les ACK de la clé ne prouvent pas que le moteur a appris ou a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut aussi changer le sens de rotation.",
+          "description": "Appareil sélectionné : {selected_blind}\\nIdentité de commande : {command_device_id}/{command_enum}\\n\\nFacultatif : avant d'envoyer, sélectionnez ce moteur/canal sur une télécommande physique déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant envoie la commande d'apprentissage 60, attend l'ACK de la clé, envoie la commande de fin 40 sur la même énumération, puis effectue un court test Ouvrir/Stop. Les ACK de la clé ne prouvent pas que le moteur a appris ou a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut aussi changer le sens de rotation.",
           "submit": "Envoyer la commande d'apprentissage et tester"
         },
         "send_raw_command": {
@@ -265,6 +248,20 @@
     "error": {
       "cannot_connect": "Échec de la connexion au port série",
       "unknown": "Une erreur inattendue s'est produite"
+    }
+  },
+  "selector": {
+    "initial_state": {
+      "options": {
+        "open": "Le volet est actuellement complètement ouvert",
+        "closed": "Le volet est actuellement complètement fermé"
+      }
+    },
+    "test_direction": {
+      "options": {
+        "open": "Ouvrir",
+        "close": "Fermer"
+      }
     }
   },
   "entity": {

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from homeassistant.const import Platform
+
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
@@ -23,8 +25,11 @@ DOMAIN = "schellenberg_usb"
 # pins an older Python.
 type SchellenbergConfigEntry = ConfigEntry[SchellenbergUsbApi]
 
-# Platform for the cover entities
-PLATFORMS = ["cover", "sensor", "switch"]
+# Platforms this hub forwards entity setup to. Platform is a StrEnum, so
+# each member still compares/hashes equal to its plain string value
+# ("cover", "sensor", "switch") for any existing code or test that checks
+# membership that way.
+PLATFORMS = [Platform.COVER, Platform.SENSOR, Platform.SWITCH]
 
 # Subentry types
 SUBENTRY_TYPE_HUB = "hub"
@@ -67,11 +72,7 @@ CMD_STOP = "00"  # 0x00 - Stop
 CMD_UP = "01"  # 0x01 - Up
 CMD_DOWN = "02"  # 0x02 - Down
 CMD_ALLOW_PAIRING = "40"  # 0x40 - Allow Pairing (make device listen to new remote)
-CMD_MANUAL_UP = "41"  # 0x41 - Manual Up (as long as button held)
-CMD_MANUAL_DOWN = "42"  # 0x42 - Manual Down (as long as button held)
 CMD_PAIR = "60"  # 0x60 - Pair with device / Change rotation direction
-CMD_SET_UPPER_ENDPOINT = "61"  # 0x61 - Set upper endpoint
-CMD_SET_LOWER_ENDPOINT = "62"  # 0x62 - Set lower endpoint
 
 # Motor events from stick (same as some commands)
 EVENT_STARTED_MOVING_UP = "01"
@@ -80,24 +81,10 @@ EVENT_STOPPED = "00"
 
 # USB Stick system commands (prefixed with !)
 CMD_VERIFY = "!?"  # Get version and current mode
-CMD_ENTER_BOOTLOADER = "!B"  # Enter B:0 bootloader mode
-CMD_ENTER_INITIAL = "!G"  # Enter B:1 initial mode
-CMD_REBOOT = "!R"  # Reboot device (only in B:0)
-CMD_ECHO_ON = "!E1"  # Enable local echo
-CMD_ECHO_OFF = "!E0"  # Disable local echo
 
 # USB Stick lowercase commands (for various functions)
 CMD_LED_ON = "so+"  # Turn LED on
 CMD_LED_OFF = "so-"  # Turn LED off
-CMD_LED_BLINK_1 = "so1"  # Blink LED 1 time
-CMD_LED_BLINK_2 = "so2"  # Blink LED 2 times
-CMD_LED_BLINK_3 = "so3"  # Blink LED 3 times
-CMD_LED_BLINK_4 = "so4"  # Blink LED 4 times
-CMD_LED_BLINK_5 = "so5"  # Blink LED 5 times
-CMD_LED_BLINK_6 = "so6"  # Blink LED 6 times
-CMD_LED_BLINK_7 = "so7"  # Blink LED 7 times
-CMD_LED_BLINK_8 = "so8"  # Blink LED 8 times
-CMD_LED_BLINK_9 = "so9"  # Blink LED 9 times
 CMD_GET_DEVICE_ID = "sr"  # Get device ID
 CMD_GET_PARAM_P = "sp"  # Get parameters P
 
@@ -130,6 +117,21 @@ SIGNAL_MANUAL_POSITION_SYNC = f"{DOMAIN}_manual_position_sync"
 SERVICE_TEST_COMMAND = "test_command"
 TEST_COMMAND_DELAY = 0.75
 
+# Measured on real hardware (t1-to-t0 across the stick's own transmit cycle -
+# see the pairing-test fix's own comments in config_flow.py for the same
+# figure): one open/close/stop frame consistently takes roughly 1.1-1.2s to
+# transmit end to end. cover.py's set_cover_position tracking loop fires its
+# follow-up stop in software once the elapsed-time estimate reaches the
+# target, but the blind keeps moving under the already-issued open/close
+# command for about this long before that stop is actually transmitted and
+# acted on - uncompensated, that made any target within roughly this
+# fraction of a blind's own travel time of either end stop unreachable: the
+# earliest a stop could physically land was already past it. Kept as one
+# named constant, rather than inline in cover.py, so both call sites stay in
+# sync and a real-hardware test on a different stick/motor combination only
+# needs to change one number.
+STOP_COMMAND_LATENCY_SECONDS = 1.2
+
 # Device verification
 VERIFY_TIMEOUT = 5  # seconds to wait for verification response
 # Expected response format: RFTU_V20 F:20180510_DFBD B:1
@@ -150,6 +152,15 @@ DEFAULT_TRAVEL_TIME_SECONDS = 60.0
 # / CONF_CLOSE_TIME_SECONDS above for the corresponding form field keys).
 CONF_OPEN_TIME = "open_time"  # Time it takes to open (up) in seconds
 CONF_CLOSE_TIME = "close_time"  # Time it takes to close (down) in seconds
+# The blind's actual physical position (0 closed / 100 open) once calibration
+# - which now lets the person choose whether open or close is driven first,
+# see options_flow_calibration.py's calibration_close step - has finished.
+# Only ever 0 or 100: calibration always ends at whichever end stop the
+# second/last leg drove to. Only present on a subentry created fresh from a
+# pair_device calibration; cover.py falls back to 0 when it is absent, which
+# covers every blind paired before this key existed and the hybrid
+# (add_shutter_from_remote) workflow, which never runs this calibration flow.
+CONF_INITIAL_POSITION = "initial_position"
 # Legacy top-level command-device-ID key from before CONF_COMMAND_DEVICE_ID
 # and the separate status identity existed. Despite living in this
 # "calibration constants" block (for historical reasons), it is read as a

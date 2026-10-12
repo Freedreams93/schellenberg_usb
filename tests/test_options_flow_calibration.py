@@ -216,7 +216,7 @@ async def _advance_through_open_leg(
 ) -> SubentryFlowResult:
     """From calibration_close's form, drive through the whole open leg."""
     result = await hass.config_entries.subentries.async_configure(
-        flow_id, user_input={}
+        flow_id, user_input={"initial_state": "closed"}
     )
     assert result["step_id"] == "calibration_open_instruction"
 
@@ -249,7 +249,7 @@ async def test_confirming_close_advances_to_the_open_instruction_form(
     result = await _start_calibrate_flow(hass, entry, blind)
 
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={}
+        result["flow_id"], user_input={"initial_state": "closed"}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -322,7 +322,7 @@ async def test_differing_status_identity_still_completes_via_capture_signal(
     wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
 
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={}
+        result["flow_id"], user_input={"initial_state": "closed"}
     )
     assert result["step_id"] == "calibration_open_instruction"
 
@@ -423,6 +423,129 @@ async def test_recalibrating_persists_new_times_and_notifies_the_live_entity(
     assert updated.data[CONF_CLOSE_TIME] >= 0.1
     assert len(signals) == 1
     assert signals[0][0] == DEVICE_ID  # entity_id fell back to the device id
+    # Choosing initial_state="closed" runs open-leg-first (see
+    # _advance_through_open_leg above), so the close leg ran last and the
+    # blind ended up closed - args are
+    # (entity_id, open_time, close_time, ending_position).
+    assert signals[0][3] == 0
+
+
+async def test_choosing_open_advances_to_the_close_instruction_form(
+    hass: HomeAssistant, connected_api: SchellenbergUsbApi
+) -> None:
+    """Choosing initial_state="open" measures the close leg first instead.
+
+    Mirrors test_confirming_close_advances_to_the_open_instruction_form
+    above, which covers the "closed" choice.
+    """
+    entry, blind = _build_hub_with_blind(hass, connected_api)
+    result = await _start_calibrate_flow(hass, entry, blind)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"initial_state": "open"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_close_instruction"
+
+
+async def _advance_through_close_leg(
+    hass: HomeAssistant,
+    flow_id: str,
+    wait_for_registration: Callable[[], Awaitable[None]],
+) -> SubentryFlowResult:
+    """From calibration_close's form, drive through the whole close leg first.
+
+    Mirrors _advance_through_open_leg above, but answers calibration_close
+    with initial_state="open", so the close leg (not the open leg) runs
+    first - and sends the DOWN/STOPPED pair that leg actually waits for.
+    """
+    result = await hass.config_entries.subentries.async_configure(
+        flow_id, user_input={"initial_state": "open"}
+    )
+    assert result["step_id"] == "calibration_close_instruction"
+
+    task = asyncio.ensure_future(
+        hass.config_entries.subentries.async_configure(flow_id, user_input={})
+    )
+    await wait_for_registration()  # _wait_for_movement_start is now listening
+    signal = f"{SIGNAL_DEVICE_EVENT}_{DEVICE_ID}"
+    async_dispatcher_send(hass, signal, EVENT_STARTED_MOVING_DOWN)
+    await wait_for_registration()  # _wait_for_stop_event is now listening
+    async_dispatcher_send(hass, signal, EVENT_STOPPED)
+    return await task
+
+
+async def test_close_leg_first_then_open_leg_ends_at_open_position(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """initial_state="open" runs close then open; open ran last -> ends open.
+
+    The mirror image of test_recalibrating_persists_new_times_and_notifies_
+    the_live_entity above (which covers the "closed" open-then-close order
+    and asserts ending_position == 0): here the close leg is answered
+    first via _advance_through_close_leg, then the open leg runs second
+    and reaches its own end stop last, so the blind should end up fully
+    open (ending_position == 100) instead.
+    """
+    entry, blind = _build_hub_with_blind(hass, connected_api)
+    result = await _start_calibrate_flow(hass, entry, blind)
+    wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
+
+    result = await _advance_through_close_leg(
+        hass, result["flow_id"], wait_for_registration
+    )
+    assert result["step_id"] == "calibration_open_instruction"
+
+    task = asyncio.ensure_future(
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
+    )
+    await wait_for_registration()  # _wait_for_movement_start is now listening
+    async_dispatcher_send(
+        hass, f"{SIGNAL_DEVICE_EVENT}_{DEVICE_ID}", EVENT_STARTED_MOVING_UP
+    )
+    await wait_for_registration()  # _wait_for_stop_event is now listening
+    async_dispatcher_send(hass, f"{SIGNAL_DEVICE_EVENT}_{DEVICE_ID}", EVENT_STOPPED)
+    result = await task
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_complete"
+
+    signals: list[tuple[Any, ...]] = []
+    received = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _on_calibration_completed(*args: Any) -> None:
+        signals.append(args)
+        loop.call_soon_threadsafe(received.set)
+
+    unsub = async_dispatcher_connect(
+        hass, SIGNAL_CALIBRATION_COMPLETED, _on_calibration_completed
+    )
+    try:
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], user_input={}
+        )
+        try:
+            await asyncio.wait_for(received.wait(), timeout=5)
+        except TimeoutError:
+            pytest.fail(
+                "SIGNAL_CALIBRATION_COMPLETED listener was not invoked "
+                "within 5s after the recalibration flow finished."
+            )
+    finally:
+        unsub()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    updated = entry.subentries[blind.subentry_id]
+    assert updated.data[CONF_OPEN_TIME] >= 0.1
+    assert updated.data[CONF_CLOSE_TIME] >= 0.1
+    assert len(signals) == 1
+    assert signals[0][0] == DEVICE_ID
+    assert signals[0][3] == 100
 
 
 def _build_bare_handler(
@@ -603,7 +726,7 @@ async def test_open_instruction_movement_start_timeout_shows_error_and_reshows_f
     entry, blind = _build_hub_with_blind(hass, connected_api)
     result = await _start_calibrate_flow(hass, entry, blind)
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={}
+        result["flow_id"], user_input={"initial_state": "closed"}
     )
     assert result["step_id"] == "calibration_open_instruction"
 
@@ -625,7 +748,7 @@ async def test_open_instruction_stop_timeout_shows_error_and_reshows_form(
     entry, blind = _build_hub_with_blind(hass, connected_api)
     result = await _start_calibrate_flow(hass, entry, blind)
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={}
+        result["flow_id"], user_input={"initial_state": "closed"}
     )
 
     wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
