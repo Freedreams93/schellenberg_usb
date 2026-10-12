@@ -96,6 +96,10 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "notice_teach_test_failed": (
             "Teach/test transmission failed; check the integration logs."
         ),
+        "test_motor_retry_notice": (
+            "The last attempt didn't confirm the shutter moved - choose a "
+            "direction to try again."
+        ),
         "notice_raw_sent": (
             "Raw payload {payload} was written. The stick's acknowledgements "
             "do not confirm motor movement."
@@ -240,7 +244,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         ),
         "notice_position_sync_unregistered": (
             "Der manuelle Positionsabgleich ist fehlgeschlagen, weil die "
-            "aktive Rolladen-Entität nicht registriert ist. Bitte die "
+            "aktive Rollladen-Entität nicht registriert ist. Bitte die "
             "Integration neu laden und erneut versuchen."
         ),
         "notice_teach_blocked": "Motor-Anlernen blockiert: {reason}.",
@@ -251,6 +255,11 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         ),
         "notice_teach_test_failed": (
             "Anlernen/Test fehlgeschlagen; bitte die Protokolle der Integration prüfen."
+        ),
+        "test_motor_retry_notice": (
+            "Der vorherige Versuch hat keine Bewegung des Rollladens "
+            "bestätigt - wählen Sie eine Richtung, um es erneut zu "
+            "versuchen."
         ),
         "notice_raw_sent": (
             "Rohdaten-Befehl {payload} wurde gesendet. Die Rückmeldungen des "
@@ -274,7 +283,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "position_tracking_available": "Verfügbar über empfangene Statusmeldungen",
         "position_tracking_unavailable": (
             "Es wurde keine Fernbedienungs-/Status-Identität erkannt. Der "
-            "Rolladen lässt sich weiterhin steuern, aber die "
+            "Rollladen lässt sich weiterhin steuern, aber die "
             "Positionsverfolgung stützt sich dann nur auf die Befehle von "
             "Home Assistant selbst."
         ),
@@ -285,7 +294,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         ),
         "frame_none_received": "Keine passende Meldung empfangen",
         "position_none_recorded": "Keine Positionsaktualisierung erfasst",
-        "diag_title": "Schellenberg-USB-Diagnose für diesen Rolladen",
+        "diag_title": "Schellenberg-USB-Diagnose für diesen Rollladen",
         "diag_selected_blind": "Ausgewähltes Gerät: {value}",
         "diag_section_stick_state": "Stick-Status:",
         "diag_connected": "Verbunden: {value}",
@@ -417,6 +426,10 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "notice_teach_test_failed": (
             "Falló la transmisión de aprendizaje/prueba; revisa los "
             "registros de la integración."
+        ),
+        "test_motor_retry_notice": (
+            "El intento anterior no confirmó movimiento de la persiana - "
+            "elija una dirección para intentarlo de nuevo."
         ),
         "notice_raw_sent": (
             "Se envió la carga en bruto {payload}. Las confirmaciones del "
@@ -583,6 +596,10 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "notice_teach_test_failed": (
             "La transmission d'apprentissage/de test a échoué ; consultez "
             "les journaux de l'intégration."
+        ),
+        "test_motor_retry_notice": (
+            "La tentative précédente n'a pas confirmé de mouvement du "
+            "volet - choisissez une direction pour réessayer."
         ),
         "notice_raw_sent": (
             "La charge utile brute {payload} a été envoyée. Les accusés de "

@@ -71,9 +71,30 @@ def test_on_subentry_compat_prefers_new_singular_attributes() -> None:
         config_entries_subentries={"entry1": {"sub-wrong"}},
     )
 
-    assert async_device_on_subentry_compat(device, "entry1", "sub1") is True  # type: ignore[arg-type]
-    assert async_device_on_subentry_compat(device, "entry1", "sub-wrong") is False  # type: ignore[arg-type]
-    assert async_device_on_subentry_compat(device, "other-entry", "sub1") is False  # type: ignore[arg-type]
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "entry1",
+            "sub1",
+        )
+        is True
+    )
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "entry1",
+            "sub-wrong",
+        )
+        is False
+    )
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "other-entry",
+            "sub1",
+        )
+        is False
+    )
 
 
 def test_on_subentry_compat_falls_back_to_legacy_mapping() -> None:
@@ -81,9 +102,30 @@ def test_on_subentry_compat_falls_back_to_legacy_mapping() -> None:
     # release older than the singular-attribute migration.
     device = SimpleNamespace(config_entries_subentries={"entry1": {"sub1", "sub2"}})
 
-    assert async_device_on_subentry_compat(device, "entry1", "sub1") is True  # type: ignore[arg-type]
-    assert async_device_on_subentry_compat(device, "entry1", "sub9") is False  # type: ignore[arg-type]
-    assert async_device_on_subentry_compat(device, "other-entry", "sub1") is False  # type: ignore[arg-type]
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "entry1",
+            "sub1",
+        )
+        is True
+    )
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "entry1",
+            "sub9",
+        )
+        is False
+    )
+    assert (
+        async_device_on_subentry_compat(
+            device,  # type: ignore[arg-type]
+            "other-entry",
+            "sub1",
+        )
+        is False
+    )
 
 
 def test_reassign_is_a_noop_when_already_on_the_target_subentry() -> None:
@@ -95,7 +137,12 @@ def test_reassign_is_a_noop_when_already_on_the_target_subentry() -> None:
         async_update_device=lambda *a, **kw: calls.append((a, kw))
     )
 
-    async_reassign_device_subentry_compat(registry, device, "entry1", "sub1")  # type: ignore[arg-type]
+    async_reassign_device_subentry_compat(
+        registry,  # type: ignore[arg-type]
+        device,  # type: ignore[arg-type]
+        "entry1",
+        "sub1",
+    )
 
     assert calls == []
 
@@ -116,7 +163,12 @@ def test_reassign_uses_the_new_single_call_signature_when_available() -> None:
 
     registry = SimpleNamespace(async_update_device=async_update_device)
 
-    async_reassign_device_subentry_compat(registry, device, "entry1", "new-sub")  # type: ignore[arg-type]
+    async_reassign_device_subentry_compat(
+        registry,  # type: ignore[arg-type]
+        device,  # type: ignore[arg-type]
+        "entry1",
+        "new-sub",
+    )
 
     assert calls == [("dev1", "entry1", "new-sub")]
 
@@ -149,7 +201,12 @@ def test_reassign_falls_back_to_add_then_remove_on_old_signature() -> None:
 
     registry = SimpleNamespace(async_update_device=async_update_device)
 
-    async_reassign_device_subentry_compat(registry, device, "entry1", "new-sub")  # type: ignore[arg-type]
+    async_reassign_device_subentry_compat(
+        registry,  # type: ignore[arg-type]
+        device,  # type: ignore[arg-type]
+        "entry1",
+        "new-sub",
+    )
 
     # Adding the new membership must happen before removing the old one -
     # removing first would momentarily leave the device with none at all.

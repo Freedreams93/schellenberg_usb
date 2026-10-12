@@ -43,29 +43,13 @@
         },
         "pair_device": {
           "title": "Emparejar dispositivo y calibrar",
-          "description": "Pulse el botón de emparejamiento en su memoria USB Schellenberg y, a continuación, en un plazo de 2 minutos, pulse el botón o los botones de emparejamiento de su dispositivo.",
+          "description": "Pulse el botón o los botones de emparejamiento de su dispositivo en un plazo de 2 minutos.",
           "submit": "Emparejar"
         },
         "add_shutter_from_remote": {
           "title": "Añadir persiana desde mando",
           "description": "Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el motor/canal. Pulse su botón de programación hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el motor haya aprendido el transmisor. A continuación se realiza una breve prueba; confirme si el motor se movió realmente. Si el mismo canal del mando a distancia controla persianas adicionales, también puede añadir cada una de ellas justo después aquí, sin repetir estos pasos.",
           "submit": "Emparejar"
-        },
-        "manual": {
-          "title": "Añadir un dispositivo manualmente",
-          "description": "La identidad de comando se utiliza para el control saliente. La identidad de estado opcional se compara con los mensajes de movimiento recibidos; déjela en blanco para usar la identidad de comando. La identidad de estado principal controla el seguimiento de posición. Introduzca identidades adicionales como ID_DISPOSITIVO/ENUM, una por línea o separadas por comas. Las identidades secundarias se utilizan para diagnóstico, pero no cambian la posición. Deje ambos campos de estado principal en blanco si se desconocen; la identidad de transmisión no se usará como estado a menos que se haya observado realmente o la introduzca manualmente.",
-          "data": {
-            "device_name": "Nombre",
-            "device_id": "ID del dispositivo",
-            "device_enum": "Enum",
-            "open_time_seconds": "Tiempo de apertura",
-            "close_time_seconds": "Tiempo de cierre",
-            "status_device_id": "ID de estado principal (opcional)",
-            "status_enum": "Enum de estado principal (opcional)",
-            "invert_direction": "Invertir dirección de apertura/cierre",
-            "secondary_status_identities": "Identidades de estado adicionales (opcional)"
-          },
-          "submit": "Añadir"
         },
         "name_device": {
           "title": "Nombre su dispositivo",
@@ -75,17 +59,20 @@
           }
         },
         "calibration_close": {
-          "title": "Paso 1: Cerrar la persiana",
-          "description": "Primero, asegúrese de que {device_name} esté completamente cerrada (totalmente abajo). Presione 'Siguiente' cuando esté listo.",
+          "title": "Antes de empezar",
+          "description": "Para medir {device_name} con precisión, Home Assistant necesita saber qué dirección probar primero.",
+          "data": {
+            "initial_state": "¿Cuál es el estado actual de la persiana?"
+          },
           "submit": "Siguiente"
         },
         "calibration_open_instruction": {
-          "title": "Paso 2: Abrir la persiana",
+          "title": "Abrir la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en abrirse {device_name}. Presione Iniciar **y luego** presione el botón de abrir en el control para comenzar a medir. No hay prisa, el temporizador no comienza hasta que recibamos un mensaje de subida de la persiana.",
           "submit": "Iniciar"
         },
         "calibration_close_instruction": {
-          "title": "Paso 3: Cerrar la persiana",
+          "title": "Cerrar la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en cerrarse {device_name}. Presione Iniciar **y luego** presione el botón de cerrar en el control para comenzar a medir. No hay prisa, el temporizador no comienza hasta que recibamos un mensaje de bajada de la persiana.",
           "submit": "Iniciar"
         },
@@ -102,16 +89,12 @@
             "finish_pairing": "Finalizar"
           }
         },
-        "manual_next": {
-          "title": "Dispositivo manual listo",
-          "menu_options": {
-            "test_motor": "Probar comando del motor",
-            "save_manual": "Guardar sin probar"
-          }
-        },
         "test_motor": {
           "title": "Probar comando del motor",
-          "description": "Al pulsar Probar, la persiana se mueve brevemente en una dirección y luego se detiene automáticamente. Home Assistant elige la dirección: si estaba cerrada, abre brevemente; si estaba abierta, cierra brevemente; si la posición aún no se conoce, abre. Esto afecta al dispositivo {device_id}/{device_enum}. Observe el motor mientras tanto.",
+          "description": "Elija una dirección y pulse Probar: la persiana se moverá brevemente en esa dirección y luego se detendrá automáticamente. Esto afecta al dispositivo {device_id}/{device_enum}. Observe el motor mientras tanto.{retry_notice}",
+          "data": {
+            "test_direction": "¿Qué dirección se debe probar?"
+          },
           "submit": "Probar"
         },
         "did_motor_move": {
@@ -211,7 +194,7 @@
         },
         "teach_motor": {
           "title": "Programar motor / activar transmisor USB",
-          "description": "Dispositivo seleccionado: {selected_blind}\\nIdentidad de comando: {command_device_id}/{command_enum}\\n\\nOpcional: antes de enviar, seleccione este motor/canal en un mando físico ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee y luego pulse Stop. No es necesario esperar a que el motor emita un pitido o traqueteo. Home Assistant envía el comando de aprendizaje 60, espera el ACK de la memoria, envía el comando de finalización 40 en el mismo enum y luego realiza una breve prueba de Abrir/Stop. Los ACK de la memoria no demuestran que el motor haya aprendido o se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar el sentido de giro.",
+          "description": "Dispositivo seleccionado: {selected_blind}\\nIdentidad de comando: {command_device_id}/{command_enum}\\n\\nOpcional: antes de enviar, seleccione este motor/canal en un mando físico ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee y luego pulse Stop. Home Assistant envía el comando de aprendizaje 60, espera el ACK de la memoria, envía el comando de finalización 40 en el mismo enum y luego realiza una breve prueba de Abrir/Stop. Los ACK de la memoria no demuestran que el motor haya aprendido o se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar el sentido de giro.",
           "submit": "Enviar comando de aprendizaje y probar"
         },
         "send_raw_command": {
@@ -265,6 +248,20 @@
     "error": {
       "cannot_connect": "Error al conectar con el puerto serie",
       "unknown": "Se produjo un error inesperado"
+    }
+  },
+  "selector": {
+    "initial_state": {
+      "options": {
+        "open": "La persiana está actualmente completamente abierta",
+        "closed": "La persiana está actualmente completamente cerrada"
+      }
+    },
+    "test_direction": {
+      "options": {
+        "open": "Abrir",
+        "close": "Cerrar"
+      }
     }
   },
   "entity": {

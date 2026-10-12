@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,29 +18,11 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CMD_ALLOW_PAIRING,
     CMD_DOWN,
-    CMD_ECHO_OFF,
-    CMD_ECHO_ON,
-    CMD_ENTER_BOOTLOADER,
-    CMD_ENTER_INITIAL,
     CMD_GET_DEVICE_ID,
     CMD_GET_PARAM_P,
-    CMD_LED_BLINK_1,
-    CMD_LED_BLINK_2,
-    CMD_LED_BLINK_3,
-    CMD_LED_BLINK_4,
-    CMD_LED_BLINK_5,
-    CMD_LED_BLINK_6,
-    CMD_LED_BLINK_7,
-    CMD_LED_BLINK_8,
-    CMD_LED_BLINK_9,
     CMD_LED_OFF,
     CMD_LED_ON,
-    CMD_MANUAL_DOWN,
-    CMD_MANUAL_UP,
     CMD_PAIR,
-    CMD_REBOOT,
-    CMD_SET_LOWER_ENDPOINT,
-    CMD_SET_UPPER_ENDPOINT,
     CMD_STOP,
     CMD_TRANSMIT,
     CMD_UP,
@@ -151,8 +132,19 @@ class SchellenbergUsbApi:
         self._last_primary_tracking_messages: dict[StatusIdentity, dict[str, Any]] = {}
         self._last_position_updates: dict[str, dict[str, Any]] = {}
         self._last_manual_position_syncs: dict[str, dict[str, Any]] = {}
+        # One-shot handoff from a "Pair and calibrate" flow that just
+        # finished to the brand-new cover entity it is about to create.
+        # That entity doesn't exist yet when calibration completes, so it
+        # can never receive SIGNAL_CALIBRATION_COMPLETED the way an
+        # existing blind being recalibrated does - it would otherwise fall
+        # back to whatever Home Assistant restored for this blind_id, which
+        # can be stale (e.g. left over from a previously removed device
+        # that happened to reuse the same blind_id) and so override the
+        # position calibration just measured seconds ago. Keyed by
+        # blind_id; see set_fresh_calibration_position()/
+        # pop_fresh_calibration_position() below.
+        self._fresh_calibration_positions: dict[str, int] = {}
         self._last_received_sequence = 0
-        self._raw_received_frames: deque[dict[str, Any]] = deque(maxlen=1000)
         self._status_discovery_frames: list[dict[str, Any]] | None = None
         self._status_discovery_phase = "idle"
         self._status_discovery_started_at: str | None = None
@@ -639,7 +631,6 @@ class SchellenbergUsbApi:
                     if self._pairing_active
                     else "idle"
                 )
-                self._raw_received_frames.append(raw_frame)
                 if self._status_discovery_frames is not None:
                     captured_frame = dict(raw_frame)
                     if normalized_command == CMD_STOP and captured_frame["phase"] in {
@@ -673,13 +664,7 @@ class SchellenbergUsbApi:
                         return
 
                 if registration is None:
-                    level = (
-                        logging.DEBUG
-                        if self._registered_entity_keys
-                        else logging.WARNING
-                    )
-                    _LOGGER.log(
-                        level,
+                    _LOGGER.debug(
                         "Received device_id=%s enum=%s cmd=%s matched=False "
                         "interpreted=%s; no cover has this status identity",
                         normalized_device_id,
@@ -830,6 +815,26 @@ class SchellenbergUsbApi:
             return False
         return True
 
+    async def wait_for_transmitter_idle(
+        self,
+        reason: str,
+        *,
+        timeout: float = TRANSMIT_IDLE_TIMEOUT,  # noqa: ASYNC109
+    ) -> bool:
+        """Public entry point for multi-step sequences outside this module.
+
+        config_flow.py's short motor test (async_step_test_motor) sends a
+        direction command via control_blind() and, after a brief hold,
+        follows it with a stop - the same "don't start the next RF write
+        before the previous one's t0" problem _wait_for_transmitter_idle()
+        already solves for teach/pairing/raw-transmit below. control_blind()
+        itself never awaits this (it is deliberately lock-free and
+        immediate - see its own docstring), so the caller is responsible
+        for waiting between its own two writes. Thin wrapper only: all the
+        actual waiting logic lives in _wait_for_transmitter_idle().
+        """
+        return await self._wait_for_transmitter_idle(reason, timeout=timeout)
+
     async def _retry_command_after_delay(self, command: str, source: str) -> None:
         """Wait briefly, then resend a command the stick reported as busy.
 
@@ -856,13 +861,6 @@ class SchellenbergUsbApi:
             _LOGGER.debug("Retry task cancelled")
         finally:
             self._retry_task = None
-
-    @callback
-    def get_recent_raw_frames(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Return recent raw receive frames across pairing, tests, and idle."""
-        if limit <= 0:
-            return []
-        return [dict(frame) for frame in list(self._raw_received_frames)[-limit:]]
 
     @callback
     def start_status_frame_capture(self, *, phase: str) -> None:
@@ -979,10 +977,17 @@ class SchellenbergUsbApi:
                 pair_command,
                 finish_pair_command,
             )
-            for phase, payload in (
+
+            # Both pairing entry points (pair_device and
+            # add_shutter_from_remote) share this one sequence: the 0x60
+            # teach command followed by the 0x40 finish/allow-pairing
+            # command.
+            pairing_phases = (
                 ("teach_60", pair_command),
                 ("finish_40", finish_pair_command),
-            ):
+            )
+
+            for phase, payload in pairing_phases:
                 if not await self.send_command(payload, source="pairing"):
                     raise ConnectionError(f"could not send pairing phase {phase}")
                 if not await self._wait_for_transmitter_idle(
@@ -1028,18 +1033,40 @@ class SchellenbergUsbApi:
                     self._stop_pairing_task = None
 
     async def _stop_pairing_mode(self, delay: bool = False) -> None:
-        """Toggle pairing off and restore the normal listening-mode state."""
-        stopped = False
+        """Toggle pairing off and restore the normal listening-mode state.
+
+        Whether the stick is considered back in listening mode is decided
+        by the "sp" write alone, the same way _enter_listening_mode()
+        trusts a successful "hello" write without waiting for an ACK:
+        like "hello", "sp" is not an RF transmission (see send_command()'s
+        own is_transmit comment), so it never gets a real t1/t0 reply. An
+        earlier version of this method also awaited
+        _wait_for_transmitter_idle() afterwards and only logged a
+        "stopped cleanly" message if that resolved before its own
+        TRANSMIT_IDLE_TIMEOUT - but that wait can only ever reflect some
+        unrelated, possibly stale idle flag, never "sp" itself, and a
+        version that instead let a timed-out wait downgrade
+        _device_mode to "unknown" (even though "sp" had already
+        succeeded) is what caused the real bug this fix addresses: since
+        _transmit_capability_block_reason() then blocks every future
+        pairing attempt on "wrong_mode:unknown" until a full reconnect,
+        the pairing config flow step (for both "pair_device" and
+        "add_shutter_from_remote", which share this same cleanup) would
+        abort with the same "pairing_timeout" message again immediately
+        on the very next attempt, before any new wait for a device even
+        began. Trusting the write alone, the same way "hello" already
+        does, fixes that and also drops the now-pointless wait entirely:
+        the worst case if the stick genuinely is still finishing up is
+        one more pairing attempt that does not find a device in time,
+        not a permanent lockout.
+        """
+        sent = False
         try:
             if delay:
                 await asyncio.sleep(2)
             _LOGGER.debug("Stopping pairing mode with command: sp")
-            stopped = await self.send_command(CMD_GET_PARAM_P)
-            if stopped:
-                stopped = await self._wait_for_transmitter_idle(
-                    "finishing pairing stop"
-                )
-            if stopped:
+            sent = await self.send_command(CMD_GET_PARAM_P)
+            if sent:
                 _LOGGER.info("Pairing mode stopped; stick returned to listening mode")
             else:
                 _LOGGER.warning("Could not send pairing stop command")
@@ -1048,7 +1075,7 @@ class SchellenbergUsbApi:
         finally:
             self._pairing_active = False
             if self._is_connected:
-                self._device_mode = "listening" if stopped else "unknown"
+                self._device_mode = "listening" if sent else "unknown"
             self._update_status()
 
     async def teach_motor(
@@ -1403,17 +1430,6 @@ class SchellenbergUsbApi:
             ", ".join(str(device.get("id")) for device in devices),
         )
 
-    def remove_known_device(self, device_id: str) -> None:
-        """Remove a command device and all of its registered status identities."""
-        self._registered_devices.pop(device_id, None)
-        normalized_id = device_id.upper()
-        self._registered_entity_keys = {
-            key: registration
-            for key, registration in self._registered_entity_keys.items()
-            if registration.command_device_id != normalized_id
-        }
-        _LOGGER.debug("Removed device %s from registered entities", device_id)
-
     def register_entity(
         self,
         status_device_id: str | None,
@@ -1462,6 +1478,26 @@ class SchellenbergUsbApi:
             status_enum,
             secondary_identities,
         )
+
+    def set_fresh_calibration_position(self, blind_id: str, position: int) -> None:
+        """Record that blind_id's "Pair and calibrate" run just ended at position.
+
+        Called only when creating a brand-new subentry from a fresh
+        pairing - never for a recalibration of an existing blind, which
+        already updates its live entity directly via
+        SIGNAL_CALIBRATION_COMPLETED and never consults this at all.
+        """
+        self._fresh_calibration_positions[blind_id] = position
+
+    def pop_fresh_calibration_position(self, blind_id: str) -> int | None:
+        """Return and clear blind_id's just-completed calibration position.
+
+        Popping makes this strictly one-shot: it only ever wins on the
+        entity's very first add after this same pairing, and a later
+        restart (with nothing left to pop) falls straight back to the
+        normal restored-state priority.
+        """
+        return self._fresh_calibration_positions.pop(blind_id, None)
 
     @callback
     def get_last_received(
@@ -1610,11 +1646,6 @@ class SchellenbergUsbApi:
         """Update device status and notify listeners."""
         async_dispatcher_send(self.hass, SIGNAL_STICK_STATUS_UPDATED)
 
-    def update_connection_status(self, connected: bool) -> None:
-        """Update connection status for compatibility with existing callers."""
-        self._is_connected = connected
-        self._update_status()
-
     @callback
     def handle_connection_lost(
         self, protocol: SchellenbergProtocol, exc: Exception | None
@@ -1762,103 +1793,6 @@ class SchellenbergUsbApi:
         _LOGGER.debug("Turning LED off")
         return await self.send_command(CMD_LED_OFF)
 
-    async def led_blink(self, count: int = 5) -> None:
-        """Blink the USB stick LED a specific number of times.
-
-        Args:
-            count: Number of times to blink (1-9)
-
-        """
-        blink_commands = {
-            1: CMD_LED_BLINK_1,
-            2: CMD_LED_BLINK_2,
-            3: CMD_LED_BLINK_3,
-            4: CMD_LED_BLINK_4,
-            5: CMD_LED_BLINK_5,
-            6: CMD_LED_BLINK_6,
-            7: CMD_LED_BLINK_7,
-            8: CMD_LED_BLINK_8,
-            9: CMD_LED_BLINK_9,
-        }
-
-        if count not in blink_commands:
-            _LOGGER.error("Invalid blink count %d. Must be 1-9", count)
-            return
-
-        _LOGGER.debug("Blinking LED %d times", count)
-        await self.send_command(blink_commands[count])
-
-    # Device Calibration Methods
-    async def set_upper_endpoint(self, device_enum: str) -> None:
-        """Set the upper endpoint for a blind device.
-
-        Args:
-            device_enum: The device enumerator (hex string like "10")
-
-        """
-        # Format: ssXX9AAZZZ
-        # XX = device enum, 9 = number of messages, AA = command, ZZZ = padding
-        normalized_enum = _normalize_protocol_enum(device_enum)
-        command = f"{CMD_TRANSMIT}{normalized_enum}9{CMD_SET_UPPER_ENDPOINT}0000"
-        _LOGGER.debug("Setting upper endpoint for device %s: %s", device_enum, command)
-        await self.send_command(command)
-
-    async def set_lower_endpoint(self, device_enum: str) -> None:
-        """Set the lower endpoint for a blind device.
-
-        Args:
-            device_enum: The device enumerator (hex string like "10")
-
-        """
-        # Format: ssXX9AAZZZ
-        # XX = device enum, 9 = number of messages, AA = command, ZZZ = padding
-        normalized_enum = _normalize_protocol_enum(device_enum)
-        command = f"{CMD_TRANSMIT}{normalized_enum}9{CMD_SET_LOWER_ENDPOINT}0000"
-        _LOGGER.debug("Setting lower endpoint for device %s: %s", device_enum, command)
-        await self.send_command(command)
-
-    async def allow_pairing_on_device(self, device_enum: str) -> None:
-        """Make a device listen to a new remote's ID.
-
-        Args:
-            device_enum: The device enumerator (hex string like "10")
-
-        """
-        # Format: ssXX9AAZZZ
-        # XX = device enum, 9 = number of messages, AA = command, ZZZ = padding
-        normalized_enum = _normalize_protocol_enum(device_enum)
-        command = f"{CMD_TRANSMIT}{normalized_enum}9{CMD_ALLOW_PAIRING}0000"
-        _LOGGER.debug("Allowing pairing on device %s: %s", device_enum, command)
-        await self.send_command(command)
-
-    async def manual_up(self, device_enum: str) -> None:
-        """Manually move blind up (simulates holding button).
-
-        Args:
-            device_enum: The device enumerator (hex string like "10")
-
-        """
-        # Format: ssXX9AAZZZ
-        # XX = device enum, 9 = number of messages, AA = command, ZZZ = padding
-        normalized_enum = _normalize_protocol_enum(device_enum)
-        command = f"{CMD_TRANSMIT}{normalized_enum}9{CMD_MANUAL_UP}0000"
-        _LOGGER.debug("Manual up for device %s: %s", device_enum, command)
-        await self.send_command(command)
-
-    async def manual_down(self, device_enum: str) -> None:
-        """Manually move blind down (simulates holding button).
-
-        Args:
-            device_enum: The device enumerator (hex string like "10")
-
-        """
-        # Format: ssXX9AAZZZ
-        # XX = device enum, 9 = number of messages, AA = command, ZZZ = padding
-        normalized_enum = _normalize_protocol_enum(device_enum)
-        command = f"{CMD_TRANSMIT}{normalized_enum}9{CMD_MANUAL_DOWN}0000"
-        _LOGGER.debug("Manual down for device %s: %s", device_enum, command)
-        await self.send_command(command)
-
     # USB Stick System Commands
     async def get_device_id(self) -> str | None:
         """Get the USB stick's unique device ID."""
@@ -1883,31 +1817,6 @@ class SchellenbergUsbApi:
             return device_id
         finally:
             self._device_id_future = None
-
-    async def echo_on(self) -> None:
-        """Enable local echo on the USB stick."""
-        _LOGGER.debug("Enabling local echo")
-        await self.send_command(CMD_ECHO_ON)
-
-    async def echo_off(self) -> None:
-        """Disable local echo on the USB stick."""
-        _LOGGER.debug("Disabling local echo")
-        await self.send_command(CMD_ECHO_OFF)
-
-    async def enter_bootloader_mode(self) -> None:
-        """Enter bootloader mode (B:0)."""
-        _LOGGER.debug("Entering bootloader mode")
-        await self.send_command(CMD_ENTER_BOOTLOADER)
-
-    async def enter_initial_mode(self) -> None:
-        """Enter initial mode (B:1)."""
-        _LOGGER.debug("Entering initial mode")
-        await self.send_command(CMD_ENTER_INITIAL)
-
-    async def reboot_stick(self) -> None:
-        """Reboot the USB stick (only available in bootloader mode)."""
-        _LOGGER.debug("Rebooting USB stick")
-        await self.send_command(CMD_REBOOT)
 
     async def disconnect(self) -> None:
         """Disconnect intentionally and cancel all pending serial work."""

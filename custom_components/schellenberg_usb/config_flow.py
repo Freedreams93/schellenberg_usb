@@ -302,11 +302,26 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         # shutters moved together by one channel), so this entry point
         # offers a "pair another blind on this same channel" choice right
         # before the subentry would normally be created - see
-        # _finish_pairing_or_offer_repeat(). pair_device/manual leave this
-        # False and create the subentry immediately, unchanged.
+        # _finish_pairing_or_offer_repeat(). pair_device leaves this False
+        # and creates the subentry immediately, unchanged.
         self._offer_repeat_pairing = False
         self._last_ready_blind_data: dict[str, Any] | None = None
         self._last_ready_blind_title: str | None = None
+        # The direction chosen on the test_motor form (see
+        # async_step_test_motor()) - "open" or "close" - remembered only so
+        # did_motor_move's own description can report back what was just
+        # tested. None only before the form has ever been submitted for
+        # this blind. Reset alongside the other per-blind pending state in
+        # async_step_pair_another_on_channel().
+        self._pending_test_direction: str | None = None
+        # Sticky per-blind flag: once a retry has happened, the test_motor
+        # form keeps showing the retry_notice explaining why it is being
+        # shown again - set once, on the first inconclusive attempt, and
+        # never cleared again for this blind. There is no retry limit: the
+        # person keeps choosing a direction for as long as they keep
+        # confirming, until an attempt both sends successfully and is
+        # confirmed to have moved the blind.
+        self._test_motor_retry_attempted = False
         # Resolved lazily (via runtime_translation_text()) at display time instead of
         # translated here, because self.hass is not attached to a flow
         # handler yet at __init__ time - None means "nothing to report
@@ -354,8 +369,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         (several shutters moved together by one channel), so this entry
         point offers a "pair another blind on this channel" choice right
         after each successful pairing, without restarting this menu - see
-        _finish_pairing_or_offer_repeat(). pair_device/manual leave
-        _offer_repeat_pairing False and create the subentry immediately,
+        _finish_pairing_or_offer_repeat(). pair_device leaves
+        _offer_repeat_pairing False and creates the subentry immediately,
         unchanged.
         """
         self._pairing_workflow = "hybrid"
@@ -393,181 +408,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pending_device_name = None
         return await self.async_step_name_device()
 
-    async def async_step_manual(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Collect manual command and primary/secondary status identities."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            device_name = str(user_input[CONF_DEVICE_NAME]).strip()
-            command_device_id = str(user_input[CONF_DEVICE_ID]).strip().upper()
-            command_enum = str(user_input[CONF_DEVICE_ENUM]).strip().upper()
-            status_device_id = (
-                str(user_input.get(CONF_STATUS_DEVICE_ID, "")).strip().upper()
-            )
-            status_enum = str(user_input.get(CONF_STATUS_ENUM, "")).strip().upper()
-            try:
-                secondary_identities = parse_status_identities_text(
-                    user_input.get(CONF_SECONDARY_STATUS_IDENTITIES, "")
-                )
-            except ValueError:
-                secondary_identities = ()
-                errors[CONF_SECONDARY_STATUS_IDENTITIES] = "invalid_status_identities"
-            primary_identity = (
-                (status_device_id, status_enum)
-                if status_device_id and status_enum
-                else None
-            )
-            secondary_identities = tuple(
-                identity
-                for identity in secondary_identities
-                if primary_identity is None or identity != primary_identity
-            )
-            open_time = float(user_input[CONF_OPEN_TIME_SECONDS])
-            close_time = float(user_input[CONF_CLOSE_TIME_SECONDS])
-
-            if not device_name:
-                errors[CONF_DEVICE_NAME] = "required"
-            if not self._is_hex_value(command_device_id, 6):
-                errors[CONF_DEVICE_ID] = "invalid_device_id"
-            if not self._is_hex_value(command_enum, 2):
-                errors[CONF_DEVICE_ENUM] = "invalid_device_enum"
-            if bool(status_device_id) != bool(status_enum):
-                errors[
-                    CONF_STATUS_ENUM if status_device_id else CONF_STATUS_DEVICE_ID
-                ] = "status_identity_incomplete"
-            if status_device_id and not self._is_hex_value(status_device_id, 6):
-                errors[CONF_STATUS_DEVICE_ID] = "invalid_device_id"
-            if status_enum and not self._is_hex_value(status_enum, 2):
-                errors[CONF_STATUS_ENUM] = "invalid_device_enum"
-            # _manual_schema() deliberately has no selector-level `min` for
-            # either field, so a non-positive value reaches here instead of
-            # being rejected earlier as a raw, untranslated schema error
-            # that would abort the whole flow rather than re-showing this
-            # form with a normal, translated field error.
-            if open_time <= 0:
-                errors[CONF_OPEN_TIME_SECONDS] = "invalid_travel_time"
-            if close_time <= 0:
-                errors[CONF_CLOSE_TIME_SECONDS] = "invalid_travel_time"
-
-            hub_entry = self._get_entry()
-            if any(
-                str(
-                    subentry.data.get(CONF_COMMAND_DEVICE_ID)
-                    or subentry.data.get(CONF_DEVICE_ID, "")
-                ).upper()
-                == command_device_id
-                for subentry in hub_entry.subentries.values()
-            ):
-                errors[CONF_DEVICE_ID] = "already_configured"
-
-            if not errors:
-                self._pending_device_name = device_name
-                self._pending_device_id = command_device_id
-                self._pending_device_enum = command_enum
-                self._pending_status_enum = status_enum or None
-                self._pending_status_device_id = status_device_id or None
-                self._pending_status_identity_source = (
-                    STATUS_IDENTITY_SOURCE_MANUAL
-                    if status_device_id and status_enum
-                    else STATUS_IDENTITY_SOURCE_UNKNOWN
-                )
-                self._pending_secondary_status_identities = serialize_status_identities(
-                    secondary_identities
-                )
-                self._pending_open_time = open_time
-                self._pending_close_time = close_time
-                self._pending_invert_direction = bool(
-                    user_input.get(CONF_INVERT_DIRECTION, False)
-                )
-                self._pairing_workflow = "manual"
-                return await self.async_step_manual_next()
-
-        return self.async_show_form(
-            step_id="manual",
-            data_schema=self._manual_schema(),
-            errors=errors,
-        )
-
     @staticmethod
     def _is_hex_value(value: str, length: int) -> bool:
         """Return whether value is an exact-length hexadecimal string."""
         return len(value) == length and all(
             character in "0123456789ABCDEF" for character in value
-        )
-
-    def _manual_schema(self) -> vol.Schema:
-        """Build the manual form with pending values as defaults."""
-        open_time_key = (
-            vol.Required(
-                CONF_OPEN_TIME_SECONDS,
-                default=self._pending_open_time,
-            )
-            if self._pending_open_time is not None
-            else vol.Required(CONF_OPEN_TIME_SECONDS)
-        )
-        close_time_key = (
-            vol.Required(
-                CONF_CLOSE_TIME_SECONDS,
-                default=self._pending_close_time,
-            )
-            if self._pending_close_time is not None
-            else vol.Required(CONF_CLOSE_TIME_SECONDS)
-        )
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_DEVICE_NAME,
-                    default=self._pending_device_name or "",
-                ): selector.TextSelector(),
-                vol.Required(
-                    CONF_DEVICE_ID,
-                    default=self._pending_device_id or "",
-                ): selector.TextSelector(),
-                vol.Required(
-                    CONF_DEVICE_ENUM,
-                    default=self._pending_device_enum or "",
-                ): selector.TextSelector(),
-                vol.Optional(
-                    CONF_STATUS_DEVICE_ID,
-                    default=self._pending_status_device_id or "",
-                ): selector.TextSelector(),
-                vol.Optional(
-                    CONF_STATUS_ENUM,
-                    default=self._pending_status_enum or "",
-                ): selector.TextSelector(),
-                vol.Optional(
-                    CONF_SECONDARY_STATUS_IDENTITIES,
-                    default=format_status_identities(
-                        self._pending_secondary_status_identities
-                    ),
-                ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
-                # No `min` here: async_step_manual()'s own validation below
-                # (`invalid_travel_time`) is what rejects a non-positive
-                # value, with a translated, in-form error. A selector-level
-                # `min` would reject it first instead, as a raw, untranslated
-                # schema error that aborts the whole flow rather than
-                # re-showing this form - see that validation's own comment.
-                open_time_key: selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        step=0.1,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                close_time_key: selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        step=0.1,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Optional(
-                    CONF_INVERT_DIRECTION,
-                    default=self._pending_invert_direction,
-                ): selector.BooleanSelector(),
-            }
         )
 
     def _pending_data(self) -> dict[str, Any]:
@@ -710,95 +555,79 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pending_status_identity_source = STATUS_IDENTITY_SOURCE_UNKNOWN
         self._pending_open_time = None
         self._pending_close_time = None
+        self._pending_test_direction = None
+        self._test_motor_retry_attempted = False
         # _pending_device_id/_pending_device_enum are deliberately left
         # untouched: the next blind is taught on this same remote channel.
         return await self.async_step_name_device()
 
-    async def async_step_manual_next(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Offer command testing before saving a manually configured blind."""
-        return self.async_show_menu(
-            step_id="manual_next", menu_options=["test_motor", "save_manual"]
-        )
+    def _test_motor_placeholders(self) -> dict[str, str]:
+        """Build the description placeholders for the test_motor form."""
+        return {
+            "device_id": self._pending_device_id or "",
+            "device_enum": self._pending_device_enum or "",
+            "retry_notice": (
+                " " + _runtime_translation_text(self.hass, "test_motor_retry_notice")
+                if self._test_motor_retry_attempted
+                else ""
+            ),
+        }
 
-    async def async_step_save_manual(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Save the pending blind without calibration."""
-        if (
-            not self._pending_device_name
-            or not self._pending_device_id
-            or self._pending_open_time is None
-            or self._pending_close_time is None
-        ):
-            return self.async_abort(reason="device_not_found")
-        return self.async_create_entry(
-            title=self._pending_device_name,
-            data=self._pending_data(),
-            unique_id=self._pending_device_id,
-        )
+    @staticmethod
+    def _test_direction_schema() -> vol.Schema:
+        """Build the required, no-default direction-choice field.
 
-    def _test_motor_toward_open(self) -> bool:
-        """Decide which direction the short motor test should briefly drive.
-
-        For a blind that already has a tracked position (a re-test of an
-        existing, already-configured blind from the reconfigure menu),
-        test away from its last known position: briefly open if it is
-        currently closed, briefly close if it is currently open or
-        partway open. That way the test both shows visible movement and
-        never drives further into an end-stop the blind may already be
-        resting at.
-
-        A brand-new pairing has no tracked position yet - no cover entity
-        exists for it until after this very test - so get_last_position_update()
-        returns None and this falls back to the same fixed default used
-        before this distinction existed: briefly open.
+        A plain empty schema used to mean Home Assistant had already
+        decided the direction itself (away from the blind's last tracked
+        position, defaulting to open when nothing was tracked yet) and
+        silently alternated it on a retry - the person only ever
+        confirmed or reported afterward, never chose. A required select
+        with no default now asks the person to choose "open" or "close"
+        explicitly, on the first attempt and on every retry alike;
+        nothing here ever picks or changes a direction on its own.
         """
-        if self._pending_device_id is None:
-            return True
-        api = self._get_entry().runtime_data
-        last_position = api.get_last_position_update(self._pending_device_id)
-        current_position = (
-            last_position.get("new_position") if last_position is not None else None
+        return vol.Schema(
+            {
+                vol.Required("test_direction"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["open", "close"],
+                        mode=selector.SelectSelectorMode.LIST,
+                        translation_key="test_direction",
+                    )
+                )
+            }
         )
-        if isinstance(current_position, int):
-            return current_position <= 0
-        return True
 
     async def async_step_test_motor(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Ask for confirmation, then send a short direction-aware test move.
+        """Ask which direction to test, then send that short test move.
 
         Nothing is transmitted until the person submits this form - that
-        submission *is* the confirmation. The direction tested (open-then-
-        stop, or close-then-stop) is decided by _test_motor_toward_open()
-        and shown in the confirmation text via the "test_action"
-        placeholder before it is sent, so the person knows what is about
-        to happen rather than being surprised by it.
+        submission *is* both the direction choice and the confirmation.
+        The "retry_notice" placeholder is this form's other dynamic bit of
+        text: empty on the first attempt, and - once a failed send or a
+        "didn't move" report has set _test_motor_retry_attempted - a short
+        explanation that the previous attempt was inconclusive, so a retry
+        doesn't look like an unexplained repeat of the same step. There is
+        no retry limit: the person keeps choosing a direction for as long
+        as they keep confirming.
         """
         if not self._pending_device_id or not self._pending_device_enum:
             return self.async_abort(reason="device_not_found")
 
-        test_toward_open = self._test_motor_toward_open()
-        open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
-        close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
-        action = open_action if test_toward_open else close_action
-
-        placeholders = {
-            "device_id": self._pending_device_id,
-            "device_enum": self._pending_device_enum,
-            "test_action": _translate_phrase(
-                self.hass, "open" if test_toward_open else "close"
-            ),
-        }
         if user_input is None:
             return self.async_show_form(
                 step_id="test_motor",
-                data_schema=vol.Schema({}),
-                description_placeholders=placeholders,
+                data_schema=self._test_direction_schema(),
+                description_placeholders=self._test_motor_placeholders(),
             )
+
+        test_toward_open = user_input["test_direction"] == "open"
+        self._pending_test_direction = user_input["test_direction"]
+        open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
+        close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
+        action = open_action if test_toward_open else close_action
 
         api = self._get_entry().runtime_data
         if not await api.control_blind(
@@ -806,13 +635,28 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             action,
             device_id=self._pending_device_id,
         ):
+            # The RF command never went out, so nothing about this
+            # direction was actually tested. Inconclusive either way - the
+            # person simply chooses again, same direction or the other one.
+            self._test_motor_retry_attempted = True
             return self.async_show_form(
                 step_id="test_motor",
-                data_schema=vol.Schema({}),
-                description_placeholders=placeholders,
+                data_schema=self._test_direction_schema(),
+                description_placeholders=self._test_motor_placeholders(),
                 errors={"base": "command_failed"},
             )
         try:
+            # Wait for the stick to actually finish sending the direction
+            # command (t0) before starting the hold timer: on real hardware
+            # one RF transmission can take over a second (observed ~1.1-1.2s
+            # end to end), well past the old fixed delay below. Sending stop
+            # before that transmission completed meant the two writes could
+            # land on the shared transmitter back to back, so the motor
+            # often received neither cleanly and never visibly moved - see
+            # TEST_COMMAND_DELAY's own comment in const.py.
+            await api.wait_for_transmitter_idle(
+                "finishing the short motor test move before stopping it"
+            )
             await asyncio.sleep(TEST_COMMAND_DELAY)
         finally:
             stopped = await api.control_blind(
@@ -821,10 +665,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 device_id=self._pending_device_id,
             )
         if not stopped:
+            # The direction command went out, but the follow-up stop never
+            # did - the motor may still be running. Just as inconclusive as
+            # the send-failure case above.
+            self._test_motor_retry_attempted = True
             return self.async_show_form(
                 step_id="test_motor",
-                data_schema=vol.Schema({}),
-                description_placeholders=placeholders,
+                data_schema=self._test_direction_schema(),
+                description_placeholders=self._test_motor_placeholders(),
                 errors={"base": "command_failed"},
             )
         return await self.async_step_did_motor_move()
@@ -849,8 +697,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     "device_enum": self._pending_device_enum
                     or _translate_phrase(self.hass, "unknown"),
                     "test_action": _translate_phrase(
-                        self.hass,
-                        "open" if self._test_motor_toward_open() else "close",
+                        self.hass, self._pending_test_direction or "unknown"
                     ),
                 },
             )
@@ -858,14 +705,27 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         if not user_input["motor_moved"]:
             if self._pairing_workflow == "existing":
                 return await self.async_step_edit()
-            # Reuse the manual form with the detected/current values prefilled.
-            return await self.async_step_manual()
+            # "No movement" doesn't necessarily mean the pairing failed -
+            # the blind may simply already have been sitting at the end
+            # stop in the direction just chosen. Show a fresh
+            # async_step_test_motor() form so the person explicitly chooses
+            # a direction again (the same one, or the other one) before
+            # anything more is sent - for as long as they keep saying it
+            # didn't move. There is no attempt limit and no fallback to
+            # manual entry here: the person can always leave the wizard if
+            # the blind genuinely isn't responding, but the flow itself
+            # never gives up on their behalf.
+            self._test_motor_retry_attempted = True
+            return await self.async_step_test_motor()
 
         if self._pairing_workflow == "existing":
             return self.async_abort(reason="command_test_successful")
-        if self._pairing_workflow == "hybrid":
-            return await self.async_step_test_success()
-        return await self.async_step_save_manual()
+        # "hybrid" (add_shutter_from_remote) is the only workflow that can
+        # still be set here: "existing" already returned above, and the
+        # default "legacy" (pair_device) never reaches this step at all -
+        # async_step_name_device() sends it straight into calibration
+        # instead (see its own branch there).
+        return await self.async_step_test_success()
 
     async def async_step_test_success(
         self, user_input: dict[str, Any] | None = None
@@ -873,9 +733,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         """Offer calibration or manual timing after a successful motor test.
 
         Home Assistant requires a menu's step_id to match a real
-        async_step_<id>() handler on this class (mirrors async_step_manual_next
-        above); a bare async_show_menu(step_id="test_success", ...) call with no
-        such method raises UnknownStep as soon as the menu is shown.
+        async_step_<id>() handler on this class; a bare
+        async_show_menu(step_id="test_success", ...) call with no such
+        method raises UnknownStep as soon as the menu is shown.
         """
         return self.async_show_menu(
             step_id="test_success",
@@ -1674,6 +1534,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                     source="developer_tools",
                 )
                 if opened:
+                    # See the matching comment in async_step_test_motor:
+                    # wait for the stick's own t0 before starting the hold
+                    # timer, so the follow-up stop below never lands while
+                    # the open/close command is still physically going out.
+                    await api.wait_for_transmitter_idle(
+                        "finishing the teach-and-test move before stopping it"
+                    )
                     await asyncio.sleep(TEST_COMMAND_DELAY)
                     stopped = await api.control_blind(
                         details["command_enum"],
@@ -2037,12 +1904,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_STATUS_DEVICE_ID] = "invalid_device_id"
             if status_enum and not self._is_hex_value(status_enum, 2):
                 errors[CONF_STATUS_ENUM] = "invalid_device_enum"
-            # Mirrors async_step_manual()'s own schema: deliberately no
-            # selector-level `min` for either field, so a non-positive
-            # value reaches here instead of being rejected earlier as a
-            # raw, untranslated schema error that would abort the whole
-            # flow rather than re-showing this form with a normal,
-            # translated field error.
+            # This form's schema deliberately has no selector-level `min`
+            # for either field, so a non-positive value reaches here
+            # instead of being rejected earlier as a raw, untranslated
+            # schema error that would abort the whole flow rather than
+            # re-showing this form with a normal, translated field error.
             if open_time <= 0:
                 errors[CONF_OPEN_TIME_SECONDS] = "invalid_travel_time"
             if close_time <= 0:

@@ -40,6 +40,7 @@ from custom_components.schellenberg_usb.const import (
     CONF_CLOSE_TIME,
     CONF_DEVICE_ENUM,
     CONF_DEVICE_ID,
+    CONF_INITIAL_POSITION,
     CONF_OPEN_TIME,
     CONF_SERIAL_PORT,
     CONF_STATUS_DEVICE_ID,
@@ -92,6 +93,18 @@ def _build_cover(hass: HomeAssistant, api: Any, **overrides: Any) -> Schellenber
     cover.hass = hass
     cover.entity_id = "cover.living_room_blind"
     cover.async_write_ha_state = MagicMock()  # type: ignore[method-assign, misc]
+    # A bare MagicMock's pop_fresh_calibration_position(...) would otherwise
+    # return a truthy MagicMock instead of None, which async_added_to_hass()
+    # would wrongly treat as a real fresh-calibration position. Default it
+    # to "nothing to pop" - but only if a test hasn't already configured
+    # its own return value (before *or* after calling this helper, since
+    # api is the caller's own object either way): an untouched Mock's
+    # .return_value is itself still an auto-generated MagicMock, which is
+    # how this tells "never configured" apart from "deliberately set".
+    if isinstance(api, MagicMock) and isinstance(
+        api.pop_fresh_calibration_position.return_value, MagicMock
+    ):
+        api.pop_fresh_calibration_position.return_value = None
     return cover
 
 
@@ -270,6 +283,7 @@ async def test_position_loop_stops_at_a_partial_target(
     monkeypatch.setattr(asyncio, "sleep", instant_sleep)
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     monkeypatch.setattr(
         cover,
@@ -282,10 +296,170 @@ async def test_position_loop_stops_at_a_partial_target(
 
     await cover._async_position_update_loop()
 
+    # The stop must wait for the move's own open/close transmission to be
+    # clear of the transmitter before it is sent - see the matching comment
+    # in _async_position_update_loop() - and only then actually be sent.
+    api.wait_for_transmitter_idle.assert_awaited_once()
     api.control_blind.assert_awaited_once_with(
         cover._command_enum, CMD_STOP, device_id=cover._command_device_id
     )
     assert cover._target_position is None
+
+
+async def test_position_loop_stops_early_to_compensate_stop_latency(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fast blind's stop must fire before the literal target, not at it.
+
+    Companion to test_position_loop_stops_at_a_partial_target above: that
+    test's default 60s travel time makes the latency-compensation lead
+    (STOP_COMMAND_LATENCY_SECONDS / travel_time * 100, roughly 2 points)
+    too small to tell apart from the uncompensated boundary by itself. Here
+    a short, 6s close travel time makes the lead a much larger ~20 points,
+    so a position estimate that has only reached 25% (still well short of
+    the literal 20% target) is enough to trigger the stop - proving the
+    comparison is actually against `target + lead`, not `target`.
+    """
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api, device_data={CONF_CLOSE_TIME: 6.0})
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 25),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 30
+    cover._target_position = 20
+
+    await cover._async_position_update_loop()
+
+    api.control_blind.assert_awaited_once_with(
+        cover._command_enum, CMD_STOP, device_id=cover._command_device_id
+    )
+    # The entity still reports having reached the *requested* target, not
+    # the earlier point the stop was actually sent at - compensation is
+    # about when the stop command goes out, not what position is recorded.
+    assert cover._attr_current_cover_position == 20
+    assert cover._target_position is None
+
+
+class _LoopKeptRunning(Exception):
+    """Marks that the position loop survived a pass without stopping.
+
+    Used by test_position_loop_does_not_stop_before_the_compensated_lead
+    below to end the loop once it has proven the point, instead of
+    letting it spin forever. Deliberately not asyncio.CancelledError and
+    deliberately not delivered through a real task.cancel(): both of
+    those were tried here first and both crashed the pytest-xdist worker
+    running this test in real CI - first as an "ERROR at teardown ...
+    CancelledError", and after switching to a genuine task.cancel() on a
+    real asyncio.ensure_future() task, as an unrecoverable "[gw3] node
+    down: Not properly terminated" with no traceback at all. Either way,
+    something about asyncio's own cancellation machinery interacting
+    with a real, long asyncio.sleep() and this suite's thread-based
+    pytest-timeout does not survive cleanly in that environment. An
+    ordinary exception type sidesteps all of that: the loop's own
+    `except asyncio.CancelledError` does not catch it, there is no Task
+    object to cancel or reap, and no real sleep ever happens, so nothing
+    is left for asyncio, Home Assistant's task bookkeeping, or the test
+    timeout watchdog to mishandle.
+    """
+
+
+async def test_position_loop_does_not_stop_before_the_compensated_lead(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The early trigger must not fire any earlier than the compensated lead.
+
+    Mirrors the test above with the same 6s travel time (~20-point lead),
+    but the estimate (45%) is still outside target(20) + lead(~20) = ~40 -
+    so the loop must keep waiting rather than stopping prematurely.
+    """
+
+    sleep_calls = 0
+
+    async def counting_sleep(*_args: object, **_kwargs: object) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            # Looping back for a second pass proves the first one did not
+            # stop early - end the test right here instead of actually
+            # waiting (see _LoopKeptRunning for why this isn't a real
+            # cancellation). Exactly "== 2", not "and beyond": this patches
+            # asyncio.sleep globally for as long as monkeypatch keeps it
+            # installed, which outlives the `with pytest.raises(...)` block
+            # below and reaches into this test's own fixture teardown - the
+            # `hass` fixture's cleanup does its own unrelated real sleep(s)
+            # there. ">= 2" raised again on that later, unguarded call with
+            # nothing left to catch it, surfacing as a separate "ERROR at
+            # teardown" even though the test itself had already passed.
+            # Beyond the second call, behaving like a plain instant no-op
+            # sleep (the same thing every other mocked-sleep test in this
+            # file already does) is harmless.
+            raise _LoopKeptRunning
+
+    monkeypatch.setattr(asyncio, "sleep", counting_sleep)
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api, device_data={CONF_CLOSE_TIME: 6.0})
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 45),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 50
+    cover._target_position = 20
+
+    with pytest.raises(_LoopKeptRunning):
+        await cover._async_position_update_loop()
+
+    api.control_blind.assert_not_awaited()
+    api.wait_for_transmitter_idle.assert_not_awaited()
+    assert cover._target_position == 20
+
+
+async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit 0/100 target needs neither the wait nor a stop command.
+
+    Extends test_position_loop_reaching_an_endstop_target_sends_no_active_stop
+    (which only checks control_blind) to also cover the new
+    wait_for_transmitter_idle() call, since both are gated by the same
+    needs_stop_command condition and a future change to one must not
+    silently un-gate the other.
+    """
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 0),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 5
+    cover._target_position = 0
+
+    await cover._async_position_update_loop()
+
+    api.wait_for_transmitter_idle.assert_not_awaited()
+    api.control_blind.assert_not_awaited()
 
 
 async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
@@ -791,7 +965,7 @@ async def test_handle_calibration_completed_ignores_a_different_device(
     cover = _build_cover(hass, api, device_id="ABCDEF")
     cover._attr_current_cover_position = 55
 
-    cover._handle_calibration_completed("A_DIFFERENT_DEVICE", 12.0, 9.0)
+    cover._handle_calibration_completed("A_DIFFERENT_DEVICE", 12.0, 9.0, 0)
 
     assert cover._attr_current_cover_position == 55
 
@@ -799,16 +973,40 @@ async def test_handle_calibration_completed_ignores_a_different_device(
 async def test_handle_calibration_completed_updates_travel_times_and_closes(
     hass: HomeAssistant,
 ) -> None:
+    """ending_position=0: the close leg ran last, see
+    options_flow_calibration.py's calibration_close step.
+    """
     api = MagicMock()
     cover = _build_cover(hass, api, device_id="ABCDEF")
     cover._attr_current_cover_position = 55
 
-    cover._handle_calibration_completed("ABCDEF", 18.5, 16.5)
+    cover._handle_calibration_completed("ABCDEF", 18.5, 16.5, 0)
 
     assert cover._travel_time_open == 18.5
     assert cover._travel_time_close == 16.5
     assert cover._attr_current_cover_position == 0
     assert cover._attr_is_closed is True
+    assert cover._position_confirmed_since_restart is True
+
+
+async def test_handle_calibration_completed_can_end_open_instead_of_closed(
+    hass: HomeAssistant,
+) -> None:
+    """Mirror of the test above with ending_position=100: when the person
+    chose to measure the close leg first, the open leg runs last and the
+    blind ends up fully open, not closed - calibration's result is no
+    longer hardcoded to 0.
+    """
+    api = MagicMock()
+    cover = _build_cover(hass, api, device_id="ABCDEF")
+    cover._attr_current_cover_position = 55
+
+    cover._handle_calibration_completed("ABCDEF", 18.5, 16.5, 100)
+
+    assert cover._travel_time_open == 18.5
+    assert cover._travel_time_close == 16.5
+    assert cover._attr_current_cover_position == 100
+    assert cover._attr_is_closed is False
     assert cover._position_confirmed_since_restart is True
 
 
@@ -859,15 +1057,92 @@ async def test_added_to_hass_restores_position_from_a_plain_closed_state(
 async def test_added_to_hass_defaults_to_closed_when_nothing_was_restored(
     hass: HomeAssistant,
 ) -> None:
-    """A brand-new entity with no prior Home Assistant state at all."""
+    """A brand-new entity with no prior Home Assistant state at all, and no
+    CONF_INITIAL_POSITION in its device_data either (e.g. a blind paired
+    before that key existed, or via the hybrid add_shutter_from_remote
+    workflow, which never calibrates) - see the sibling test right below
+    for the case where that key *is* present.
+    """
     api = MagicMock()
     cover = _build_cover(hass, api)
-    cover.async_get_last_state = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cover.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
 
     await cover.async_added_to_hass()
 
     assert cover._attr_current_cover_position == 0
     assert cover._attr_is_closed is True
+
+
+async def test_added_to_hass_uses_calibration_ending_position_when_nothing_was_restored(
+    hass: HomeAssistant,
+) -> None:
+    """No restored HA state, but the subentry carries the position
+    calibration actually ended at (see options_flow_calibration.py's
+    calibration_close step and cover.py's own
+    _initial_position_from_calibration) - that real measured value should
+    be used instead of unconditionally defaulting to closed.
+    """
+    api = MagicMock()
+    cover = _build_cover(hass, api, device_data={CONF_INITIAL_POSITION: 100})
+    cover.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
+
+    await cover.async_added_to_hass()
+
+    assert cover._attr_current_cover_position == 100
+    assert cover._attr_is_closed is False
+
+
+async def test_added_to_hass_prefers_restored_state_over_calibration_ending_position(
+    hass: HomeAssistant,
+) -> None:
+    """Restored Home Assistant state - the blind's actual last known
+    position - outranks CONF_INITIAL_POSITION, which only ever reflects
+    where calibration itself ended, possibly a while ago: the fallback
+    above must stay a fallback, used only when nothing was restored.
+    """
+    api = MagicMock()
+    cover = _build_cover(hass, api, device_data={CONF_INITIAL_POSITION: 100})
+    cover.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=State(
+            "cover.living_room_blind", "closed", {ATTR_CURRENT_POSITION: 0}
+        )
+    )
+
+    await cover.async_added_to_hass()
+
+    assert cover._attr_current_cover_position == 0
+    assert cover._attr_is_closed is True
+
+
+async def test_added_to_hass_prefers_fresh_calibration_over_restored_state(
+    hass: HomeAssistant,
+) -> None:
+    """A calibration that just finished, in the same "Pair and calibrate"
+    run that is creating this entity for the first time, outranks even a
+    restored Home Assistant state - unlike CONF_INITIAL_POSITION above,
+    which a restored state always beats. A reused blind_id (the same
+    remote paired, removed, and paired again) can restore a leftover
+    position from that earlier, unrelated device; what calibration just
+    measured, seconds ago, is the one value guaranteed to be current.
+    """
+    api = MagicMock()
+    api.pop_fresh_calibration_position.return_value = 100
+    cover = _build_cover(hass, api, device_data={CONF_INITIAL_POSITION: 0})
+    cover.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=State(
+            "cover.living_room_blind", "closed", {ATTR_CURRENT_POSITION: 0}
+        )
+    )
+
+    await cover.async_added_to_hass()
+
+    assert cover._attr_current_cover_position == 100
+    assert cover._attr_is_closed is False
+    api.pop_fresh_calibration_position.assert_called_once_with(cover._blind_id)
 
 
 async def test_added_to_hass_wires_up_the_status_identity_signal(
@@ -880,7 +1155,9 @@ async def test_added_to_hass_wires_up_the_status_identity_signal(
     """
     api = MagicMock()
     cover = _build_cover(hass, api, status_device_id="FEDCBA", status_enum="05")
-    cover.async_get_last_state = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cover.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     await cover.async_added_to_hass()

@@ -43,12 +43,12 @@
         },
         "pair_device": {
           "title": "Pair and calibrate",
-          "description": "Pairs the device and goes straight to calibration, with no test move in between. After pressing Pair, use an already paired physical remote within 2 minutes: select the motor/channel, press its programming button until the channel LED blinks, then press Stop and wait for the motor to beep or rattle. Home Assistant will detect the frame and send teach command 60 followed by finish command 40 on the same enum. A USB stick ACK does not prove the motor learned the transmitter.",
+          "description": "Press the pairing button or pairing buttons on your device within 2 minutes.",
           "submit": "Pair"
         },
         "add_shutter_from_remote": {
           "title": "Add shutter from remote",
-          "description": "This pairing method is recommended for any compatible Schellenberg RF shutter, whether it is an RF shutter motor, an electronic belt/strap winder, or an awning motor. After pressing Pair, use an already paired physical remote within 2 minutes: select the motor/channel, press its programming button until the channel LED blinks, then press Stop and wait for the motor to beep or rattle. Home Assistant will detect the frame and send teach command 60 followed by finish command 40 on the same enum. A USB stick ACK does not prove the motor learned the transmitter. A short test move follows; confirm whether the motor actually moved. If that same remote channel also controls other shutters, you can add each of them here too, right after this one, without repeating any of these steps.",
+          "description": "This pairing method is recommended for any compatible Schellenberg RF shutter, whether it is an RF shutter motor, an electronic belt/strap winder, or an awning motor. After pressing Pair, use an already paired physical remote within 2 minutes: select the motor/channel, press its programming button until the channel LED blinks, then press Stop. Home Assistant will detect the frame and send teach command 60 followed by finish command 40 on the same enum. A USB stick ACK does not prove the motor learned the transmitter. A short test move follows; confirm whether the motor actually moved. If that same remote channel also controls other shutters, you can add each of them here too, right after this one, without repeating any of these steps.",
           "submit": "Pair"
         },
         "pairing_repeat_choice": {
@@ -57,29 +57,6 @@
           "menu_options": {
             "pair_another_on_channel": "Add another shutter on this same channel",
             "finish_pairing": "Finish"
-          }
-        },
-        "manual": {
-          "title": "Configure device identities",
-          "description": "The command identity is used for outgoing control. The optional status identity is matched against received movement messages; leave it blank to use the command identity. The primary status identity drives position tracking. Enter additional identities as DEVICE_ID/ENUM, one per line or comma-separated. Secondary identities are matched for diagnostics but do not change position. Leave both primary status fields blank when unknown; the transmit identity will not be used as status unless it was actually observed or you enter it manually.",
-          "data": {
-            "device_name": "Name",
-            "device_id": "Command device ID",
-            "device_enum": "Command enum",
-            "status_device_id": "Primary status device ID (optional)",
-            "status_enum": "Primary status enum (optional)",
-            "open_time_seconds": "Open time",
-            "close_time_seconds": "Close time",
-            "invert_direction": "Invert open/close direction",
-            "secondary_status_identities": "Additional status identities (optional)"
-          },
-          "submit": "Continue"
-        },
-        "manual_next": {
-          "title": "Manual device ready",
-          "menu_options": {
-            "test_motor": "Test motor command",
-            "save_manual": "Save without testing"
           }
         },
         "name_device": {
@@ -91,7 +68,10 @@
         },
         "test_motor": {
           "title": "Test motor command",
-          "description": "Pressing Test briefly moves the shutter in one direction, then it stops automatically. Home Assistant picks the direction itself: if it was last closed, it briefly opens; if it was open, it briefly closes; if the position isn't known yet, it opens. This addresses device {device_id}/{device_enum}. Watch the motor while this happens.",
+          "description": "Choose a direction, then press Test to briefly move the shutter that way before it stops automatically. This addresses device {device_id}/{device_enum}. Watch the motor while this happens.{retry_notice}",
+          "data": {
+            "test_direction": "Which direction should be tested?"
+          },
           "submit": "Test"
         },
         "did_motor_move": {
@@ -190,17 +170,20 @@
           "submit": "Save"
         },
         "calibration_close": {
-          "title": "Step 1: Close the blind",
-          "description": "First, ensure {device_name} is fully closed (all the way down). Press 'Next' when ready.",
+          "title": "Before you start",
+          "description": "To measure {device_name} accurately, Home Assistant needs to know which direction to test first.",
+          "data": {
+            "initial_state": "What is the blind's current state?"
+          },
           "submit": "Next"
         },
         "calibration_open_instruction": {
-          "title": "Step 2: Open the blind",
+          "title": "Open the blind",
           "description": "Now we will measure how long it takes to open {device_name}. Press Start **then** press the open button on the control to start measuring. No need to rush — the timer doesn't start until we receive an upward movement message from the blind.",
           "submit": "Start"
         },
         "calibration_close_instruction": {
-          "title": "Step 3: Close the blind",
+          "title": "Close the blind",
           "description": "Now we will measure how long it takes to close {device_name}. Press Start **then** press the close button on the control to start measuring. No need to rush — the timer doesn't start until we receive a downward movement message from the blind.",
           "submit": "Start"
         },
@@ -211,7 +194,7 @@
         },
         "teach_motor": {
           "title": "Teach motor / activate USB transmitter",
-          "description": "Selected device: {selected_blind}\nCommand identity: {command_device_id}/{command_enum}\n\nBefore submitting: select this motor/channel on an already paired physical remote, press the remote programming button until its channel LED blinks, then press Stop and wait for the motor to beep or rattle. Submit only then. Home Assistant sends teach command 60, waits for the stick ACK, sends finish command 40 on the same enum, and then performs a short Open/Stop test. Stick ACKs do not prove that the motor learned or moved. Do not repeat command 60 outside the motor programming sequence; it can also change rotation direction.",
+          "description": "Selected device: {selected_blind}\nCommand identity: {command_device_id}/{command_enum}\n\nOptional: before submitting, select this motor/channel on an already paired physical remote, press its programming button until its channel LED blinks, then press Stop. Home Assistant sends teach command 60, waits for the stick ACK, sends finish command 40 on the same enum, and then performs a short Open/Stop test. Stick ACKs do not prove that the motor learned or moved. Do not repeat command 60 outside the motor programming sequence; it can also change rotation direction.",
           "submit": "Send teach command and test"
         },
         "send_raw_command": {
@@ -265,6 +248,20 @@
     "error": {
       "cannot_connect": "Failed to connect to the serial port",
       "unknown": "Unexpected error occurred"
+    }
+  },
+  "selector": {
+    "initial_state": {
+      "options": {
+        "open": "The blind is currently fully open",
+        "closed": "The blind is currently fully closed"
+      }
+    },
+    "test_direction": {
+      "options": {
+        "open": "Open",
+        "close": "Close"
+      }
     }
   },
   "entity": {
