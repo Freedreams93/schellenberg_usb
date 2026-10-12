@@ -5,7 +5,6 @@ from __future__ import annotations
 from custom_components.schellenberg_usb.const import (
     CALIBRATION_TIMEOUT,
     CMD_DOWN,
-    CMD_LED_BLINK_1,
     CMD_LED_OFF,
     CMD_LED_ON,
     CMD_PAIR,
@@ -68,7 +67,6 @@ def test_led_commands() -> None:
     """Test LED command constants."""
     assert CMD_LED_ON == "so+"
     assert CMD_LED_OFF == "so-"
-    assert CMD_LED_BLINK_1 == "so1"
 
 
 def test_signal_constants() -> None:

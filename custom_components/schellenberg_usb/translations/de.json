@@ -43,29 +43,13 @@
         },
         "pair_device": {
           "title": "Gerät koppeln und kalibrieren",
-          "description": "Drücken Sie die Kopplungstaste bei ihren Schellenberg USB-Stick und danach drücken Sie innerhalb von 2 Minuten die Kopplungstaste oder die Kopplungstasten an Ihrem Gerät.",
+          "description": "Drücken Sie innerhalb von 2 Minuten die Kopplungstaste oder die Kopplungstasten an Ihrem Gerät.",
           "submit": "Koppeln"
         },
         "add_shutter_from_remote": {
           "title": "Rollladen von Fernbedienung hinzufügen",
           "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Motor/Kanal aus. Drücken Sie dessen Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass der Motor den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf; bestätigen Sie, ob sich der Motor tatsächlich bewegt hat. Steuert derselbe Fernbedienungskanal noch weitere Rollläden, können Sie jeden davon direkt im Anschluss hier ebenfalls hinzufügen, ohne diese Schritte zu wiederholen.",
           "submit": "Koppeln"
-        },
-        "manual": {
-          "title": "Gerät manuell hinzufügen",
-          "description": "Die Befehlsidentität wird für die ausgehende Steuerung verwendet. Die optionale Statusidentität wird mit empfangenen Bewegungsmeldungen abgeglichen; lassen Sie sie leer, um die Befehlsidentität zu verwenden. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie zusätzliche Identitäten als GERÄTE-ID/ENUM ein, eine pro Zeile oder durch Kommas getrennt. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
-          "data": {
-            "device_name": "Name",
-            "device_id": "Geräte-ID",
-            "device_enum": "Enum",
-            "open_time_seconds": "Öffnungszeit",
-            "close_time_seconds": "Schließzeit",
-            "status_device_id": "Primäre Status-Geräte-ID (optional)",
-            "status_enum": "Primärer Status-Enum (optional)",
-            "invert_direction": "Öffnungs-/Schließrichtung umkehren",
-            "secondary_status_identities": "Zusätzliche Statusidentitäten (optional)"
-          },
-          "submit": "Hinzufügen"
         },
         "name_device": {
           "title": "Gerät benennen",
@@ -75,17 +59,20 @@
           }
         },
         "calibration_close": {
-          "title": "Schritt 1: Rollladen schließen",
-          "description": "Stellen Sie zunächst sicher, dass {device_name} vollständig geschlossen ist (ganz unten). Drücken Sie 'Weiter', wenn Sie bereit sind.",
+          "title": "Bevor Sie beginnen",
+          "description": "Um {device_name} genau zu kalibrieren, muss Home Assistant wissen, welche Richtung zuerst kalibriert werden soll.",
+          "data": {
+            "initial_state": "Wie ist der Rollladen aktuell?"
+          },
           "submit": "Weiter"
         },
         "calibration_open_instruction": {
-          "title": "Schritt 2: Rollladen öffnen",
+          "title": "Rollladen öffnen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu öffnen. Drücken Sie Start **und dann** die Öffnen-Taste an der Steuerung, um die Messung zu starten. Sie müssen sich nicht beeilen, der Timer startet erst, wenn wir eine Aufwärtsbewegungsnachricht vom Rollladen erhalten.",
           "submit": "Start"
         },
         "calibration_close_instruction": {
-          "title": "Schritt 3: Rollladen schließen",
+          "title": "Rollladen schließen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu schließen. Drücken Sie Start **und dann** die Schließen-Taste an der Steuerung, um die Messung zu starten. Sie müssen sich nicht beeilen, der Timer startet erst, wenn wir eine Abwärtsbewegungsnachricht vom Rollladen erhalten.",
           "submit": "Start"
         },
@@ -102,16 +89,12 @@
             "finish_pairing": "Fertig"
           }
         },
-        "manual_next": {
-          "title": "Manuelles Gerät bereit",
-          "menu_options": {
-            "test_motor": "Motorbefehl testen",
-            "save_manual": "Ohne Test speichern"
-          }
-        },
         "test_motor": {
           "title": "Motorbefehl testen",
-          "description": "Wenn Sie auf Test drücken, bewegt sich der Rollladen kurz in eine Richtung und stoppt danach automatisch wieder. Home Assistant wählt die Richtung selbst: War er zuletzt geschlossen, öffnet er kurz. War er offen, schließt er kurz. Ist die Position noch unbekannt, öffnet er. Angesprochen wird das Gerät {device_id}/{device_enum}. Beobachten Sie dabei den Motor.",
+          "description": "Wählen Sie eine Richtung und drücken Sie dann Test: Der Rollladen bewegt sich kurz in diese Richtung und stoppt danach automatisch wieder. Angesprochen wird das Gerät {device_id}/{device_enum}. Beobachten Sie dabei den Motor.{retry_notice}",
+          "data": {
+            "test_direction": "Welche Richtung soll getestet werden?"
+          },
           "submit": "Test"
         },
         "did_motor_move": {
@@ -265,6 +248,20 @@
     "error": {
       "cannot_connect": "Verbindung zum seriellen Anschluss fehlgeschlagen",
       "unknown": "Unerwarteter Fehler aufgetreten"
+    }
+  },
+  "selector": {
+    "initial_state": {
+      "options": {
+        "open": "Der Rollladen ist aktuell vollständig geöffnet",
+        "closed": "Der Rollladen ist aktuell vollständig geschlossen"
+      }
+    },
+    "test_direction": {
+      "options": {
+        "open": "Öffnen",
+        "close": "Schließen"
+      }
     }
   },
   "entity": {

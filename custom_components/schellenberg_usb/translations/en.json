@@ -43,7 +43,7 @@
         },
         "pair_device": {
           "title": "Pair device and calibrate",
-          "description": "Press the pairing button on your Schellenberg USB stick and then, within 2 minutes, press the pairing button or pairing buttons on your device.",
+          "description": "Press the pairing button or pairing buttons on your device within 2 minutes.",
           "submit": "Pair"
         },
         "add_shutter_from_remote": {
@@ -59,29 +59,6 @@
             "finish_pairing": "Finish"
           }
         },
-        "manual": {
-          "title": "Configure device identities",
-          "description": "The command identity is used for outgoing control. The optional status identity is matched against received movement messages; leave it blank to use the command identity. The primary status identity drives position tracking. Enter additional identities as DEVICE_ID/ENUM, one per line or comma-separated. Secondary identities are matched for diagnostics but do not change position. Leave both primary status fields blank when unknown; the transmit identity will not be used as status unless it was actually observed or you enter it manually.",
-          "data": {
-            "device_name": "Name",
-            "device_id": "Command device ID",
-            "device_enum": "Command enum",
-            "status_device_id": "Primary status device ID (optional)",
-            "status_enum": "Primary status enum (optional)",
-            "open_time_seconds": "Open time",
-            "close_time_seconds": "Close time",
-            "invert_direction": "Invert open/close direction",
-            "secondary_status_identities": "Additional status identities (optional)"
-          },
-          "submit": "Continue"
-        },
-        "manual_next": {
-          "title": "Manual device ready",
-          "menu_options": {
-            "test_motor": "Test motor command",
-            "save_manual": "Save without testing"
-          }
-        },
         "name_device": {
           "title": "Name your device",
           "description": "A pairing candidate was detected and the USB stick teach command was transmitted for device ID {device_id}. The stick ACK cannot prove that the motor authorized it. Name the device, then verify actual movement.",
@@ -91,7 +68,10 @@
         },
         "test_motor": {
           "title": "Test motor command",
-          "description": "Pressing Test briefly moves the shutter in one direction, then it stops automatically. Home Assistant picks the direction itself: if it was last closed, it briefly opens; if it was open, it briefly closes; if the position isn't known yet, it opens. This addresses device {device_id}/{device_enum}. Watch the motor while this happens.",
+          "description": "Choose a direction, then press Test to briefly move the shutter that way before it stops automatically. This addresses device {device_id}/{device_enum}. Watch the motor while this happens.{retry_notice}",
+          "data": {
+            "test_direction": "Which direction should be tested?"
+          },
           "submit": "Test"
         },
         "did_motor_move": {
@@ -190,17 +170,20 @@
           "submit": "Save"
         },
         "calibration_close": {
-          "title": "Step 1: Close the blind",
-          "description": "First, ensure {device_name} is fully closed (all the way down). Press 'Next' when ready.",
+          "title": "Before you start",
+          "description": "To measure {device_name} accurately, Home Assistant needs to know which direction to test first.",
+          "data": {
+            "initial_state": "What is the blind's current state?"
+          },
           "submit": "Next"
         },
         "calibration_open_instruction": {
-          "title": "Step 2: Open the blind",
+          "title": "Open the blind",
           "description": "Now we will measure how long it takes to open {device_name}. Press Start **then** press the open button on the control to start measuring. No need to rush — the timer doesn't start until we receive an upward movement message from the blind.",
           "submit": "Start"
         },
         "calibration_close_instruction": {
-          "title": "Step 3: Close the blind",
+          "title": "Close the blind",
           "description": "Now we will measure how long it takes to close {device_name}. Press Start **then** press the close button on the control to start measuring. No need to rush — the timer doesn't start until we receive a downward movement message from the blind.",
           "submit": "Start"
         },
@@ -265,6 +248,20 @@
     "error": {
       "cannot_connect": "Failed to connect to the serial port",
       "unknown": "Unexpected error occurred"
+    }
+  },
+  "selector": {
+    "initial_state": {
+      "options": {
+        "open": "The blind is currently fully open",
+        "closed": "The blind is currently fully closed"
+      }
+    },
+    "test_direction": {
+      "options": {
+        "open": "Open",
+        "close": "Close"
+      }
     }
   },
   "entity": {

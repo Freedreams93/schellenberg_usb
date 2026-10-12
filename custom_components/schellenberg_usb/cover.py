@@ -35,6 +35,7 @@ from .const import (
     CONF_COMMAND_ENUM,
     CONF_DEVICE_ENUM,
     CONF_DEVICE_ID,
+    CONF_INITIAL_POSITION,
     CONF_INVERT_DIRECTION,
     CONF_OPEN_TIME,
     CONF_SECONDARY_STATUS_IDENTITIES,
@@ -52,6 +53,7 @@ from .const import (
     SIGNAL_MANUAL_POSITION_SYNC,
     SIGNAL_STICK_STATUS_UPDATED,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
+    STOP_COMMAND_LATENCY_SECONDS,
     SUBENTRY_TYPE_BLIND,
     SchellenbergConfigEntry,
 )
@@ -400,6 +402,16 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._travel_time_close: float = device_data_dict.get(
             CONF_CLOSE_TIME, DEFAULT_TRAVEL_TIME_SECONDS
         )
+        # Set only on a subentry created fresh from a pair_device calibration
+        # that measured which end stop the blind actually ended at (see
+        # options_flow_calibration.py's calibration_close step). None for
+        # every blind paired before this field existed and for the hybrid
+        # (add_shutter_from_remote) workflow, which never calibrates - the
+        # "nothing to restore" branch of async_added_to_hass() below falls
+        # back to 0 (closed) in both of those cases, as it always did.
+        self._initial_position_from_calibration: int | None = device_data_dict.get(
+            CONF_INITIAL_POSITION
+        )
         self._move_start_time: float | None = None
         self._move_start_position: int | None = None
         self._position_update_task: asyncio.Task[None] | None = None
@@ -474,16 +486,59 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                     raw_position,
                 )
 
-        if self._attr_current_cover_position is None:
-            self._attr_current_cover_position = 0
-            self._attr_is_closed = True
-            _LOGGER.debug(
-                "No previous state for %s (%s); defaulting position to 0%% (closed)",
-                self._device_name,
-                self._device_id,
-            )
+        # A calibration that finished moments ago, in the same "Pair and
+        # calibrate" run that is creating this entity for the first time,
+        # is more trustworthy than *any* restored state - including one
+        # that looks valid, since a reused blind_id (e.g. this same remote
+        # was paired, removed, and is now being paired again) would
+        # restore a leftover position from that earlier, unrelated device.
+        # This only ever fires once, right after such a fresh pairing;
+        # every later restart finds nothing to pop and is unaffected.
+        fresh_calibration = False
+        fresh_position = self._api.pop_fresh_calibration_position(self._blind_id)
+        if fresh_position is not None:
+            if restored_from_ha:
+                _LOGGER.debug(
+                    "Restored position for %s (%s) was %d%%, but this blind "
+                    "was just calibrated in this same pairing - trusting "
+                    "the freshly measured %d%% instead",
+                    self._device_name,
+                    self._device_id,
+                    self._attr_current_cover_position,
+                    fresh_position,
+                )
+            self._attr_current_cover_position = fresh_position
+            self._attr_is_closed = fresh_position == 0
+            restored_from_ha = False
+            fresh_calibration = True
 
-        if restored_from_ha:
+        if self._attr_current_cover_position is None:
+            if self._initial_position_from_calibration is not None:
+                self._attr_current_cover_position = (
+                    self._initial_position_from_calibration
+                )
+                _LOGGER.debug(
+                    "No previous state for %s (%s); using the position "
+                    "calibration actually ended at: %d%%",
+                    self._device_name,
+                    self._device_id,
+                    self._attr_current_cover_position,
+                )
+            else:
+                self._attr_current_cover_position = 0
+                _LOGGER.debug(
+                    "No previous state for %s (%s); defaulting position to "
+                    "0%% (closed)",
+                    self._device_name,
+                    self._device_id,
+                )
+            self._attr_is_closed = self._attr_current_cover_position == 0
+
+        if fresh_calibration:
+            self._position_source_kind = "calibration"
+            self._position_update_source = "fresh calibration result"
+            startup_status = "measured during pairing / not confirmed since restart"
+        elif restored_from_ha:
             self._position_source_kind = "restored HA state"
             self._position_update_source = "restored HA state"
             startup_status = "restored / estimated / not confirmed since restart"
@@ -507,7 +562,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self.async_on_remove(
                 async_dispatcher_connect(
                     self.hass,
-                    f"{SIGNAL_DEVICE_EVENT}_{self._status_device_id}_{self._status_enum}",
+                    f"{SIGNAL_DEVICE_EVENT}_{self._status_device_id}_"
+                    f"{self._status_enum}",
                     self._handle_event,
                 )
             )
@@ -604,9 +660,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
 
     @callback
     def _handle_calibration_completed(
-        self, device_id: str, open_time: float, close_time: float
+        self,
+        device_id: str,
+        open_time: float,
+        close_time: float,
+        ending_position: int,
     ) -> None:
-        """Apply newly measured travel times and reset to fully closed."""
+        """Apply newly measured travel times and calibration's end position.
+
+        ending_position is whichever end stop the last-driven leg of the
+        calibration (open or close - the person's own choice, see
+        options_flow_calibration.py's calibration_close step) reached.
+        """
         if device_id != self._device_id:
             return
 
@@ -614,8 +679,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._travel_time_open = open_time
         self._travel_time_close = close_time
 
-        self._attr_current_cover_position = 0
-        self._attr_is_closed = True
+        self._attr_current_cover_position = ending_position
+        self._attr_is_closed = ending_position == 0
         self._position_update_source = "completed calibration"
         self._position_source_kind = "calibration"
         self._position_confirmed_since_restart = True
@@ -624,16 +689,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             source=self._position_update_source,
             direction="stop",
             previous_position=previous_position,
-            new_position=0,
+            new_position=ending_position,
             status="confirmed",
         )
 
         _LOGGER.info(
             "Device %s calibration updated: open_time=%.2fs, close_time=%.2fs. "
-            "Cover position set to fully closed (0%%)",
+            "Cover position set to %d%% (%s)",
             self._device_name,
             open_time,
             close_time,
+            ending_position,
+            "closed" if ending_position == 0 else "open",
         )
 
         self.async_write_ha_state()
@@ -865,14 +932,45 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                 ha_update_counter += 1
 
                 if self._target_position is not None:
+                    # An intermediate target (unlike 0/100, see
+                    # needs_stop_command below) is only ever reached because
+                    # a stop command sent from here makes it so - and that
+                    # command still has to be transmitted and acted on after
+                    # this check fires. Measured on real hardware (see
+                    # STOP_COMMAND_LATENCY_SECONDS's own comment in
+                    # const.py), that takes roughly 1.1-1.2s, during which
+                    # the blind keeps moving under the already-issued open/
+                    # close command. Triggering this many percentage points
+                    # of this move's own travel early compensates for that
+                    # otherwise-fixed overshoot, scaled to this blind's own
+                    # travel time so a fast blind and a slow blind are each
+                    # compensated correctly. Uncompensated, this is what
+                    # made any target within roughly this fraction of a fast
+                    # blind's travel time of either end stop unreachable -
+                    # the earliest a stop could physically land was already
+                    # past it.
+                    needs_stop_command = self._target_position not in (0, 100)
+                    stop_lead_percent = 0.0
+                    if needs_stop_command:
+                        travel_time_for_lead = max(
+                            self._travel_time_open
+                            if self._attr_is_opening
+                            else self._travel_time_close,
+                            0.1,
+                        )
+                        stop_lead_percent = (
+                            STOP_COMMAND_LATENCY_SECONDS / travel_time_for_lead
+                        ) * 100
                     position_reached = (
                         self._attr_is_opening
                         and self._attr_current_cover_position is not None
-                        and self._attr_current_cover_position >= self._target_position
+                        and self._attr_current_cover_position
+                        >= self._target_position - stop_lead_percent
                     ) or (
                         self._attr_is_closing
                         and self._attr_current_cover_position is not None
-                        and self._attr_current_cover_position <= self._target_position
+                        and self._attr_current_cover_position
+                        <= self._target_position + stop_lead_percent
                     )
                     if position_reached:
                         self._attr_current_cover_position = self._target_position
@@ -881,7 +979,25 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                             self._device_name,
                             self._target_position,
                         )
-                        if self._target_position not in (0, 100):
+                        if needs_stop_command:
+                            # Wait for the open/close command issued when
+                            # this move started to actually finish
+                            # transmitting before sending the stop: sending
+                            # it into an already-busy transmitter is what
+                            # let the stop be silently lost (the stick
+                            # reports busy for the new command and
+                            # control_blind(), deliberately, never retries -
+                            # see its own docstring) rather than merely
+                            # late. Returns immediately once that
+                            # transmission has already finished, which for
+                            # any move longer than roughly one transmit
+                            # cycle - the overwhelming majority - it already
+                            # has by the time this point is reached, so this
+                            # adds no delay in the normal case.
+                            await self._api.wait_for_transmitter_idle(
+                                "finishing the set-position move before "
+                                "stopping it at the target"
+                            )
                             await self._api.control_blind(
                                 self._command_enum,
                                 CMD_STOP,

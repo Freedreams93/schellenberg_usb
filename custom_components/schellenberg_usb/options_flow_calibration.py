@@ -11,6 +11,7 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect as async_dispatcher_connect,
 )
@@ -28,6 +29,7 @@ from .const import (
     CONF_COMMAND_ENUM,
     CONF_DEVICE_ENUM,
     CONF_DEVICE_ID,
+    CONF_INITIAL_POSITION,
     CONF_INVERT_DIRECTION,
     CONF_LAST_CALIBRATION,
     CONF_OPEN_TIME,
@@ -68,6 +70,13 @@ class CalibrationFlowHandler:
         self._event_listener_unsubs: list[Any] = []
         self._open_time: float | None = None
         self._close_time: float | None = None
+        # 100 if the open leg drove last, 0 if the close leg drove last -
+        # whichever leg runs second always finishes at that leg's own end
+        # stop, regardless of which leg ran first. Set by whichever of
+        # async_step_calibration_open_instruction /
+        # async_step_calibration_close_instruction finds the other leg
+        # already done; read once calibration completes.
+        self._calibration_ending_position: int | None = None
         self._create_subentry_after_calibration = False
         self._pending_blind_id: str | None = None
         self._pending_device_id: str | None = None
@@ -85,15 +94,15 @@ class CalibrationFlowHandler:
         api = entry.runtime_data
         return api if isinstance(api, SchellenbergUsbApi) else None
 
-    def _start_calibration_capture(self) -> None:
+    def _start_calibration_capture(self, *, phase: str) -> None:
         api = self._runtime_api()
         if api is None:
             return
         try:
-            api.start_status_frame_capture(phase="opening")
+            api.start_status_frame_capture(phase=phase)
         except RuntimeError:
             api.finish_status_frame_capture(end_reason="superseded_by_calibration")
-            api.start_status_frame_capture(phase="opening")
+            api.start_status_frame_capture(phase=phase)
 
     def _set_calibration_capture_phase(self, phase: str) -> None:
         api = self._runtime_api()
@@ -186,6 +195,10 @@ class CalibrationFlowHandler:
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         if user_input is not None:
+            if user_input.get("initial_state") == "open":
+                self._start_calibration_capture(phase="closing")
+                return await self.async_step_calibration_close_instruction()
+            self._start_calibration_capture(phase="opening")
             return await self.async_step_calibration_open_instruction()
 
         if self._selected_device is None:
@@ -193,7 +206,26 @@ class CalibrationFlowHandler:
 
         return self.flow.async_show_form(
             step_id="calibration_close",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema(
+                {
+                    # A plain BooleanSelector used to default to "closed"
+                    # (unchecked) whenever the person left it alone, which
+                    # looked identical to an actual, considered answer - the
+                    # checkbox's own label only ever stated what *checking*
+                    # it meant, with nothing on the form saying what leaving
+                    # it unchecked meant instead. A required select with no
+                    # default forces one of the two states to be picked
+                    # explicitly every time; Home Assistant's frontend
+                    # cannot submit this form with neither option chosen.
+                    vol.Required("initial_state"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=["open", "closed"],
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key="initial_state",
+                        )
+                    ),
+                }
+            ),
             description_placeholders={
                 "device_name": self._selected_device["name"],
             },
@@ -218,7 +250,7 @@ class CalibrationFlowHandler:
                 last_step=False,
             )
 
-        self._start_calibration_capture()
+        self._set_calibration_capture_phase("opening")
         try:
             start_ok = await self._wait_for_movement_start(EVENT_STARTED_MOVING_UP)
             if not start_ok:
@@ -252,9 +284,15 @@ class CalibrationFlowHandler:
 
             self._open_time = max(time.monotonic() - self._calibration_start_time, 0.1)
             _LOGGER.debug("Calibration open_time: %s seconds", self._open_time)
-            self._set_calibration_capture_phase("idle_between_legs")
 
-            return await self.async_step_calibration_close_instruction()
+            if self._close_time is None:
+                self._set_calibration_capture_phase("idle_between_legs")
+                return await self.async_step_calibration_close_instruction()
+
+            self._calibration_ending_position = 100
+            self._finish_calibration_capture("completed")
+            self._apply_calibration_status_candidates()
+            return await self.async_step_calibration_complete()
 
         except asyncio.CancelledError:
             self._finish_calibration_capture("opening_cancelled")
@@ -324,9 +362,14 @@ class CalibrationFlowHandler:
 
             self._close_time = max(time.monotonic() - self._calibration_start_time, 0.1)
             _LOGGER.debug("Calibration close_time: %s seconds", self._close_time)
+
+            if self._open_time is None:
+                self._set_calibration_capture_phase("idle_between_legs")
+                return await self.async_step_calibration_open_instruction()
+
+            self._calibration_ending_position = 0
             self._finish_calibration_capture("completed")
             self._apply_calibration_status_candidates()
-
             return await self.async_step_calibration_complete()
 
         except asyncio.CancelledError:
@@ -356,7 +399,20 @@ class CalibrationFlowHandler:
             return self.flow.async_abort(reason="device_not_found")
 
         if user_input is not None:
-            await self._notify_calibration_completed(self._open_time, self._close_time)
+            # Whichever leg ran last drove all the way to that leg's own end
+            # stop, so that is the blind's true physical position now -
+            # defaulting to 0 should never actually trigger (both instruction
+            # steps always set this before reaching this step), but matches
+            # this integration's existing closed-by-default assumption if it
+            # somehow did.
+            ending_position = (
+                self._calibration_ending_position
+                if self._calibration_ending_position is not None
+                else 0
+            )
+            await self._notify_calibration_completed(
+                self._open_time, self._close_time, ending_position
+            )
 
             if (
                 self._create_subentry_after_calibration
@@ -364,8 +420,11 @@ class CalibrationFlowHandler:
                 and self._pending_device_enum
                 and self._pending_device_name
             ):
+                blind_id = self._pending_blind_id or generate_blind_id()
+                if api := self._runtime_api():
+                    api.set_fresh_calibration_position(blind_id, ending_position)
                 data: dict[str, Any] = {
-                    CONF_BLIND_ID: self._pending_blind_id or generate_blind_id(),
+                    CONF_BLIND_ID: blind_id,
                     CONF_DEVICE_ID: self._pending_device_id,
                     CONF_DEVICE_ENUM: self._pending_device_enum,
                     CONF_COMMAND_DEVICE_ID: self._pending_device_id,
@@ -375,6 +434,7 @@ class CalibrationFlowHandler:
                     ),
                     CONF_OPEN_TIME: round(self._open_time, 2),
                     CONF_CLOSE_TIME: round(self._close_time, 2),
+                    CONF_INITIAL_POSITION: ending_position,
                     CONF_INVERT_DIRECTION: self._pending_invert_direction,
                 }
                 if (
@@ -552,7 +612,7 @@ class CalibrationFlowHandler:
             self._stop_event = None
 
     async def _notify_calibration_completed(
-        self, open_time: float, close_time: float
+        self, open_time: float, close_time: float, ending_position: int
     ) -> None:
         if self._selected_device is not None:
             async_dispatcher_send(
@@ -561,6 +621,7 @@ class CalibrationFlowHandler:
                 self._selected_device.get("entity_id", self._selected_device["id"]),
                 round(open_time, 2),
                 round(close_time, 2),
+                ending_position,
             )
 
     def enable_subentry_creation(

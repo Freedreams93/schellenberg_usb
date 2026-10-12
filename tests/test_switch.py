@@ -247,7 +247,9 @@ async def test_added_to_hass_defaults_to_off_with_nothing_restored(
     api = MagicMock()
     api.is_connected = True
     switch = _build_switch(hass, api)
-    switch.async_get_last_state = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    switch.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
 
     await switch.async_added_to_hass()
 
@@ -267,7 +269,9 @@ async def test_added_to_hass_wires_up_the_status_update_signal(
     api.is_connected = False
     api.led_off = AsyncMock(return_value=True)
     switch = _build_switch(hass, api)
-    switch.async_get_last_state = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    switch.async_get_last_state = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
 
     await switch.async_added_to_hass()
     api.is_connected = True

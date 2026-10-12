@@ -15,6 +15,7 @@ function's own retry/ACK/block handling had no direct coverage here.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Coroutine
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -455,7 +456,10 @@ def test_handle_connection_lost_resets_retry_and_busy_state(
     connected_api._transmitter_idle.clear()
     connected_api._control_blind_write_pending_conflict = True
 
-    connected_api.handle_connection_lost(connected_api._protocol, Exception("gone"))  # type: ignore[arg-type]
+    connected_api.handle_connection_lost(
+        connected_api._protocol,  # type: ignore[arg-type]
+        Exception("gone"),
+    )
 
     assert connected_api.is_connected is False
     assert connected_api.busy_latched is False
@@ -636,6 +640,72 @@ async def test_pair_device_and_wait_times_out_when_nothing_responds(
     assert connected_api.pairing_active is False
 
 
+async def test_stop_pairing_mode_restores_listening_from_the_write_alone(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """Leaving pairing mode must not get the stick stuck on "unknown" mode.
+
+    "sp" (CMD_GET_PARAM_P) is not an RF transmission (see send_command()'s
+    own is_transmit comment), so it never gets a real t1/t0 ACK back.
+    _stop_pairing_mode() therefore decides _device_mode from the "sp"
+    write succeeding alone, with no ACK wait at all - the same way
+    _enter_listening_mode() already trusts a successful "hello" write.
+    An earlier version instead waited for an idle confirmation that "sp"
+    structurally can't produce, and downgraded _device_mode to "unknown"
+    whenever that wait timed out even though "sp" itself had already
+    succeeded, which then blocked every later pairing attempt via
+    _transmit_capability_block_reason()'s "wrong_mode:unknown".
+    """
+    connected_api._pairing_active = True
+    connected_api._device_mode = "pairing"
+
+    await connected_api._stop_pairing_mode()
+
+    assert written(connected_api) == [f"{CMD_GET_PARAM_P}\r\n".encode("ascii")]
+    assert connected_api.pairing_active is False
+    assert connected_api._device_mode == "listening"
+
+
+async def test_pair_device_and_wait_timeout_leaves_stick_able_to_pair_again(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the exact user-visible bug.
+
+    After a 2-minute pairing timeout, reopening "Pairing and calibrating
+    device" (or "Add roller shutter from remote control" - both pairing
+    entry points share this same pair_device_and_wait()/_stop_pairing_mode()
+    code path) used to immediately re-show the identical "pairing_timeout"
+    abort message, before any new attempt to find a device even began.
+    Cause: _stop_pairing_mode()'s cleanup used to leave _device_mode stuck
+    on "unknown" purely because an idle-confirmation wait it awaited timed
+    out, even though the "sp" stop-pairing write itself had already
+    succeeded - and _is_transmit_capable() then rejected every subsequent
+    pair_device_and_wait() call instantly on "wrong_mode:unknown". That
+    wait is gone now (see _stop_pairing_mode's docstring), but this test
+    stays as a regression guard on the user-visible symptom: a timeout
+    must never block the next attempt.
+    """
+    monkeypatch.setattr(api_module, "PAIRING_TIMEOUT", 0.01)
+
+    first_result = await connected_api.pair_device_and_wait()
+
+    assert first_result is None
+    assert connected_api._device_mode == "listening"
+    assert connected_api._is_transmit_capable() is True
+
+    # The actual symptom: a second attempt must genuinely retry (send "sp"
+    # to enter pairing again) instead of being rejected before it starts.
+    second_result = await connected_api.pair_device_and_wait()
+
+    assert second_result is None
+    assert written(connected_api) == [
+        f"{CMD_GET_PARAM_P}\r\n".encode("ascii"),  # 1st attempt: enter pairing
+        f"{CMD_GET_PARAM_P}\r\n".encode("ascii"),  # 1st attempt: stop-pairing cleanup
+        f"{CMD_GET_PARAM_P}\r\n".encode("ascii"),  # 2nd attempt: enter pairing again
+        f"{CMD_GET_PARAM_P}\r\n".encode("ascii"),  # 2nd attempt: stop-pairing cleanup
+    ]
+
+
 # ---------------------------------------------------------------------------
 # send_raw_transmit(): Developer Tools' raw-payload escape hatch. Also only
 # ever exercised through config_flow.py's send_raw_command step before.
@@ -757,6 +827,36 @@ async def test_handle_message_ss_frame_unmatched_device_skips_the_per_entity_sig
     assert id_and_enum == []
 
 
+async def test_handle_message_unmatched_frame_logs_at_debug_only(
+    connected_api: SchellenbergUsbApi,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unmatched frame must log at debug, even with zero covers registered.
+
+    Regression test: this used to log at WARNING whenever
+    _registered_entity_keys was empty - which includes every fresh
+    connection, before any cover has registered itself - so a household
+    with other remotes sharing the same band logged a WARNING for every
+    single one of their button presses, not just this integration's own.
+    There is nothing actionable about an unmatched frame; it is routine RF
+    traffic, not a problem to surface by default.
+    """
+    caplog.set_level(logging.DEBUG, logger="custom_components.schellenberg_usb.api")
+    assert (
+        not connected_api._registered_entity_keys
+    )  # the exact state that used to warn
+
+    connected_api._handle_message("ss" + "20" + "FEDCBA" + "0000" + CMD_STOP + "0000")
+
+    unmatched_records = [
+        record
+        for record in caplog.records
+        if "no cover has this status identity" in record.message
+    ]
+    assert len(unmatched_records) == 1
+    assert unmatched_records[0].levelno == logging.DEBUG
+
+
 async def test_handle_message_ss_frame_resolves_pairing_future_for_unknown_device(
     connected_api: SchellenbergUsbApi,
 ) -> None:
@@ -845,3 +945,25 @@ async def test_handle_message_rftu_resolves_verify_future_and_records_mode(
     assert connected_api._device_mode == "initial"  # B:1
     assert connected_api._verify_future.done()
     assert connected_api._verify_future.result() is True
+
+
+async def test_pop_fresh_calibration_position_returns_it_once_then_none(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """One-shot handoff from a fresh "Pair and calibrate" run to the
+    brand-new cover entity it creates (see cover.py's async_added_to_hass):
+    popping must consume the value, so a later restart - which calls this
+    again with nothing left to give - falls through to the entity's normal
+    restored-state/CONF_INITIAL_POSITION priority instead of reusing it.
+    """
+    connected_api.set_fresh_calibration_position("BLIND1", 100)
+
+    assert connected_api.pop_fresh_calibration_position("BLIND1") == 100
+    assert connected_api.pop_fresh_calibration_position("BLIND1") is None
+
+
+async def test_pop_fresh_calibration_position_without_a_prior_set_is_none(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A blind_id nothing was ever set for pops to None, not a KeyError."""
+    assert connected_api.pop_fresh_calibration_position("NEVER_SET") is None
