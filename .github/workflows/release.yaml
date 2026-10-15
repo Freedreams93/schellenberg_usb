@@ -24,4 +24,4 @@ jobs:
       with:
         draft: true
         generate_release_notes: true
-        files: custom_components/schellenberg_usb/schellenberg_usb.zip
+        files: custom_components/schellenberg_usb
