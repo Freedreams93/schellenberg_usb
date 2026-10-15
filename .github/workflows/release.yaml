@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v1.1.2*"
+      - "v1.1.2"
 
 permissions:
   contents: write
