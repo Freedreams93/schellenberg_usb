@@ -1,7 +1,7 @@
 # Schellenberg USB for Home Assistant
 
 [![GitHub Release](https://img.shields.io/github/release/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/releases)
-[![License](https://img.shields.io/github/license/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Freedreams93/schellenberg_usb/build-test.yaml)
 
 Control Schellenberg RF shutters and blinds in Home Assistant with a Schellenberg
