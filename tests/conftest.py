@@ -76,9 +76,14 @@ def written(api: SchellenbergUsbApi) -> list[bytes]:
     api._transport is typed as asyncio.Transport | None in production code,
     so reading .written straight off it is a mypy union-attr error even
     though every fixture here actually wires it to a FakeTransport (see
-    make_connected_api above). This narrows that once for every call site
-    instead of a type: ignore comment at each assertion.
+    make_connected_api above) - except a test that deliberately simulates
+    a disconnected api by setting _transport back to None itself, which
+    trivially wrote nothing. This narrows the type once for every other
+    call site instead of a type: ignore comment at each assertion, and
+    answers that one no-transport case with [] instead of raising.
     """
+    if api._transport is None:
+        return []
     assert isinstance(api._transport, FakeTransport)
     return api._transport.written
 
