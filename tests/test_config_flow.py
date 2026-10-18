@@ -277,9 +277,12 @@ async def _start_pairing_flow(
     there is no initiate_flow.blind). Subentry-type dispatch happens via the
     (entry_id, subentry_type) handler tuple, not via the context source, so
     async_step_user() is the correct, real entry point regardless of type.
-    "pair_device" is the only entry point: it pairs a *new* blind from an
-    unknown remote channel (api.pair_device_and_wait()) and then runs
-    calibration.
+
+    "add_shutter_from_remote" is the recommended entry point: it pairs a
+    *new* blind from an unknown remote channel (api.pair_device_and_wait())
+    and, after a successful test, offers a choice between full calibration
+    and manual travel-time entry (see async_step_test_success() in
+    config_flow.py).
     """
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_BLIND),
@@ -287,7 +290,10 @@ async def _start_pairing_flow(
     )
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
-    assert set(cast(Iterable[str], result["menu_options"])) == {"pair_device"}
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "pair_device",
+        "add_shutter_from_remote",
+    }
     return result
 
 
@@ -556,6 +562,68 @@ async def test_pair_device_calibration_choosing_open_sets_initial_position_open(
     assert result["data"][CONF_INITIAL_POSITION] == 100
 
 
+async def test_add_shutter_from_remote_runs_test_motor_before_calibration_choice(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _build_hub_entry(hass, connected_api)
+    monkeypatch.setattr(
+        connected_api,
+        "pair_device_and_wait",
+        AsyncMock(return_value=(DEVICE_ID, DEVICE_ENUM)),
+    )
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    result = await _start_pairing_flow(hass, entry)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "add_shutter_from_remote"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    assert result["step_id"] == "name_device"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={CONF_DEVICE_NAME: "Hybrid Blind"}
+    )
+    # Hybrid workflow tests the motor before offering the calibration choice.
+    # This is the confirmation gate: the form is shown and nothing has been
+    # sent to the stick yet - the person must choose a direction explicitly,
+    # there is no default and no position-based suggestion.
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "test_motor"
+    assert written(connected_api) == []
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "did_motor_move"
+    # Choosing "open" and confirming sends open then stop, and
+    # did_motor_move's own placeholder reports back the direction that
+    # was actually chosen (read from self._pending_test_direction, not
+    # recomputed).
+    assert (
+        result["description_placeholders"]["test_action"]  # type: ignore[index]
+        == "open"
+    )
+    assert written(connected_api) == [
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+    ]
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": True}
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "test_success"
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "calibration_close",
+        "manual_times",
+    }
+
+
 async def test_test_motor_rejects_submitting_without_a_real_choice(
     hass: HomeAssistant,
     connected_api: SchellenbergUsbApi,
@@ -598,9 +666,295 @@ async def test_test_motor_rejects_submitting_without_a_real_choice(
     ]
 
 
+async def test_did_motor_move_no_shows_retry_notice_and_lets_person_choose_again(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Home Assistant used to decide the retry direction itself (silently
+    alternating open/close). It no longer decides anything: "no movement"
+    just reshows test_motor's own required, no-default select so the
+    person chooses a direction again - the same one, or the other one -
+    with a retry_notice explaining why the form is back. There is no
+    retry limit and no fallback to a manual form, confirmed here across
+    three retries in a row. See
+    test_did_motor_move_false_then_true_on_retry_reaches_test_success below
+    for a retry actually succeeding.
+    """
+    entry = _build_hub_entry(hass, connected_api)
+    monkeypatch.setattr(
+        connected_api,
+        "pair_device_and_wait",
+        AsyncMock(return_value=(DEVICE_ID, DEVICE_ENUM)),
+    )
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    result = await _start_pairing_flow(hass, entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "add_shutter_from_remote"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={CONF_DEVICE_NAME: "Hybrid Blind"}
+    )
+    assert not result["description_placeholders"]["retry_notice"]  # type: ignore[index]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    assert result["step_id"] == "did_motor_move"
+    assert written(connected_api) == [
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+    ]
+
+    # First "no movement": test_motor reshows with no direction pre-chosen -
+    # nothing sent yet, the retry's own form still needs its own choice and
+    # confirmation. retry_notice now explains why the form is back.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": False}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "test_motor"
+    assert result["description_placeholders"]["retry_notice"]  # type: ignore[index]
+    assert written(connected_api) == [
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+    ]
+
+    # The person chooses "close" this time - their own decision, not
+    # anything the software picked.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "close"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "did_motor_move"
+    assert written(connected_api) == [
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9020000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+    ]
+
+    # Second "no movement": still no limit, still no fallback - the form
+    # keeps coming back for as long as the person keeps answering "no".
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": False}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "test_motor"
+    assert result["description_placeholders"]["retry_notice"]  # type: ignore[index]
+
+    # This time the person chooses "open" again - proving the choice is
+    # genuinely free each time, not forced to alternate.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "did_motor_move"
+    assert written(connected_api) == [
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9020000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9010000\r\n".encode("ascii"),
+        f"ss{DEVICE_ENUM}9000000\r\n".encode("ascii"),
+    ]
+
+    # Third "no movement": proof this is genuinely unlimited, not just one
+    # extra retry.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": False}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "test_motor"
+    assert result["description_placeholders"]["retry_notice"]  # type: ignore[index]
+
+
+async def test_did_motor_move_false_then_true_on_retry_reaches_test_success(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opposite-direction retry succeeding (common case: the blind was
+    simply already fully open) reaches test_success exactly like an
+    ordinary first-try success - see
+    test_add_shutter_from_remote_runs_test_motor_before_calibration_choice.
+    """
+    entry = _build_hub_entry(hass, connected_api)
+    monkeypatch.setattr(
+        connected_api,
+        "pair_device_and_wait",
+        AsyncMock(return_value=(DEVICE_ID, DEVICE_ENUM)),
+    )
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    result = await _start_pairing_flow(hass, entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "add_shutter_from_remote"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={CONF_DEVICE_NAME: "Hybrid Blind"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": False}
+    )
+    assert result["step_id"] == "test_motor"
+    # The retry is answered with a different choice than the first
+    # attempt - allowed and expected, since nothing forces alternation
+    # or repetition anymore. It is the person's own free choice each time.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "close"}
+    )
+    assert result["step_id"] == "did_motor_move"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": True}
+    )
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "test_success"
+    assert set(cast(Iterable[str], result["menu_options"])) == {
+        "calibration_close",
+        "manual_times",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Subentry flow: status discovery (guided remote capture)
 # ---------------------------------------------------------------------------
+
+
+async def test_manual_times_leads_into_discover_status(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _build_hub_entry(hass, connected_api)
+    monkeypatch.setattr(
+        connected_api,
+        "pair_device_and_wait",
+        AsyncMock(return_value=(DEVICE_ID, DEVICE_ENUM)),
+    )
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    result = await _start_pairing_flow(hass, entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "add_shutter_from_remote"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={CONF_DEVICE_NAME: "Hybrid Blind"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": True}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "manual_times"}
+    )
+    assert result["step_id"] == "manual_times"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={CONF_OPEN_TIME_SECONDS: 30.0, CONF_CLOSE_TIME_SECONDS: 28.0},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "discover_status"
+
+
+async def test_manual_times_to_discover_status_creates_entry_directly(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hybrid workflow's "manual_times" branch must reach a real
+    CREATE_ENTRY, the same way its "calibration_close" sibling does.
+
+    test_manual_times_leads_into_discover_status above only checks that the
+    discover_status form is reached; it never confirms that submitting it
+    actually finishes pairing a *brand-new* device
+    (confirm_status_discovery's async_create_entry() branch) rather than
+    updating an existing one, which
+    test_discover_status_success_confirms_and_updates_existing_blind already
+    covers via the reconfigure/Developer Tools entry point instead.
+    """
+    monkeypatch.setattr(
+        connected_api,
+        "pair_device_and_wait",
+        AsyncMock(return_value=(DEVICE_ID, DEVICE_ENUM)),
+    )
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        connected_api,
+        "async_discover_status_identities",
+        AsyncMock(
+            return_value={
+                "primary": {
+                    "device_id": DEVICE_ID,
+                    "enum": DEVICE_ENUM,
+                    "commands": ["00", "01"],
+                    "timestamps": ["10:00:00"],
+                },
+                "secondary": [],
+                "unknown_commands": [],
+                "frames": [{}],
+            }
+        ),
+    )
+    entry = _build_hub_entry(hass, connected_api)
+    result = await _start_pairing_flow(hass, entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "add_shutter_from_remote"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={CONF_DEVICE_NAME: "New Blind"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved": True}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "manual_times"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={CONF_OPEN_TIME_SECONDS: 30.0, CONF_CLOSE_TIME_SECONDS: 28.0},
+    )
+    assert result["step_id"] == "discover_status"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+    assert result["step_id"] == "confirm_status_discovery"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "New Blind"
+    assert result["data"][CONF_OPEN_TIME] == 30.0
+    assert result["data"][CONF_CLOSE_TIME] == 28.0
+    assert result["data"][CONF_STATUS_DEVICE_ID] == DEVICE_ID
+    assert result["data"][CONF_STATUS_ENUM] == DEVICE_ENUM
+    assert len(entry.subentries) == 1
+    created = next(iter(entry.subentries.values()))
+    assert created.unique_id == DEVICE_ID
 
 
 async def test_discover_status_unavailable_shows_an_error(

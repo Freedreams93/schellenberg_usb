@@ -432,11 +432,10 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # Set only on a subentry created fresh from a pair_device calibration
         # that measured which end stop the blind actually ended at (see
         # options_flow_calibration.py's calibration_close step). None for
-        # every blind paired before this field existed, including any
-        # paired through the since-removed hybrid add_shutter_from_remote
-        # workflow, which never calibrated either - the "nothing to
-        # restore" branch of async_added_to_hass() below falls back to 0
-        # (closed) in both of those cases, as it always did.
+        # every blind paired before this field existed and for the hybrid
+        # (add_shutter_from_remote) workflow, which never calibrates - the
+        # "nothing to restore" branch of async_added_to_hass() below falls
+        # back to 0 (closed) in both of those cases, as it always did.
         self._initial_position_from_calibration: int | None = device_data_dict.get(
             CONF_INITIAL_POSITION
         )

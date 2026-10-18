@@ -36,12 +36,18 @@
           "title": "Añadir un dispositivo",
           "description": "Elija cómo desea configurar este dispositivo.",
           "menu_options": {
-            "pair_device": "Emparejar y calibrar"
+            "pair_device": "Emparejar y calibrar",
+            "add_shutter_from_remote": "Añadir dispositivo desde mando a distancia"
           }
         },
         "pair_device": {
           "title": "Emparejar dispositivo y calibrar",
           "description": "Pulse el botón o los botones de emparejamiento de su dispositivo en un plazo de 2 minutos.",
+          "submit": "Emparejar"
+        },
+        "add_shutter_from_remote": {
+          "title": "Añadir dispositivo de control remoto",
+          "description": "Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el canal del dispositivo. Pulse el botón de programación de su mando a distancia hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el dispositivo haya aprendido el transmisor. A continuación se realiza una breve prueba. Después, confirme si la persiana se movió realmente.",
           "submit": "Emparejar"
         },
         "name_device": {
@@ -89,6 +95,22 @@
             "motor_moved": "La persiana se movió"
           },
           "submit": "Continuar"
+        },
+        "test_success": {
+          "title": "Prueba de comando exitosa",
+          "menu_options": {
+            "calibration_close": "Continuar a la calibración",
+            "manual_times": "Introducir datos del dispositivo manualmente en el siguiente menú"
+          }
+        },
+        "manual_times": {
+          "title": "Introducir tiempos de recorrido",
+          "description": "Introduzca los tiempos completos de apertura y cierre medidos.",
+          "data": {
+            "open_time_seconds": "Tiempo de apertura",
+            "close_time_seconds": "Tiempo de cierre"
+          },
+          "submit": "Guardar"
         },
         "reconfigure": {
           "title": "Configurar dispositivo",

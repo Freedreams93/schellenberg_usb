@@ -36,12 +36,18 @@
           "title": "Gerät hinzufügen",
           "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten.",
           "menu_options": {
-            "pair_device": "Gerät koppeln und kalibrieren"
+            "pair_device": "Gerät koppeln und kalibrieren",
+            "add_shutter_from_remote": "Gerät von Fernbedienung hinzufügen"
           }
         },
         "pair_device": {
           "title": "Gerät koppeln und kalibrieren",
           "description": "Drücken Sie innerhalb von 2 Minuten die Kopplungstaste oder die Kopplungstasten an Ihrem Gerät.",
+          "submit": "Koppeln"
+        },
+        "add_shutter_from_remote": {
+          "title": "Gerät von Fernbedienung hinzufügen",
+          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Kanal des Geräts aus. Drücken Sie die Programmiertaste Ihrer Fernbedienung, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass das Gerät den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf. Danach bestätigen Sie, ob sich der Rollladen tatsächlich bewegt hat.",
           "submit": "Koppeln"
         },
         "name_device": {
@@ -89,6 +95,22 @@
             "motor_moved": "Der Rolladen hat sich bewegt"
           },
           "submit": "Weiter"
+        },
+        "test_success": {
+          "title": "Befehlstest erfolgreich",
+          "menu_options": {
+            "calibration_close": "Weiter zur Kalibrierung",
+            "manual_times": "Gerätedaten manuell eintragen in das nächste Menü"
+          }
+        },
+        "manual_times": {
+          "title": "Laufzeiten eingeben",
+          "description": "Geben Sie die gemessenen vollständigen Öffnungs- und Schließzeiten ein.",
+          "data": {
+            "open_time_seconds": "Öffnungszeit",
+            "close_time_seconds": "Schließzeit"
+          },
+          "submit": "Speichern"
         },
         "reconfigure": {
           "title": "Gerät konfigurieren",

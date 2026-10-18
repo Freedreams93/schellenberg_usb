@@ -36,12 +36,18 @@
           "title": "Ajouter un appareil",
           "description": "Choisissez comment configurer cet appareil.",
           "menu_options": {
-            "pair_device": "Appairer et calibrer"
+            "pair_device": "Appairer et calibrer",
+            "add_shutter_from_remote": "Ajouter un appareil depuis la télécommande"
           }
         },
         "pair_device": {
           "title": "Appairer l'appareil et calibrer",
           "description": "Appuyez sur le bouton ou les boutons d'appairage de votre appareil dans les 2 minutes.",
+          "submit": "Appairer"
+        },
+        "add_shutter_from_remote": {
+          "title": "Ajouter un appareil de télécommande",
+          "description": "Après avoir appuyé sur Appairer, utilisez une télécommande d'origine déjà appairée dans les 2 minutes et sélectionnez le canal de l'appareil. Appuyez sur le bouton de programmation de la télécommande jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant détectera la trame et enverra la commande d'apprentissage 60, suivie de la commande de fin 40 sur la même valeur d'énumération. Un accusé de réception ACK de la clé USB ne prouve pas que l'appareil a appris l'émetteur. Un court test suit ensuite. Ensuite, confirmez si le volet a réellement bougé.",
           "submit": "Appairer"
         },
         "name_device": {
@@ -89,6 +95,22 @@
             "motor_moved": "Le volet a bougé"
           },
           "submit": "Continuer"
+        },
+        "test_success": {
+          "title": "Test de commande réussi",
+          "menu_options": {
+            "calibration_close": "Continuer vers la calibration",
+            "manual_times": "Saisir manuellement les données de l'appareil dans le menu suivant"
+          }
+        },
+        "manual_times": {
+          "title": "Saisir les durées de course",
+          "description": "Saisissez les durées complètes d'ouverture et de fermeture mesurées.",
+          "data": {
+            "open_time_seconds": "Durée d'ouverture",
+            "close_time_seconds": "Durée de fermeture"
+          },
+          "submit": "Enregistrer"
         },
         "reconfigure": {
           "title": "Configurer l'appareil",

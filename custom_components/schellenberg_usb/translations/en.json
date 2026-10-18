@@ -36,12 +36,18 @@
           "title": "Add a device",
           "description": "Choose how to set up this device.",
           "menu_options": {
-            "pair_device": "Pair and calibrate"
+            "pair_device": "Pair and calibrate",
+            "add_shutter_from_remote": "Add device from remote"
           }
         },
         "pair_device": {
           "title": "Pair device and calibrate",
           "description": "Press the pairing button or pairing buttons on your device within 2 minutes.",
+          "submit": "Pair"
+        },
+        "add_shutter_from_remote": {
+          "title": "Add device from remote",
+          "description": "After pressing Pair, use an already paired original remote control within 2 minutes and select the device's channel. Press your remote control's programming button until the channel LED blinks, then press Stop. Home Assistant will detect the telegram and send teach command 60, followed by finish command 40 on the same enum value. A USB stick ACK confirmation does not prove that the device has learned the transmitter. A short test run follows. Afterwards, confirm whether the shutter actually moved.",
           "submit": "Pair"
         },
         "name_device": {
@@ -89,6 +95,22 @@
             "motor_moved": "The shutter moved"
           },
           "submit": "Continue"
+        },
+        "test_success": {
+          "title": "Command test successful",
+          "menu_options": {
+            "calibration_close": "Continue to calibration",
+            "manual_times": "Enter device data manually in the next menu"
+          }
+        },
+        "manual_times": {
+          "title": "Enter travel times",
+          "description": "Enter the measured full opening and closing times.",
+          "data": {
+            "open_time_seconds": "Open time",
+            "close_time_seconds": "Close time"
+          },
+          "submit": "Save"
         },
         "reconfigure": {
           "title": "Configure device",

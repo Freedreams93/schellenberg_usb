@@ -110,6 +110,14 @@ such as `cover.extension_0_extension_0`.
 8. Give the device a friendly name, for example `Livingroomshutter`.
 9. Run the calibration and save the device.
 
+### Other setup methods
+
+Besides the recommended **Pair a device and calibrate it**, the menu offers:
+
+- **Add a shutter from a remote** can pair and then run a short movement test
+  before calibration. Its optional remote-programming step also does not require
+  waiting for an additional motor signal.
+
 The same pairing method works for any Schellenberg RF receiver - electronic
 belt/strap winders, awning motors, and similar motorized devices included -
 which is why the menu and this guide both say "device" rather than "blind".

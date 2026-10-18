@@ -285,6 +285,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pending_open_time: float | None = None
         self._pending_close_time: float | None = None
         self._pending_invert_direction = False
+        self._pairing_workflow = "legacy"
         # The direction chosen on the test_motor form (see
         # async_step_test_motor()) - "open" or "close" - remembered only so
         # did_motor_move's own description can report back what was just
@@ -324,14 +325,32 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         """Choose how to pair/calibrate a new device."""
         return self.async_show_menu(
             step_id="user",
-            menu_options=["pair_device"],
+            menu_options=[
+                "pair_device",
+                "add_shutter_from_remote",
+            ],
         )
 
     async def async_step_pair_device(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Run the pair-then-calibrate workflow."""
+        self._pairing_workflow = "legacy"
         return await self._async_pair_device("pair_device", user_input)
+
+    async def async_step_add_shutter_from_remote(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Pair a device by teaching the stick onto an existing remote's channel.
+
+        Captures whatever identity the person's already-paired physical
+        remote uses for the motor/channel they select, and teaches the
+        stick onto that same identity - rather than pair_device's own
+        fresh teach sequence. A short test move follows; see
+        async_step_did_motor_move()'s "hybrid" branch below.
+        """
+        self._pairing_workflow = "hybrid"
+        return await self._async_pair_device("add_shutter_from_remote", user_input)
 
     async def _async_pair_device(
         self, step_id: str, user_input: dict[str, Any] | None
@@ -551,10 +570,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Ask whether the short command moved the motor.
 
-        Only reached by async_step_test_motor() while re-testing an
-        already-paired blind (its "existing" setup calls test_motor
-        directly) - fresh pairing goes from async_step_name_device()
-        straight into calibration instead and never reaches this step.
+        Reached by async_step_test_motor() from two different places: the
+        "hybrid" add_shutter_from_remote workflow's own quick test right
+        after pairing, and the "existing" setup's re-test of an
+        already-paired blind. The default "legacy" (pair_device) workflow
+        never reaches this step at all - async_step_name_device() sends
+        it straight into calibration instead.
         """
         if user_input is None:
             return self.async_show_form(
@@ -578,8 +599,77 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             )
 
         if not user_input["motor_moved"]:
-            return await self.async_step_edit()
-        return self.async_abort(reason="command_test_successful")
+            if self._pairing_workflow == "existing":
+                return await self.async_step_edit()
+            # "No movement" doesn't necessarily mean the pairing failed -
+            # the blind may simply already have been sitting at the end
+            # stop in the direction just chosen. Show a fresh
+            # async_step_test_motor() form so the person explicitly chooses
+            # a direction again (the same one, or the other one) before
+            # anything more is sent - for as long as they keep saying it
+            # didn't move. There is no attempt limit and no fallback to
+            # manual entry here: the person can always leave the wizard if
+            # the blind genuinely isn't responding, but the flow itself
+            # never gives up on their behalf.
+            self._test_motor_retry_attempted = True
+            return await self.async_step_test_motor()
+
+        if self._pairing_workflow == "existing":
+            return self.async_abort(reason="command_test_successful")
+        # "hybrid" (add_shutter_from_remote) is the only workflow that can
+        # still be set here: "existing" already returned above, and the
+        # default "legacy" (pair_device) never reaches this step at all -
+        # async_step_name_device() sends it straight into calibration
+        # instead (see its own branch there).
+        return await self.async_step_test_success()
+
+    async def async_step_test_success(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Offer calibration or manual timing after a successful motor test.
+
+        Home Assistant requires a menu's step_id to match a real
+        async_step_<id>() handler on this class; a bare
+        async_show_menu(step_id="test_success", ...) call with no such
+        method raises UnknownStep as soon as the menu is shown.
+        """
+        return self.async_show_menu(
+            step_id="test_success",
+            menu_options=["calibration_close", "manual_times"],
+        )
+
+    async def async_step_manual_times(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect travel times after a successful paired command test."""
+        if user_input is not None:
+            self._pending_open_time = float(user_input[CONF_OPEN_TIME_SECONDS])
+            self._pending_close_time = float(user_input[CONF_CLOSE_TIME_SECONDS])
+            return await self.async_step_discover_status()
+
+        return self.async_show_form(
+            step_id="manual_times",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_OPEN_TIME_SECONDS): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            step=0.1,
+                            unit_of_measurement="s",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(CONF_CLOSE_TIME_SECONDS): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            step=0.1,
+                            unit_of_measurement="s",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+        )
 
     async def async_step_name_device(
         self, user_input: dict[str, Any] | None = None
@@ -638,6 +728,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             status_identity_source=self._pending_status_identity_source,
             invert_direction=self._pending_invert_direction,
         )
+        if self._pairing_workflow == "hybrid":
+            return await self.async_step_test_motor()
+
         _LOGGER.debug(
             "Starting calibration for paired device %s (%s) before creating subentry",
             device_id,
@@ -1630,6 +1723,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             data.get(CONF_CLOSE_TIME, DEFAULT_TRAVEL_TIME_SECONDS)
         )
         self._pending_invert_direction = bool(data.get(CONF_INVERT_DIRECTION, False))
+        self._pairing_workflow = "existing"
         return await self.async_step_test_motor(user_input)
 
     async def async_step_edit(
