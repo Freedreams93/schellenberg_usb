@@ -22,7 +22,7 @@
 
 * Optimize the Developer Tools menu step (`developer_tools`) itself the same way. Its own description - a second, independent rendering of essentially the same diagnostic snapshot, shown above the menu's buttons every time the menu is opened, built from a static template in `strings.json`/translations rather than through `runtime_translation_text.py` - started the same way the copy-diagnostics text used to, with no heading at all. Gained the same short "Diagnostics:"/"Diagnose:"/"Diagnóstico:"/"Diagnostic :" label as its own first line, in `strings.json` and all four translated files.
 
-* Optimize the serial connection's error handling for `serialx` 1.14.0 and newer: a lost or failed connection now raises `OSError`/`TimeoutError`, replacing the removed `serialx.SerialException`, with the minimum supported version in `manifest.json` updated to match.
+* Optimize the serial connection's error handling to drop a dangling reference to a `serialx.SerialException` that this library never actually defines - a lost or failed connection already raises plain `OSError`/`TimeoutError`, which is now the only thing caught. Also raise the minimum `serialx` version in `manifest.json` from `1.10.0` to `1.11.0`, matching what Home Assistant Core itself currently requires.
 
 * Optimize the pairing cleanup step (`_stop_pairing_mode()`) by removing a leftover fixed 2-second delay that ran after every successful pairing for no remaining purpose.
 

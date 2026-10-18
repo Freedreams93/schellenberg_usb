@@ -11,12 +11,14 @@ requires-python = ">=3.14.2"
 dependencies = [
     # A minimum instead of an exact pin: Home Assistant Core's own serialx
     # requirement moves forward on its own schedule (it went from 1.10.0 to
-    # 1.11.0 between two consecutive hassfest runs here, and has since moved
-    # on to 1.14.0), and hassfest rejects an exact pin that no longer matches
-    # Core's. >= stays compatible with whatever Core currently needs, same
-    # fix other HACS integrations have used for this exact class of
-    # hassfest failure.
-    "serialx>=1.14.0",
+    # this exact floor between two consecutive hassfest runs here), and
+    # hassfest rejects an exact pin that no longer matches Core's. >= stays
+    # compatible with whatever Core currently needs, same fix other HACS
+    # integrations have used for this exact class of hassfest failure. Not
+    # tied to any specific serialx release otherwise - the OSError/
+    # TimeoutError exception handling this version requires (see api.py) is
+    # correct against any serialx release, old or new.
+    "serialx>=1.11.0",
 ]
 
 [dependency-groups]
