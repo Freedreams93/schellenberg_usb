@@ -972,6 +972,7 @@ async def test_set_cover_position_above_current_opens_toward_the_target(
 ) -> None:
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
     cover._attr_current_cover_position = 30
@@ -990,6 +991,7 @@ async def test_set_cover_position_below_current_closes_toward_the_target(
 ) -> None:
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
     cover._attr_current_cover_position = 80
