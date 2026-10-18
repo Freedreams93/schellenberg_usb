@@ -5,15 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
-from types import MappingProxyType
 from typing import Any, cast
 
-import serialx  # NOTE: only for the SerialException type used below
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import (
     ConfigFlowResult,
-    ConfigSubentry,
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
@@ -142,7 +139,7 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=f"Schellenberg USB ({port})", data=user_input
                 )
-            except (OSError, TimeoutError, serialx.SerialException):
+            except (OSError, TimeoutError):
                 errors["base"] = "cannot_connect"
                 _LOGGER.error("Failed to connect to serial port %s", port)
             except AbortFlow:
@@ -222,7 +219,7 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=title, data={CONF_SERIAL_PORT: port}
                 )
-            except (OSError, TimeoutError, serialx.SerialException):
+            except (OSError, TimeoutError):
                 errors["base"] = "cannot_connect"
                 _LOGGER.error("Failed to connect to serial port %s", port)
             except AbortFlow:
@@ -272,14 +269,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         `_pending_*` attributes describe a new blind being paired
         (eventually written to a new subentry). See the comments on
         the individual attributes below for the less obvious ones.
-
-        (There used to be a second, `_teach_target_*` group backing
-        an `add_shutter_to_remote` entry point - teaching an existing
-        blind's channel to one more motor or remote control - but
-        that entry point was removed: the protocol has no way to
-        teach a handheld remote anything, only a motor, and the
-        remaining motor-only case is already covered by
-        add_shutter_from_remote's own repeat-pairing offer.)
         """
         super().__init__()
         self.calibration_handler: CalibrationFlowHandler | None = None
@@ -297,22 +286,11 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         self._pending_close_time: float | None = None
         self._pending_invert_direction = False
         self._pairing_workflow = "legacy"
-        # Set only by async_step_add_shutter_from_remote(): a real remote
-        # channel can have more than one motor taught to it (several
-        # shutters moved together by one channel), so this entry point
-        # offers a "pair another blind on this same channel" choice right
-        # before the subentry would normally be created - see
-        # _finish_pairing_or_offer_repeat(). pair_device leaves this False
-        # and creates the subentry immediately, unchanged.
-        self._offer_repeat_pairing = False
-        self._last_ready_blind_data: dict[str, Any] | None = None
-        self._last_ready_blind_title: str | None = None
         # The direction chosen on the test_motor form (see
         # async_step_test_motor()) - "open" or "close" - remembered only so
         # did_motor_move's own description can report back what was just
         # tested. None only before the form has ever been submitted for
-        # this blind. Reset alongside the other per-blind pending state in
-        # async_step_pair_another_on_channel().
+        # this blind.
         self._pending_test_direction: str | None = None
         # Sticky per-blind flag: once a retry has happened, the test_motor
         # form keeps showing the retry_notice explaining why it is being
@@ -356,25 +334,22 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     async def async_step_pair_device(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Run the original pair-then-calibrate workflow."""
+        """Run the pair-then-calibrate workflow."""
         self._pairing_workflow = "legacy"
         return await self._async_pair_device("pair_device", user_input)
 
     async def async_step_add_shutter_from_remote(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Pair a blind and verify it, offering to pair another on request.
+        """Pair a device by teaching the stick onto an existing remote's channel.
 
-        A real remote channel can have more than one motor taught to it
-        (several shutters moved together by one channel), so this entry
-        point offers a "pair another blind on this channel" choice right
-        after each successful pairing, without restarting this menu - see
-        _finish_pairing_or_offer_repeat(). pair_device leaves
-        _offer_repeat_pairing False and creates the subentry immediately,
-        unchanged.
+        Captures whatever identity the person's already-paired physical
+        remote uses for the motor/channel they select, and teaches the
+        stick onto that same identity - rather than pair_device's own
+        fresh teach sequence. A short test move follows; see
+        async_step_did_motor_move()'s "hybrid" branch below.
         """
         self._pairing_workflow = "hybrid"
-        self._offer_repeat_pairing = True
         return await self._async_pair_device("add_shutter_from_remote", user_input)
 
     async def _async_pair_device(
@@ -445,121 +420,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             data[CONF_STATUS_ENUM] = self._pending_status_enum
         return data
 
-    def _pairing_unique_id(self) -> str | None:
-        """Return the unique_id to use for the subentry being created.
-
-        add_shutter_from_remote's "pair another blind on this channel" path can
-        create several blinds that intentionally share the same
-        command_device_id (several motors taught to the same remote
-        channel), so each one needs its own unique_id instead or the
-        second would collide with the first. Every other path (exactly
-        one blind per channel) keeps using the command device id itself,
-        unchanged.
-        """
-        if self._offer_repeat_pairing:
-            return self._pending_blind_id
-        return self._pending_device_id
-
-    def _finish_pairing_or_offer_repeat(
+    def _finish_pairing(
         self, *, title: str, data: dict[str, Any]
     ) -> SubentryFlowResult:
-        """Create the subentry, or offer to pair another on this channel.
-
-        Only add_shutter_from_remote sets _offer_repeat_pairing (see
-        async_step_add_shutter_from_remote); every other path creates the
-        subentry immediately here, exactly as before this existed.
-        """
-        if not self._offer_repeat_pairing:
-            return self.async_create_entry(
-                title=title, data=data, unique_id=self._pairing_unique_id()
-            )
-        self._last_ready_blind_title = title
-        self._last_ready_blind_data = data
-        return self.async_show_menu(
-            step_id="pairing_repeat_choice",
-            menu_options=["finish_pairing", "pair_another_on_channel"],
-            description_placeholders={"device_name": title},
-        )
-
-    async def async_step_pairing_repeat_choice(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Offer to finish, or pair another blind on the same channel.
-
-        Reached only through _finish_pairing_or_offer_repeat(); Home
-        Assistant requires a menu's step_id to match a real
-        async_step_<id>() handler (see async_step_test_success above), so
-        this exists even though it only ever re-shows the same menu.
-        """
-        return self.async_show_menu(
-            step_id="pairing_repeat_choice",
-            menu_options=["finish_pairing", "pair_another_on_channel"],
-            description_placeholders={
-                "device_name": self._last_ready_blind_title or ""
-            },
-        )
-
-    async def async_step_finish_pairing(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Create the subentry for the last fully configured blind."""
-        if self._last_ready_blind_data is None or self._last_ready_blind_title is None:
-            return self.async_abort(reason="device_not_found")
+        """Create the subentry for the newly paired blind."""
         return self.async_create_entry(
-            title=self._last_ready_blind_title,
-            data=MappingProxyType(self._last_ready_blind_data),
-            unique_id=self._pairing_unique_id(),
+            title=title, data=data, unique_id=self._pending_device_id
         )
-
-    async def async_step_pair_another_on_channel(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Persist the finished blind directly, then name the next one.
-
-        A real remote channel can have more than one motor taught to it,
-        so the blind just configured is added straight to this hub entry
-        (bypassing the one-result-per-flow create_entry/abort mechanism,
-        which can't return twice) while the flow itself loops back to
-        async_step_name_device() for a second blind on the exact same
-        command_device_id/command_enum - the shared channel identity is
-        left untouched; only the per-blind pending state is reset.
-        """
-        if self._last_ready_blind_data is None or self._last_ready_blind_title is None:
-            return self.async_abort(reason="device_not_found")
-
-        hub_entry = self._get_entry()
-        self.hass.config_entries.async_add_subentry(
-            hub_entry,
-            ConfigSubentry(
-                data=MappingProxyType(self._last_ready_blind_data),
-                subentry_type=SUBENTRY_TYPE_BLIND,
-                title=self._last_ready_blind_title,
-                unique_id=self._pairing_unique_id(),
-            ),
-        )
-        _LOGGER.info(
-            "Pair-remote added %s on shared channel %s/%s; continuing to "
-            "pair another blind on the same channel",
-            self._last_ready_blind_title,
-            self._pending_device_id,
-            self._pending_device_enum,
-        )
-
-        self._last_ready_blind_data = None
-        self._last_ready_blind_title = None
-        self._pending_blind_id = generate_blind_id()
-        self._pending_device_name = None
-        self._pending_status_device_id = None
-        self._pending_status_enum = None
-        self._pending_secondary_status_identities = []
-        self._pending_status_identity_source = STATUS_IDENTITY_SOURCE_UNKNOWN
-        self._pending_open_time = None
-        self._pending_close_time = None
-        self._pending_test_direction = None
-        self._test_motor_retry_attempted = False
-        # _pending_device_id/_pending_device_enum are deliberately left
-        # untouched: the next blind is taught on this same remote channel.
-        return await self.async_step_name_device()
 
     def _test_motor_placeholders(self) -> dict[str, str]:
         """Build the description placeholders for the test_motor form."""
@@ -581,16 +448,25 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         decided the direction itself (away from the blind's last tracked
         position, defaulting to open when nothing was tracked yet) and
         silently alternated it on a retry - the person only ever
-        confirmed or reported afterward, never chose. A required select
-        with no default now asks the person to choose "open" or "close"
-        explicitly, on the first attempt and on every retry alike;
-        nothing here ever picks or changes a direction on its own.
+        confirmed or reported afterward, never chose. Replacing it with a
+        required "open"/"close" select was meant to force an explicit
+        choice every time, on the assumption that Home Assistant's
+        frontend could not submit a required select with neither option
+        chosen - but in its "list" (radio) rendering it visibly highlights
+        the first option before anything is picked, which looks exactly
+        like a considered answer and reintroduces the original problem
+        (see options_flow_calibration.py's calibration_close step, where
+        the same thing was found and fixed first). A third, clearly
+        non-answer placeholder option now occupies that highlighted first
+        slot instead; async_step_test_motor rejects submitting it (or
+        anything other than "open"/"close") with an explicit on-screen
+        error instead of picking a direction on its own.
         """
         return vol.Schema(
             {
                 vol.Required("test_direction"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=["open", "close"],
+                        options=["unselected", "open", "close"],
                         mode=selector.SelectSelectorMode.LIST,
                         translation_key="test_direction",
                     )
@@ -623,8 +499,20 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 description_placeholders=self._test_motor_placeholders(),
             )
 
-        test_toward_open = user_input["test_direction"] == "open"
-        self._pending_test_direction = user_input["test_direction"]
+        test_direction = user_input.get("test_direction")
+        if test_direction not in ("open", "close"):
+            # Neither real option was chosen - see _test_direction_schema()'s
+            # own comment for why this is reachable despite the field being
+            # required.
+            return self.async_show_form(
+                step_id="test_motor",
+                data_schema=self._test_direction_schema(),
+                description_placeholders=self._test_motor_placeholders(),
+                errors={"base": "test_direction_required"},
+            )
+
+        test_toward_open = test_direction == "open"
+        self._pending_test_direction = test_direction
         open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
         close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
         action = open_action if test_toward_open else close_action
@@ -680,7 +568,15 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     async def async_step_did_motor_move(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Ask whether the short command moved the motor."""
+        """Ask whether the short command moved the motor.
+
+        Reached by async_step_test_motor() from two different places: the
+        "hybrid" add_shutter_from_remote workflow's own quick test right
+        after pairing, and the "existing" setup's re-test of an
+        already-paired blind. The default "legacy" (pair_device) workflow
+        never reaches this step at all - async_step_name_device() sends
+        it straight into calibration instead.
+        """
         if user_input is None:
             return self.async_show_form(
                 step_id="did_motor_move",
@@ -1474,7 +1370,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             or self._pending_close_time is None
         ):
             return self.async_abort(reason="device_not_found")
-        return self._finish_pairing_or_offer_repeat(
+        return self._finish_pairing(
             title=self._pending_device_name, data=self._pending_data()
         )
 

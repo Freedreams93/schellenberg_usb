@@ -123,14 +123,9 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
             "still be controlled, but position tracking will rely on Home "
             "Assistant's own commands only."
         ),
-        "position_tracking_unavailable_short": (
-            "Unavailable: Home Assistant's own commands can still estimate "
-            "the position, but no remote/status tracking identity was "
-            "discovered"
-        ),
         "frame_none_received": "No matching frame received",
         "position_none_recorded": "No position update recorded",
-        "diag_title": "Schellenberg USB blind diagnostics",
+        "diag_title": "Diagnostics:",
         "diag_selected_blind": "Selected device: {value}",
         "diag_section_stick_state": "Stick state:",
         "diag_connected": "Connected: {value}",
@@ -184,7 +179,6 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "diag_open_time": "Open time: {value} seconds",
         "diag_close_time": "Close time: {value} seconds",
         "diag_invert_direction": "Invert direction: {value}",
-        "source_primary_status": "primary status {identity} command {event}",
         "cover_open_failed": "Failed to open {name}: {reason}",
         "cover_close_failed": "Failed to close {name}: {reason}",
         "cover_stop_failed": "Failed to stop {name}: {reason}",
@@ -287,14 +281,9 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
             "Positionsverfolgung stützt sich dann nur auf die Befehle von "
             "Home Assistant selbst."
         ),
-        "position_tracking_unavailable_short": (
-            "Nicht verfügbar: Die Befehle von Home Assistant können die "
-            "Position weiterhin schätzen, es wurde aber keine "
-            "Fernbedienungs-/Status-Identität erkannt"
-        ),
         "frame_none_received": "Keine passende Meldung empfangen",
         "position_none_recorded": "Keine Positionsaktualisierung erfasst",
-        "diag_title": "Schellenberg-USB-Diagnose für diesen Rollladen",
+        "diag_title": "Diagnose:",
         "diag_selected_blind": "Ausgewähltes Gerät: {value}",
         "diag_section_stick_state": "Stick-Status:",
         "diag_connected": "Verbunden: {value}",
@@ -350,7 +339,6 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "diag_open_time": "Öffnungszeit: {value} Sekunden",
         "diag_close_time": "Schließzeit: {value} Sekunden",
         "diag_invert_direction": "Laufrichtung invertiert: {value}",
-        "source_primary_status": "Primärstatus {identity}, Befehl {event}",
         "cover_open_failed": "Öffnen von {name} fehlgeschlagen: {reason}",
         "cover_close_failed": "Schließen von {name} fehlgeschlagen: {reason}",
         "cover_stop_failed": "Stopp von {name} fehlgeschlagen: {reason}",
@@ -457,14 +445,9 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
             "se puede seguir controlando, pero el seguimiento de posición "
             "dependerá solo de los comandos de Home Assistant."
         ),
-        "position_tracking_unavailable_short": (
-            "No disponible: los comandos de Home Assistant todavía pueden "
-            "estimar la posición, pero no se detectó ninguna identidad de "
-            "mando/estado"
-        ),
         "frame_none_received": "No se recibió ninguna trama coincidente",
         "position_none_recorded": "No se registró ninguna actualización de posición",
-        "diag_title": "Diagnóstico de Schellenberg USB para esta persiana",
+        "diag_title": "Diagnóstico:",
         "diag_selected_blind": "Dispositivo seleccionado: {value}",
         "diag_section_stick_state": "Estado del stick:",
         "diag_connected": "Conectado: {value}",
@@ -519,7 +502,6 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "diag_open_time": "Tiempo de apertura: {value} segundos",
         "diag_close_time": "Tiempo de cierre: {value} segundos",
         "diag_invert_direction": "Dirección invertida: {value}",
-        "source_primary_status": "estado primario {identity}, comando {event}",
         "cover_open_failed": "No se pudo abrir {name}: {reason}",
         "cover_close_failed": "No se pudo cerrar {name}: {reason}",
         "cover_stop_failed": "No se pudo detener {name}: {reason}",
@@ -626,14 +608,9 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
             "volet peut toujours être commandé, mais le suivi de position "
             "ne reposera plus que sur les commandes de Home Assistant."
         ),
-        "position_tracking_unavailable_short": (
-            "Indisponible : les commandes de Home Assistant peuvent encore "
-            "estimer la position, mais aucune identité de "
-            "télécommande/état n'a été détectée"
-        ),
         "frame_none_received": "Aucune trame correspondante reçue",
         "position_none_recorded": "Aucune mise à jour de position enregistrée",
-        "diag_title": "Diagnostic Schellenberg USB pour ce volet",
+        "diag_title": "Diagnostic :",
         "diag_selected_blind": "Appareil sélectionné : {value}",
         "diag_section_stick_state": "État de la clé :",
         "diag_connected": "Connectée : {value}",
@@ -688,7 +665,6 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "diag_open_time": "Temps d'ouverture : {value} secondes",
         "diag_close_time": "Temps de fermeture : {value} secondes",
         "diag_invert_direction": "Sens inversé : {value}",
-        "source_primary_status": "état principal {identity}, commande {event}",
         "cover_open_failed": "Impossible d'ouvrir {name} : {reason}",
         "cover_close_failed": "Impossible de fermer {name} : {reason}",
         "cover_stop_failed": "Impossible d'arrêter {name} : {reason}",

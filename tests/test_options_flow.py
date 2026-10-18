@@ -13,7 +13,6 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
-import serialx
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -81,35 +80,15 @@ async def test_submitting_a_new_valid_port_updates_entry_and_schedules_reload(
     reload_spy.assert_called_once_with(entry.entry_id)
 
 
-async def test_submitting_an_unreachable_new_port_shows_cannot_connect(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def failing_check(port: str) -> None:
-        raise serialx.SerialException("no such device")
-
-    monkeypatch.setattr(options_flow_module, "check_serial_port", failing_check)
-    entry = _build_entry(hass, port="/dev/ttyUSB0")
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={CONF_SERIAL_PORT: "/dev/ttyUSB9"}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "cannot_connect"}
-    # The rejected port must not have been persisted.
-    assert entry.data[CONF_SERIAL_PORT] == "/dev/ttyUSB0"
-
-
 async def test_submitting_an_unreachable_new_port_via_oserror_shows_cannot_connect(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """serialx-specific: OSError/TimeoutError are also treated as connect failures.
+    """A real connection failure (OSError/TimeoutError) shows cannot_connect.
 
-    v1.0.4's options_flow.py only caught serial.SerialException; the serialx
-    migration widened this to also catch plain OSError/TimeoutError (see
-    api.py's connect()), since serialx.serial_for_url() can raise those
-    directly for some backends. Both branches need coverage.
+    Per the serialx migration guide, this integration no longer catches a
+    broad serialx.SerialException - serialx itself raises plain OSError/
+    TimeoutError for connection failures (see api.py's connect() and this
+    same handling in config_flow.py), and that is what is tested here.
     """
 
     def failing_check(port: str) -> None:
@@ -125,6 +104,8 @@ async def test_submitting_an_unreachable_new_port_via_oserror_shows_cannot_conne
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
+    # The rejected port must not have been persisted.
+    assert entry.data[CONF_SERIAL_PORT] == "/dev/ttyUSB0"
 
 
 async def test_submitting_a_new_port_with_an_unexpected_error_shows_unknown(

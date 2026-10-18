@@ -11,7 +11,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/GimpArm/schellenberg_usb/issues",
   "requirements": [
-    "serialx>=1.10.0"
+    "serialx>=1.11.0"
   ],
   "usb": [
     {
@@ -20,5 +20,5 @@
       "manufacturer": "van ooijen"
     }
   ],
-  "version": "v1.1.2"
+  "version": "v1.1.3"
 }
