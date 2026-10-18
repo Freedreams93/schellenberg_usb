@@ -979,9 +979,8 @@ class SchellenbergUsbApi:
                 finish_pair_command,
             )
 
-            # Both pairing entry points (pair_device and
-            # add_shutter_from_remote) share this one sequence: the 0x60
-            # teach command followed by the 0x40 finish/allow-pairing
+            # Pairing (async_step_pair_device) uses this one sequence: the
+            # 0x60 teach command followed by the 0x40 finish/allow-pairing
             # command.
             pairing_phases = (
                 ("teach_60", pair_command),
@@ -1052,9 +1051,8 @@ class SchellenbergUsbApi:
         succeeded) is what caused the real bug this fix addresses: since
         _transmit_capability_block_reason() then blocks every future
         pairing attempt on "wrong_mode:unknown" until a full reconnect,
-        the pairing config flow step (for both "pair_device" and
-        "add_shutter_from_remote", which share this same cleanup) would
-        abort with the same "pairing_timeout" message again immediately
+        the pairing config flow step ("pair_device") would abort with
+        the same "pairing_timeout" message again immediately
         on the very next attempt, before any new wait for a device even
         began. Trusting the write alone, the same way "hello" already
         does, fixes that and also drops the now-pointless wait entirely:

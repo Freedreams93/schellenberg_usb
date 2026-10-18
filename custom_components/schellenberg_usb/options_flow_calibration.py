@@ -467,7 +467,7 @@ class CalibrationFlowHandler:
                 if calibration_record := self._calibration_record():
                     data[CONF_LAST_CALIBRATION] = calibration_record
                 pairing_flow = cast("SchellenbergPairingSubentryFlow", self.flow)
-                return pairing_flow._finish_pairing_or_offer_repeat(
+                return pairing_flow._finish_pairing(
                     title=self._pending_device_name, data=data
                 )
 

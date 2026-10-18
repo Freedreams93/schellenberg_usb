@@ -1059,9 +1059,9 @@ async def test_added_to_hass_defaults_to_closed_when_nothing_was_restored(
 ) -> None:
     """A brand-new entity with no prior Home Assistant state at all, and no
     CONF_INITIAL_POSITION in its device_data either (e.g. a blind paired
-    before that key existed, or via the hybrid add_shutter_from_remote
-    workflow, which never calibrates) - see the sibling test right below
-    for the case where that key *is* present.
+    before that key existed, or through the since-removed hybrid
+    add_shutter_from_remote workflow, which never calibrated) - see the
+    sibling test right below for the case where that key *is* present.
     """
     api = MagicMock()
     cover = _build_cover(hass, api)

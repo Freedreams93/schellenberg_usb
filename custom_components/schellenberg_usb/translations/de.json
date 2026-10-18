@@ -36,18 +36,12 @@
           "title": "Gerät hinzufügen",
           "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten.",
           "menu_options": {
-            "pair_device": "Gerät koppeln und kalibrieren",
-            "add_shutter_from_remote": "Gerät von Fernbedienung hinzufügen"
+            "pair_device": "Gerät koppeln und kalibrieren"
           }
         },
         "pair_device": {
           "title": "Gerät koppeln und kalibrieren",
           "description": "Drücken Sie innerhalb von 2 Minuten die Kopplungstaste oder die Kopplungstasten an Ihrem Gerät.",
-          "submit": "Koppeln"
-        },
-        "add_shutter_from_remote": {
-          "title": "Gerät von Fernbedienung hinzufügen",
-          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Kanal des Geräts aus. Drücken Sie die Programmiertaste Ihrer Fernbedienung, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass das Gerät den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf. Danach bestätigen Sie, ob sich der Rollladen tatsächlich bewegt hat. Steuert derselbe Fernbedienungskanal noch weitere Rollläden, können Sie jeden davon direkt im Anschluss hier ebenfalls hinzufügen, ohne diese Schritte zu wiederholen.",
           "submit": "Koppeln"
         },
         "name_device": {
@@ -80,14 +74,6 @@
           "description": "Kalibrierung für {device_name} abgeschlossen!\n\nGemessene Zeiten:\n- Öffnungszeit: {open_time} Sekunden\n- Schließzeit: {close_time} Sekunden\n\nDiese Zeiten werden verwendet, um die Rollladenposition genau zu verfolgen.\n\nStatuserkennung aus der Kalibrierung:\n- Primäre Statusidentität: {primary_status_identity}\n- Verwendete primäre Befehle: {primary_frames}\n- Sekundäre Identitäten: {secondary_status_identities}\n- Beobachtete Telegramme: {observed_frame_count}\n- Abbruchgrund: {calibration_end_reason}\n- Positionsverfolgung: {position_tracking}\n\nWenn keine Empfangs-/Statusidentität erkannt wurde, kann der Rollladen weiterhin gesteuert werden; seine Position wird dann anhand der gesendeten Befehle von Home Assistant geschätzt.",
           "submit": "Fertig"
         },
-        "pairing_repeat_choice": {
-          "title": "Rollladen hinzugefügt",
-          "description": "„{device_name}“ wurde hinzugefügt. Steuert der gerade gekoppelte Fernbedienungskanal noch einen weiteren Rollladen, können Sie ihn gleich ebenfalls hinzufügen, ohne erneut auf Koppeln zu drücken.",
-          "menu_options": {
-            "pair_another_on_channel": "Weiteren Rollladen auf diesem Kanal hinzufügen",
-            "finish_pairing": "Fertig"
-          }
-        },
         "test_motor": {
           "title": "Motorbefehl testen",
           "description": "Wählen Sie eine Rollladenfahrtrichtung und drücken Sie dann Test: Der Rollladen bewegt sich kurz in diese Rollladenfahrtrichtung und stoppt danach automatisch wieder. Angesprochen wird das Gerät {device_id}/{device_enum}. Beobachten Sie dabei den Rollladen {retry_notice}.",
@@ -103,22 +89,6 @@
             "motor_moved": "Der Rolladen hat sich bewegt"
           },
           "submit": "Weiter"
-        },
-        "test_success": {
-          "title": "Befehlstest erfolgreich",
-          "menu_options": {
-            "calibration_close": "Weiter zur Kalibrierung",
-            "manual_times": "Gerätedaten manuell eintragen in das nächste Menü"
-          }
-        },
-        "manual_times": {
-          "title": "Laufzeiten eingeben",
-          "description": "Geben Sie die gemessenen vollständigen Öffnungs- und Schließzeiten ein.",
-          "data": {
-            "open_time_seconds": "Öffnungszeit",
-            "close_time_seconds": "Schließzeit"
-          },
-          "submit": "Speichern"
         },
         "reconfigure": {
           "title": "Gerät konfigurieren",

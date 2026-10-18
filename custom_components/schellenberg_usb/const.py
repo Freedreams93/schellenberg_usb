@@ -158,8 +158,9 @@ CONF_CLOSE_TIME = "close_time"  # Time it takes to close (down) in seconds
 # Only ever 0 or 100: calibration always ends at whichever end stop the
 # second/last leg drove to. Only present on a subentry created fresh from a
 # pair_device calibration; cover.py falls back to 0 when it is absent, which
-# covers every blind paired before this key existed and the hybrid
-# (add_shutter_from_remote) workflow, which never runs this calibration flow.
+# covers every blind paired before this key existed, including any paired
+# through the since-removed hybrid add_shutter_from_remote workflow, which
+# never ran this calibration flow either.
 CONF_INITIAL_POSITION = "initial_position"
 # Legacy top-level command-device-ID key from before CONF_COMMAND_DEVICE_ID
 # and the separate status identity existed. Despite living in this
