@@ -1,0 +1,40 @@
+# Services for Schellenberg USB integration
+#
+# NOTE: Pairing a blind is done through Settings -> Devices & services ->
+# Schellenberg USB -> Add blind (the "pair" service some older releases of
+# this file mentioned was never registered by the integration and always
+# failed with "Service not found"; it has been removed here).
+
+test_command:
+  name: Test blind command
+  description: Send open, close, or stop to a device enum without creating a cover.
+  fields:
+    device_id:
+      name: Device ID
+      description: Six-character device ID used for logging and diagnosis.
+      required: true
+      example: "F2B8D5"
+      selector:
+        text:
+    enum:
+      name: Enum
+      description: Two-character enum inserted into the outgoing serial payload.
+      required: true
+      example: "23"
+      selector:
+        text:
+    command:
+      name: Command
+      required: true
+      selector:
+        select:
+          options:
+            - open
+            - close
+            - stop
+    config_entry_id:
+      name: Config entry ID
+      description: Required only when more than one Schellenberg USB hub is loaded.
+      required: false
+      selector:
+        text:

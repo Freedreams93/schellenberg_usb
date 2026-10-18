@@ -1,0 +1,24 @@
+{
+  "domain": "schellenberg_usb",
+  "name": "Schellenberg-USB",
+  "codeowners": [
+    "@GimpArm",
+    "@Freedreams93"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/GimpArm/schellenberg_usb",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/GimpArm/schellenberg_usb/issues",
+  "requirements": [
+    "serialx>=1.14.0"
+  ],
+  "usb": [
+    {
+      "vid": "16C0",
+      "pid": "05E1",
+      "manufacturer": "van ooijen"
+    }
+  ],
+  "version": "v1.1.3"
+}

@@ -1,0 +1,7 @@
+{
+  "services": {
+    "test_command": {
+      "service": "mdi:remote"
+    }
+  }
+}
