@@ -113,6 +113,19 @@ strict = true
 module = "voluptuous.*"
 follow_imports = "skip"
 
+# Ruff would otherwise infer its syntax-modernization target from
+# `requires-python` above - but that value is only the dev/CI toolchain
+# floor (see the comment on it), not what the integration may assume at
+# Home Assistant runtime. Pinned explicitly here instead, to the Python
+# version Home Assistant Core 2025.3.0 (hacs.json's own floor) actually
+# requires, so that ruff's `UP` (pyupgrade) rules below - which keep
+# gaining target-version-gated modernizations, e.g. PEP 758's
+# unparenthesized `except A, B:`, valid only on Python 3.14+ - can never
+# rewrite the source into syntax that breaks on an older-but-still-
+# supported Home Assistant installation.
+[tool.ruff]
+target-version = "py313"
+
 [tool.ruff.lint]
 select = [
     "E",     # pycodestyle errors

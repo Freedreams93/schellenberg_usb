@@ -5,7 +5,12 @@ repos:
     hooks:
       - id: uv-lock
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.1
+    # This hook downloads its own isolated ruff build at this tag and is
+    # what CI actually lints/formats with - independent of the `ruff` dev
+    # dependency in pyproject.toml (used only for a developer's own `uv
+    # run ruff`). See pyproject.toml's `[tool.ruff] target-version`
+    # comment for why a newer ruff here is safe.
+    rev: v0.17.0
     hooks:
       - id: ruff-check
         args: [ --fix ]
