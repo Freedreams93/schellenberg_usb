@@ -1202,6 +1202,23 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new open command")
         self._start_position_tracking()
         self.async_write_ha_state()
+        # Wait for any other transmission already in flight - another
+        # blind's own open/close/stop, or a teach/pairing/raw-transmit step
+        # - to finish before writing this one. control_blind() itself never
+        # waits or retries (see its own docstring): several blinds
+        # commanded within the same roughly-1.2s transmit window used to
+        # mean only whichever one's write happened to land while the stick
+        # was actually free would ever reach the motor - the stick answers
+        # "tE" (busy) to every other one, which control_blind() neither
+        # waits for nor retries, so those commands were silently lost while
+        # this entity's own optimistic "opening" state above still made
+        # them look like they were moving. Best-effort only, like the
+        # identical pattern already used below for the auto-stop-at-target
+        # case and in config_flow.py's motor test: if it times out, the
+        # write is attempted anyway rather than given up on. Deliberately
+        # not applied to async_stop_cover() - see its own docstring for why
+        # a manual stop must stay instant instead.
+        await self._api.wait_for_transmitter_idle("sending an open command")
         if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1265,6 +1282,9 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new close command")
         self._start_position_tracking()
         self.async_write_ha_state()
+        # Same wait, same reasoning, as async_open_cover() above - see its
+        # comment for why.
+        await self._api.wait_for_transmitter_idle("sending a close command")
         if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1300,6 +1320,13 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         fighting over the stick's one RF transmitter. With open/close no
         longer using that busy-retry cycle either, there is nothing left to
         insure against with a second or third stop frame.
+
+        Unlike async_open_cover()/async_close_cover() above, this
+        deliberately never calls wait_for_transmitter_idle() either: a
+        manual stop press must always be instant, even if that means it is
+        the one write that can still collide with another still-in-flight
+        transmission and be silently dropped by a busy stick - the same
+        trade-off this method already made for the lock and the retry.
         """
         _LOGGER.debug(
             "Stopping cover %s (command_id=%s enum=%s)",

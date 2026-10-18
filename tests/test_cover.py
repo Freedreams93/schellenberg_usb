@@ -113,6 +113,7 @@ async def test_async_open_cover_sends_up_via_control_blind(
 ) -> None:
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
@@ -128,6 +129,7 @@ async def test_async_close_cover_sends_down_via_control_blind(
 ) -> None:
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
@@ -148,6 +150,7 @@ async def test_async_open_cover_raises_when_control_blind_fails(
     """
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=False)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -169,6 +172,7 @@ async def test_async_close_cover_raises_when_control_blind_fails(
     """
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=False)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -178,6 +182,87 @@ async def test_async_close_cover_raises_when_control_blind_fails(
 
     assert cover._attr_is_closing is False
     assert cover._move_start_time is None
+
+
+async def test_async_open_cover_waits_for_transmitter_idle_before_sending(
+    hass: HomeAssistant,
+) -> None:
+    """Open must not collide with another still-in-flight transmission.
+
+    Regression guard for several blinds commanded close together silently
+    losing all but one command to the stick's own single-RF-transmitter
+    busy state - see async_open_cover()'s own comment for the full story.
+    """
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    await cover.async_open_cover()
+
+    api.wait_for_transmitter_idle.assert_awaited_once()
+    api.control_blind.assert_awaited_once_with(
+        cover._command_enum, CMD_UP, device_id=cover._command_device_id
+    )
+
+
+async def test_async_close_cover_waits_for_transmitter_idle_before_sending(
+    hass: HomeAssistant,
+) -> None:
+    """Mirrors test_async_open_cover_waits_for_transmitter_idle_before_sending."""
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    await cover.async_close_cover()
+
+    api.wait_for_transmitter_idle.assert_awaited_once()
+    api.control_blind.assert_awaited_once_with(
+        cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
+    )
+
+
+async def test_async_open_cover_still_sends_when_idle_wait_times_out(
+    hass: HomeAssistant,
+) -> None:
+    """The idle wait is best-effort: a timeout must not cancel the open.
+
+    Mirrors how the pre-existing auto-stop-at-target call to
+    wait_for_transmitter_idle() already never checks its own return value
+    either - a stuck-busy stick is still worth trying to write to, not a
+    reason to give up on the command outright.
+    """
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=False)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    await cover.async_open_cover()
+
+    api.control_blind.assert_awaited_once_with(
+        cover._command_enum, CMD_UP, device_id=cover._command_device_id
+    )
+
+
+async def test_async_close_cover_still_sends_when_idle_wait_times_out(
+    hass: HomeAssistant,
+) -> None:
+    """Mirrors test_async_open_cover_still_sends_when_idle_wait_times_out."""
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=False)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    await cover.async_close_cover()
+
+    api.control_blind.assert_awaited_once_with(
+        cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
+    )
 
 
 async def test_async_stop_cover_sends_stop_via_control_blind(
@@ -204,6 +289,30 @@ async def test_async_stop_cover_sends_stop_via_control_blind(
     api.control_blind.assert_awaited_once_with(
         cover._command_enum, CMD_STOP, device_id=cover._command_device_id
     )
+
+
+async def test_async_stop_cover_does_not_wait_for_transmitter_idle(
+    hass: HomeAssistant,
+) -> None:
+    """Stop is the one exception to the new open/close idle-wait.
+
+    Companion to test_async_open/close_cover_waits_for_transmitter_idle_
+    before_sending above: a manual stop press must stay instant even while
+    another transmission is in flight, so adding the wait to open/close
+    must not accidentally also reach stop - see async_stop_cover()'s own
+    docstring for why. api.wait_for_transmitter_idle is still configured
+    (rather than left as a bare, non-awaitable MagicMock attribute) so
+    this would fail loudly with a TypeError, not silently pass, if it ever
+    were awaited.
+    """
+    api = MagicMock()
+    api.control_blind = AsyncMock(return_value=True)
+    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+
+    await cover.async_stop_cover()
+
+    api.wait_for_transmitter_idle.assert_not_awaited()
 
 
 async def test_async_stop_cover_raises_when_control_blind_fails(
