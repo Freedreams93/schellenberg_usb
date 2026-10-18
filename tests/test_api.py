@@ -395,7 +395,9 @@ async def test_busy_retry_scheduled_message_logs_at_debug_even_for_developer_too
     connected_api._handle_message("tE")
 
     retry_records = [
-        record for record in caplog.records if "command retry in 100ms" in record.message
+        record
+        for record in caplog.records
+        if "command retry in 100ms" in record.message
     ]
     assert len(retry_records) == 1
     assert retry_records[0].levelno == logging.DEBUG

@@ -492,8 +492,7 @@ class SchellenbergUsbApi:
             # (see the docstring), not something worth surfacing to anyone
             # not already watching debug logs.
             _LOGGER.debug(
-                "Transmit busy: command retry in 100ms source=%s payload=%s "
-                "attempt=%d",
+                "Transmit busy: command retry in 100ms source=%s payload=%s attempt=%d",
                 self._last_transmit_source,
                 self._pending_retry_command,
                 self._retry_count + 1,
