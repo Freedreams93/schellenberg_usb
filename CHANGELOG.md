@@ -143,6 +143,6 @@
 * Add an automated test suite (278 tests)
 * Document an example advanced configuration for fine position control and Alexa voice control in the README
 
-# v1.0.0
+## v1.0.0
 
 * Initial release
