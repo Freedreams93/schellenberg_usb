@@ -1069,4 +1069,4 @@ Remove or replace any identifiers you do not want to share publicly.
 
 ## License
 
-See [LICENSE](LICENSE).
+* See [LICENSE](LICENSE).
