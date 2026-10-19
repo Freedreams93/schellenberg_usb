@@ -478,6 +478,7 @@ interne_rollladenlogik_fuer_home_assistant:
     - condition: template
       value_template: "{{ ziel | int != states(helfer) | int }}"
     - variables:
+        start_ts: "{{ now().timestamp() }}"
         soll: "{{ ziel | float(0) }}"
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
@@ -486,7 +487,6 @@ interne_rollladenlogik_fuer_home_assistant:
         dauer: >
           {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
           richtung_runter else f_auf %} {{ ((diff / 100.0) * faktor) | round(2) }}
-        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
         korrektur_dauer: |
           {% if soll == 0 %}
             {{ (ist / 100.0 * f_auf) | round(2) }}
@@ -526,6 +526,8 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
+    - variables:
+        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -569,6 +571,7 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
   max: 12
   sequence:
     - variables:
+        start_ts: "{{ now().timestamp() }}"
         soll: "{{ ziel | float(0) }}"
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
@@ -592,7 +595,6 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             {% set faktor = f_ab if richtung_runter else f_auf %}
             {{ ((diff / 100.0) * faktor) | round(2) }}
           {% endif %}
-        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
         korrektur_dauer: |
           {% if soll == 0 or (soll == ist and not reset_richtung_runter) %}
             {{ (ist / 100.0 * f_auf) | round(2) }}
@@ -632,6 +634,8 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
+    - variables:
+        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -772,6 +776,15 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
 - Both scripts send `open_cover`/`close_cover` twice, one second apart,
   before waiting out the calculated duration. This is a small safety margin
   in case a single RF command is missed.
+- `start_ts` and the second `rest_dauer` (recomputed right after the
+  open/close `choose:` block, replacing the first, rougher estimate) measure
+  how much time the two sends above actually took, rather than assuming
+  it was exactly one second. `open_cover`/`close_cover` on this integration's
+  own `cover.*` entity wait for the stick's reply before returning, and
+  retry for as long as it answers busy, so that preamble is not always
+  instant - for a short move this difference is the whole budget, so a
+  fixed assumption drifts into a real, visible overshoot right where it
+  matters most.
 - When the target is exactly 0 or 100, the scripts intentionally keep
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
