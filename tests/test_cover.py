@@ -108,39 +108,52 @@ def _build_cover(hass: HomeAssistant, api: Any, **overrides: Any) -> Schellenber
     return cover
 
 
-async def test_async_open_cover_sends_up_via_control_blind(
+async def test_async_open_cover_sends_up_via_control_blind_with_retry(
     hass: HomeAssistant,
 ) -> None:
+    """Open goes through control_blind_with_retry(), not a bare control_blind().
+
+    Regression guard for several blinds commanded close together silently
+    losing all but one command to the stick's own single-RF-transmitter
+    busy state: async_open_cover() used to await wait_for_transmitter_idle()
+    and then call control_blind() directly, each blind checking that same
+    shared "idle" event independently - see async_open_cover()'s own
+    comment for the full story of why that raced. control_blind_with_retry()
+    (api.py) now does the waiting *and* the busy-retry itself, serialized
+    hub-wide through its own lock - covered end-to-end at the api.py level
+    (test_control_blind_with_retry_serializes_two_blinds_instead_of_racing
+    and friends in test_api.py); this only has to confirm cover.py actually
+    calls it, with the right arguments.
+    """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     await cover.async_open_cover()
 
-    api.control_blind.assert_awaited_once_with(
+    api.control_blind_with_retry.assert_awaited_once_with(
         cover._command_enum, CMD_UP, device_id=cover._command_device_id
     )
 
 
-async def test_async_close_cover_sends_down_via_control_blind(
+async def test_async_close_cover_sends_down_via_control_blind_with_retry(
     hass: HomeAssistant,
 ) -> None:
+    """Mirrors test_async_open_cover_sends_up_via_control_blind_with_retry."""
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     await cover.async_close_cover()
 
-    api.control_blind.assert_awaited_once_with(
+    api.control_blind_with_retry.assert_awaited_once_with(
         cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
     )
 
 
-async def test_async_open_cover_raises_when_control_blind_fails(
+async def test_async_open_cover_raises_when_control_blind_with_retry_fails(
     hass: HomeAssistant,
 ) -> None:
     """Mirrors test_async_stop_cover_raises_when_control_blind_fails for open.
@@ -149,8 +162,7 @@ async def test_async_open_cover_raises_when_control_blind_fails(
     True, reporting a movement that never physically happened.
     """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=False)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=False)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -162,7 +174,7 @@ async def test_async_open_cover_raises_when_control_blind_fails(
     assert cover._move_start_time is None
 
 
-async def test_async_close_cover_raises_when_control_blind_fails(
+async def test_async_close_cover_raises_when_control_blind_with_retry_fails(
     hass: HomeAssistant,
 ) -> None:
     """Mirrors test_async_stop_cover_raises_when_control_blind_fails for close.
@@ -171,8 +183,7 @@ async def test_async_close_cover_raises_when_control_blind_fails(
     True, reporting a movement that never physically happened.
     """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=False)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=False)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -184,91 +195,10 @@ async def test_async_close_cover_raises_when_control_blind_fails(
     assert cover._move_start_time is None
 
 
-async def test_async_open_cover_waits_for_transmitter_idle_before_sending(
-    hass: HomeAssistant,
-) -> None:
-    """Open must not collide with another still-in-flight transmission.
-
-    Regression guard for several blinds commanded close together silently
-    losing all but one command to the stick's own single-RF-transmitter
-    busy state - see async_open_cover()'s own comment for the full story.
-    """
-    api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
-    cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
-
-    await cover.async_open_cover()
-
-    api.wait_for_transmitter_idle.assert_awaited_once()
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_UP, device_id=cover._command_device_id
-    )
-
-
-async def test_async_close_cover_waits_for_transmitter_idle_before_sending(
-    hass: HomeAssistant,
-) -> None:
-    """Mirrors test_async_open_cover_waits_for_transmitter_idle_before_sending."""
-    api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
-    cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
-
-    await cover.async_close_cover()
-
-    api.wait_for_transmitter_idle.assert_awaited_once()
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
-    )
-
-
-async def test_async_open_cover_still_sends_when_idle_wait_times_out(
-    hass: HomeAssistant,
-) -> None:
-    """The idle wait is best-effort: a timeout must not cancel the open.
-
-    Mirrors how the pre-existing auto-stop-at-target call to
-    wait_for_transmitter_idle() already never checks its own return value
-    either - a stuck-busy stick is still worth trying to write to, not a
-    reason to give up on the command outright.
-    """
-    api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=False)
-    cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
-
-    await cover.async_open_cover()
-
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_UP, device_id=cover._command_device_id
-    )
-
-
-async def test_async_close_cover_still_sends_when_idle_wait_times_out(
-    hass: HomeAssistant,
-) -> None:
-    """Mirrors test_async_open_cover_still_sends_when_idle_wait_times_out."""
-    api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=False)
-    cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
-
-    await cover.async_close_cover()
-
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
-    )
-
-
 async def test_async_stop_cover_sends_stop_via_control_blind(
     hass: HomeAssistant,
 ) -> None:
-    """Stop is sent exactly like open/close: one direct control_blind() call.
+    """Stop itself is still one direct, unlocked, unretried control_blind() call.
 
     async_stop_cover()'s own initiating stop always went through this same
     control_blind() path, same as open/close - it was only the two automatic
@@ -276,9 +206,10 @@ async def test_async_stop_cover_sends_stop_via_control_blind(
     lock via send_priority_stop(). Confirmed real-hardware testing showed one
     of those follow-ups could still collide with an in-flight open/close
     command's own busy-retry, fighting over the stick's one RF transmitter.
-    With open/close no longer using that busy-retry cycle either, the
-    follow-ups (and send_priority_stop() itself) are gone, and there is
-    nothing left to bypass here.
+    Those follow-ups (and send_priority_stop() itself) are long gone - now
+    that open/close retry on "tE" again via control_blind_with_retry() (see
+    its own docstring), the same kind of collision is instead prevented by
+    cancel_pending_move() - see the test right below this one.
     """
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
@@ -289,6 +220,37 @@ async def test_async_stop_cover_sends_stop_via_control_blind(
     api.control_blind.assert_awaited_once_with(
         cover._command_enum, CMD_STOP, device_id=cover._command_device_id
     )
+
+
+async def test_async_stop_cover_cancels_a_pending_move_for_this_device_first(
+    hass: HomeAssistant,
+) -> None:
+    """A stop must end this same blind's own move-retry loop before it sends.
+
+    Regression guard for the exact collision described above and in
+    async_stop_cover()'s own docstring: cancel_pending_move() has to run
+    before control_blind()'s write, not after, or a retry already queued
+    by control_blind_with_retry() for this blind could resend open/close
+    once this stop has already gone out.
+    """
+    call_order: list[str] = []
+
+    def _record_cancel(_device_id: str) -> None:
+        call_order.append("cancel")
+
+    def _record_stop(*_args: object, **_kwargs: object) -> bool:
+        call_order.append("stop")
+        return True
+
+    api = MagicMock()
+    api.cancel_pending_move = Mock(side_effect=_record_cancel)
+    api.control_blind = AsyncMock(side_effect=_record_stop)
+    cover = _build_cover(hass, api)
+
+    await cover.async_stop_cover()
+
+    api.cancel_pending_move.assert_called_once_with(cover._command_device_id)
+    assert call_order == ["cancel", "stop"]
 
 
 async def test_async_stop_cover_does_not_wait_for_transmitter_idle(
@@ -405,6 +367,11 @@ async def test_position_loop_stops_at_a_partial_target(
 
     await cover._async_position_update_loop()
 
+    # This is functionally a stop too, so it must end this same blind's own
+    # move-retry loop first - see cancel_pending_move()'s own docstring and
+    # test_async_stop_cover_cancels_a_pending_move_for_this_device_first
+    # above for the collision this prevents.
+    api.cancel_pending_move.assert_called_once_with(cover._command_device_id)
     # The stop must wait for the move's own open/close transmission to be
     # clear of the transmitter before it is sent - see the matching comment
     # in _async_position_update_loop() - and only then actually be sent.
@@ -449,6 +416,8 @@ async def test_position_loop_stops_early_to_compensate_stop_latency(
 
     await cover._async_position_update_loop()
 
+    # Same reasoning as test_position_loop_stops_at_a_partial_target above.
+    api.cancel_pending_move.assert_called_once_with(cover._command_device_id)
     api.control_blind.assert_awaited_once_with(
         cover._command_enum, CMD_STOP, device_id=cover._command_device_id
     )
@@ -533,6 +502,7 @@ async def test_position_loop_does_not_stop_before_the_compensated_lead(
 
     api.control_blind.assert_not_awaited()
     api.wait_for_transmitter_idle.assert_not_awaited()
+    api.cancel_pending_move.assert_not_called()
     assert cover._target_position == 20
 
 
@@ -569,6 +539,7 @@ async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
 
     api.wait_for_transmitter_idle.assert_not_awaited()
     api.control_blind.assert_not_awaited()
+    api.cancel_pending_move.assert_not_called()
 
 
 async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
@@ -599,6 +570,11 @@ async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
     await cover._async_position_update_loop()
 
     api.control_blind.assert_not_awaited()
+    # No stop command here means no move-retry loop to end either - see
+    # cancel_pending_move()'s own docstring on why calling it when nothing
+    # for this device is in progress would be harmless but is still never
+    # called here, since needs_stop_command gates both.
+    api.cancel_pending_move.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -971,8 +947,7 @@ async def test_set_cover_position_above_current_opens_toward_the_target(
     hass: HomeAssistant,
 ) -> None:
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
     cover._attr_current_cover_position = 30
@@ -981,7 +956,7 @@ async def test_set_cover_position_above_current_opens_toward_the_target(
 
     assert cover._target_position == 80
     assert cover._attr_is_opening is True
-    api.control_blind.assert_awaited_once_with(
+    api.control_blind_with_retry.assert_awaited_once_with(
         cover._command_enum, CMD_UP, device_id=cover._command_device_id
     )
 
@@ -990,8 +965,7 @@ async def test_set_cover_position_below_current_closes_toward_the_target(
     hass: HomeAssistant,
 ) -> None:
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_with_retry = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
     cover._attr_current_cover_position = 80
@@ -1000,7 +974,7 @@ async def test_set_cover_position_below_current_closes_toward_the_target(
 
     assert cover._target_position == 30
     assert cover._attr_is_closing is True
-    api.control_blind.assert_awaited_once_with(
+    api.control_blind_with_retry.assert_awaited_once_with(
         cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
     )
 

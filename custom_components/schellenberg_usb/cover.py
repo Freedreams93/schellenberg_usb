@@ -1036,6 +1036,15 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                             self._target_position,
                         )
                         if needs_stop_command:
+                            # This is functionally a stop, same as
+                            # async_stop_cover()'s own manual one - see its
+                            # docstring for why cancel_pending_move() comes
+                            # first: the move that is ending here is the
+                            # same one control_blind_with_retry() may still
+                            # be retrying if the stick answered "tE" to it
+                            # earlier, and that retry must not resend the
+                            # open/close command after this stop goes out.
+                            self._api.cancel_pending_move(self._command_device_id)
                             # Wait for the open/close command issued when
                             # this move started to actually finish
                             # transmitting before sending the stop: sending
@@ -1203,23 +1212,21 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._start_position_tracking()
         self.async_write_ha_state()
         # Wait for any other transmission already in flight - another
-        # blind's own open/close/stop, or a teach/pairing/raw-transmit step
-        # - to finish before writing this one. control_blind() itself never
-        # waits or retries (see its own docstring): several blinds
-        # commanded within the same roughly-1.2s transmit window used to
-        # mean only whichever one's write happened to land while the stick
-        # was actually free would ever reach the motor - the stick answers
-        # "tE" (busy) to every other one, which control_blind() neither
-        # waits for nor retries, so those commands were silently lost while
-        # this entity's own optimistic "opening" state above still made
-        # them look like they were moving. Best-effort only, like the
-        # identical pattern already used below for the auto-stop-at-target
-        # case and in config_flow.py's motor test: if it times out, the
-        # write is attempted anyway rather than given up on. Deliberately
-        # not applied to async_stop_cover() - see its own docstring for why
-        # a manual stop must stay instant instead.
-        await self._api.wait_for_transmitter_idle("sending an open command")
-        if not await self._api.control_blind(
+        # blind's own open/close, a teach/pairing/raw-transmit step, or
+        # this same blind's own prior stop - to finish, then write and keep
+        # retrying until the stick actually accepts it rather than merely
+        # attempting once. control_blind_with_retry() (api.py) serializes
+        # this hub-wide through its own lock, held for the whole cycle: a
+        # bare wait-then-write here, each blind checking the same shared
+        # "idle" event independently, let several blinds commanded together
+        # all observe idle at once and all write within the same
+        # millisecond window - confirmed from a real log - of which the
+        # stick then accepted exactly one and silently dropped the rest,
+        # since control_blind() itself never waits for or retries a "tE"
+        # busy reply. Deliberately not applied to async_stop_cover() - see
+        # its own docstring for why a manual stop must stay instant and
+        # unretried instead.
+        if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
             # The command never reached the stick - undo the optimistic
@@ -1282,10 +1289,9 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new close command")
         self._start_position_tracking()
         self.async_write_ha_state()
-        # Same wait, same reasoning, as async_open_cover() above - see its
-        # comment for why.
-        await self._api.wait_for_transmitter_idle("sending a close command")
-        if not await self._api.control_blind(
+        # Same retry-until-accepted write, same reasoning, as
+        # async_open_cover() above - see its comment for why.
+        if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
             # The command never reached the stick - undo the optimistic
@@ -1311,23 +1317,35 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover immediately and freeze the estimated position.
 
-        Sent via control_blind(), exactly like async_open_cover() and
-        async_close_cover() above - one direct write, no transmit lock, no
-        busy-retry. Only the two automatic follow-up stop frames used to
-        bypass the lock (via send_priority_stop); they are gone now, since
-        confirmed real-hardware testing showed one of them could still
-        collide with an in-flight open/close command's own busy-retry,
-        fighting over the stick's one RF transmitter. With open/close no
-        longer using that busy-retry cycle either, there is nothing left to
-        insure against with a second or third stop frame.
+        Sent via control_blind(), exactly like the two automatic follow-up
+        stop frames that used to exist here (via send_priority_stop) were
+        removed for: one direct write, no transmit lock, no busy-retry of
+        its own. Confirmed real-hardware testing showed a bypassing stop
+        could still collide with an in-flight open/close command's own
+        busy-retry, fighting over the stick's one RF transmitter - a move's
+        retry could still resend its payload seconds after a stop had
+        already gone out. That history is exactly why this method's very
+        first action below is cancel_pending_move(): now that
+        async_open_cover()/async_close_cover() retry on "tE" again (via
+        control_blind_with_retry(), see its own docstring), a stop must
+        actively end any retry loop still running for this same blind
+        instead of merely not starting one of its own.
 
-        Unlike async_open_cover()/async_close_cover() above, this
-        deliberately never calls wait_for_transmitter_idle() either: a
-        manual stop press must always be instant, even if that means it is
-        the one write that can still collide with another still-in-flight
-        transmission and be silently dropped by a busy stick - the same
-        trade-off this method already made for the lock and the retry.
+        Unlike async_open_cover()/async_close_cover(), this deliberately
+        never calls wait_for_transmitter_idle() either: a manual stop press
+        must always be instant, even if that means it is the one write that
+        can still collide with another still-in-flight transmission (for a
+        *different* blind - this same blind's own move was just cancelled
+        above) and be silently dropped by a busy stick.
         """
+        # First, and before any other statement: if this device has a move
+        # retry loop still running (control_blind_with_retry(), in flight
+        # because the stick is busy with something else), end it now so it
+        # cannot resend the open/close command after the stop below has
+        # already gone out. Called this early, with no await beforehand, so
+        # there is no window in which this task could yield to that retry
+        # loop before the cancellation is actually requested.
+        self._api.cancel_pending_move(self._command_device_id)
         _LOGGER.debug(
             "Stopping cover %s (command_id=%s enum=%s)",
             self._device_name,

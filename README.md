@@ -776,23 +776,25 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
   previous moves.
-- Every open, close, and stop command - including the ones these scripts
-  send - goes out with no retry: once the stick has accepted an RF command
-  there is nothing meaningful to resend, since the Schellenberg RF link
-  never confirms that a motor actually received a frame to begin with
-  (only the USB stick's own transmitter on/off is ever visible). Open and
-  close do briefly wait (a few seconds at most, best-effort) for the stick
-  to report itself idle before sending, so a command issued while another
-  blind's transmission is still in flight is delayed rather than silently
-  dropped - stop is deliberately the one exception and stays instant/
-  unwaited, so a manual stop press is never queued behind anything. If the
-  stick still happens to answer that it is busy right as a command goes
-  out (`Transmit error - stick busy`), that reply is only logged, not
-  acted on for any of these three - it is not a sign of a problem, just
-  the stick momentarily catching up. This differs from other, non-movement
-  requests (raw RF payload testing, teach/pairing, and similar), which
-  wait for an idle stick and retry for as long as the stick keeps
-  reporting busy, with no retry limit.
+- Stop - including any `stop_cover` these scripts might trigger - goes out
+  with no retry and no wait: once the stick has accepted an RF command there
+  is nothing meaningful to resend, since the Schellenberg RF link never
+  confirms that a motor actually received a frame to begin with (only the
+  USB stick's own transmitter on/off is ever visible), and a manual stop
+  press must stay instant rather than ever being queued behind anything.
+  Open and close are different: both wait (a few seconds at most,
+  best-effort) for the stick to report itself idle before sending, and if
+  the stick still answers that it is busy right as the command goes out
+  (`Transmit error - stick busy`), they keep retrying - for as long as the
+  stick keeps reporting busy, with no retry limit - until it is accepted,
+  the same policy raw RF payload testing, teach/pairing, and similar
+  non-movement requests already use. Several blinds commanded together are
+  serialized one at a time rather than raced against each other, so a busy
+  reply to one is not a sign of a problem and does not mean its command is
+  lost - it is simply retried once the stick is free. A stop for a blind
+  that is still waiting out one of these retries ends that wait instead of
+  letting it resend the open/close command after the stop has already gone
+  out.
 
 ## Optional: synchronizing multiple blinds from one switch (example automation)
 
@@ -974,11 +976,12 @@ approach is:
    computed once and forgotten.
 
 Because the USB stick can only transmit one command at a time, sending many
-`set_cover_position` calls in the same second can also make the stick report
-that it is briefly busy; see
-[Developer tools refuse commands](#developer-tools-refuse-commands-pending-transmit-or-busy-stick).
-Spreading the moves out, as the `delay` steps above already do, avoids that
-in practice.
+`set_cover_position` calls in the same second can make the stick briefly
+report busy. That is not a lost command - open and close retry automatically
+until the stick accepts them (see the note on open/close behavior earlier in
+this section) - but each one still has to wait its turn, so spreading the
+moves out, as the `delay` steps above already do, keeps them synchronized
+more tightly than letting several queue up back to back would.
 
 ## Advanced protocol notes
 
