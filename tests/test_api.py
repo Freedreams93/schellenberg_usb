@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -28,6 +28,7 @@ import custom_components.schellenberg_usb.api as api_module
 from custom_components.schellenberg_usb.api import SchellenbergUsbApi
 from custom_components.schellenberg_usb.const import (
     CMD_ALLOW_PAIRING,
+    CMD_DOWN,
     CMD_GET_PARAM_P,
     CMD_PAIR,
     CMD_STOP,
@@ -520,6 +521,373 @@ async def test_disconnect_cancels_a_pending_retry_task(
     assert connected_api._retry_task is None
     with pytest.raises(asyncio.CancelledError):
         await retry_task
+
+
+async def test_handle_connection_lost_also_unblocks_a_waiting_move_retry(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A move retry loop parked on _move_ack_event must not wait out the
+    full MOVE_ACK_TIMEOUT just because the port died.
+
+    Mirrors test_handle_connection_lost_resets_retry_and_busy_state above,
+    but for control_blind_with_retry()'s own, deliberately separate state
+    (see _move_lock's comment in __init__) rather than send_command()'s.
+    Set up by hand, exactly as that test sets up _pending_retry_command
+    etc. by hand, rather than by actually running control_blind_with_retry()
+    as a task - this is only about handle_connection_lost()'s own cleanup,
+    which test_control_blind_with_retry_wakes_promptly_on_connection_lost
+    below exercises end-to-end through a real task.
+    """
+    connected_api._move_in_progress_device_id = "ABCDEF"
+    connected_api._move_awaiting_ack = True
+    connected_api._move_ack_result = None
+
+    connected_api.handle_connection_lost(
+        connected_api._protocol,  # type: ignore[arg-type]
+        Exception("gone"),
+    )
+
+    assert connected_api._move_ack_event.is_set() is True
+    assert connected_api._move_ack_result is False
+    assert connected_api._move_in_progress_device_id is None
+    assert connected_api._move_cancel_device_id is None
+    connected_api._cancel_scheduled_reconnect()
+
+
+async def test_disconnect_also_unblocks_a_waiting_move_retry(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """disconnect()'s own copy of the same cleanup as the test above."""
+    connected_api._move_in_progress_device_id = "ABCDEF"
+    connected_api._move_awaiting_ack = True
+    connected_api._move_ack_result = None
+
+    await connected_api.disconnect()
+
+    assert connected_api._move_ack_event.is_set() is True
+    assert connected_api._move_ack_result is False
+    assert connected_api._move_in_progress_device_id is None
+    assert connected_api._move_cancel_device_id is None
+
+
+# ---------------------------------------------------------------------------
+# control_blind_with_retry()/cancel_pending_move(): the real one-at-a-time
+# serialization fix for blind moves (open/close). control_blind() itself
+# (used directly by stop, and by this method for each of its own attempts)
+# stays exactly as covered above - one unlocked, unretried write. What is
+# new here is the lock held across a whole write-then-retry-until-accepted
+# cycle, and the cooperating cancellation hook stop uses to end a loop
+# that's still retrying for its own blind.
+# ---------------------------------------------------------------------------
+
+
+async def _run_until(
+    condition: Callable[[], bool], *, max_iterations: int = 100
+) -> None:
+    """Pump the event loop until `condition()` is true.
+
+    control_blind_with_retry() runs as a genuinely separate asyncio.Task
+    (unlike send_command()'s own retry, which Home Assistant's eager task
+    factory runs synchronously to completion inside _handle_message()
+    itself before that call even returns - see
+    test_busy_retry_has_no_limit_and_keeps_going's own docstring above).
+    Waking it (an Event.set()) only schedules it to resume; it then needs
+    a handful of real event-loop iterations - through asyncio.wait_for's
+    own internal task-wrapping, not just one - to actually act on that.
+    How many is an implementation detail of asyncio itself, not part of
+    control_blind_with_retry()'s own contract and not worth pinning down
+    exactly, so this polls instead of hard-coding a tick count.
+    """
+    for _ in range(max_iterations):
+        if condition():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(
+        f"condition not met after {max_iterations} event-loop iterations"
+    )
+
+
+async def test_control_blind_with_retry_rejects_a_non_move_action(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """CMD_STOP (or anything else) must never enter this retry cycle.
+
+    See control_blind_with_retry()'s own docstring: stop has to stay
+    exactly as instant and unretried as control_blind() itself - this
+    method exists only for async_open_cover()/async_close_cover().
+    """
+    assert (
+        await connected_api.control_blind_with_retry("10", CMD_STOP, device_id="ABCDEF")
+        is False
+    )
+    assert written(connected_api) == []
+
+
+async def test_control_blind_with_retry_succeeds_on_first_accept(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await asyncio.sleep(0)  # let it reach the write and park on the ack wait
+    assert len(written(connected_api)) == 1
+
+    connected_api._handle_message("t1")
+
+    assert await asyncio.wait_for(task, timeout=1) is True
+
+
+async def test_control_blind_with_retry_retries_on_busy_with_no_limit(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stick that keeps saying busy is retried forever, same no-limit
+    policy as send_command()'s own busy-retry cycle (see
+    test_busy_retry_has_no_limit_and_keeps_going in the section above) -
+    independent machinery, same policy. Sends far more "tE" replies in a
+    row than would matter in practice, to prove none of them give up.
+    """
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        # A bare `return None` (the pattern the other retry tests above
+        # use) never actually yields to the event loop, which is fine for
+        # them - send_command()'s retry runs synchronously to completion
+        # inside _handle_message() itself (see _run_until's own docstring)
+        # - but control_blind_with_retry() below is a genuinely separate
+        # task that needs real event-loop iterations to make progress, so
+        # this still yields once via the real sleep(0), just with no
+        # actual delay.
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    def written_count_reached(expected: int) -> Callable[[], bool]:
+        # A plain `lambda: len(written(connected_api)) == 1 + attempt`
+        # inside the loop below would close over the loop variable `attempt`
+        # itself, seeing whatever it has become by the time _run_until()
+        # actually calls it rather than its value on that iteration -
+        # `expected` here is instead a fresh parameter binding on every
+        # call, one per iteration, not a loop variable at all.
+        return lambda: len(written(connected_api)) == expected
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    attempts = 10
+    for attempt in range(1, attempts + 1):
+        connected_api._handle_message("tE")
+        await _run_until(written_count_reached(1 + attempt))
+
+    assert not task.done()
+
+    connected_api._handle_message("t1")
+    assert await asyncio.wait_for(task, timeout=1) is True
+
+
+async def test_control_blind_with_retry_treats_a_silent_ack_timeout_like_busy(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither "t1" nor "tE" arriving at all must still retry, not hang.
+
+    MOVE_ACK_TIMEOUT is patched down to (near) instant: asyncio.wait_for's
+    own timeout path needs real elapsed time (it schedules its callback via
+    loop.call_later, independent of asyncio.sleep), so patching
+    asyncio.sleep alone - as the other retry tests above do - would not be
+    enough on its own to make this one fast.
+    """
+    monkeypatch.setattr(api_module, "MOVE_ACK_TIMEOUT", 0.0)
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        # See test_control_blind_with_retry_retries_on_busy_with_no_limit's
+        # own comment on this same pattern just above.
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    # No reply fed at all - let the zeroed-out ack-wait time out and retry
+    # on its own, repeatedly, with nothing else driving it.
+    await _run_until(lambda: len(written(connected_api)) >= 3, max_iterations=500)
+    assert not task.done()
+
+    connected_api._handle_message("t1")
+    assert await asyncio.wait_for(task, timeout=1) is True
+
+
+async def test_control_blind_with_retry_returns_false_when_the_write_itself_fails(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A control_blind() write that fails outright (e.g. disconnected) must
+    end the loop immediately - there is nothing to wait for an ack on.
+    """
+    connected_api._is_connected = False
+
+    assert (
+        await connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+        is False
+    )
+    assert written(connected_api) == []
+
+
+async def test_control_blind_with_retry_serializes_two_blinds_instead_of_racing(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """The actual bug fix: two blinds commanded together must queue, not race.
+
+    Regression for the real-world symptom (3 of 6 blinds moving almost in
+    parallel): async_open_cover()/async_close_cover() used to each
+    independently await wait_for_transmitter_idle() and then write, so when
+    the shared _transmitter_idle event fired, every blind waiting on it
+    woke in the same instant and wrote within the same ~15ms window -
+    confirmed from a real log - of which the stick accepted exactly one and
+    answered "tE" to the rest, which control_blind() neither waited for nor
+    retried. control_blind_with_retry() closes this by holding _move_lock
+    across the *entire* write-then-retry-until-accepted cycle, not just the
+    write: blind B's call below must not reach the wire at all until blind
+    A's first attempt has learned its outcome ("t1"), not merely until A
+    has finished writing.
+    """
+    task_a = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="AAAAAA")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+    # A has written and is now awaiting its ack.
+
+    task_b = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("20", CMD_DOWN, device_id="BBBBBB")
+    )
+    # Give B plenty of chances to (wrongly) proceed - it cannot, no matter
+    # how many event-loop iterations pass, since _move_lock.acquire() only
+    # resolves once A actually releases it, which A has not done yet.
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not task_a.done()
+    assert not task_b.done()
+    assert len(written(connected_api)) == 1
+
+    connected_api._handle_message("t1")  # A's write is accepted
+    assert await asyncio.wait_for(task_a, timeout=1) is True
+
+    # A's own call is done, but the *transmitter* only goes idle again on
+    # "t0" (transmission finished), not "t1" (transmission started) - see
+    # _handle_message()'s own comment on _transmitter_idle. B is still
+    # parked inside its own _wait_for_transmitter_idle() call at this
+    # point, exactly where A itself was when this test began, so it needs
+    # that "t0" before it can reach control_blind() at all - without it,
+    # B's wait blocks on a real TRANSMIT_IDLE_TIMEOUT that no amount of
+    # event-loop pumping (as opposed to actual elapsed time) ever resolves.
+    connected_api._handle_message("t0")
+
+    # B's now-unblocked call acquires the lock and writes.
+    await _run_until(lambda: len(written(connected_api)) == 2)
+
+    connected_api._handle_message("t1")  # B's write is accepted
+    assert await asyncio.wait_for(task_b, timeout=1) is True
+
+
+async def test_control_blind_with_retry_wakes_promptly_on_connection_lost(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """handle_connection_lost() must wake a parked retry loop immediately.
+
+    Companion, end-to-end version of
+    test_handle_connection_lost_also_unblocks_a_waiting_move_retry above:
+    this runs control_blind_with_retry() as a real task so the wake-up
+    actually has to carry it through control_blind()'s own now-disconnected
+    rejection and back out, not just flip the flags handle_connection_lost()
+    touches directly.
+    """
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await asyncio.sleep(0)
+    assert len(written(connected_api)) == 1
+
+    connected_api.handle_connection_lost(
+        connected_api._protocol,  # type: ignore[arg-type]
+        Exception("gone"),
+    )
+
+    assert await asyncio.wait_for(task, timeout=1) is False
+    # Nothing left to check via written() here - handle_connection_lost()
+    # sets _transport to None, and written() deliberately reports [] once
+    # that happens (see its own docstring) rather than reflecting whether
+    # a retry write was attempted. The real proof that no further retry
+    # got through is `task` resolving to False above: control_blind()
+    # rejects on the disconnected-state check at the top of its own next
+    # loop iteration, not by timing out.
+    connected_api._cancel_scheduled_reconnect()
+
+
+async def test_cancel_pending_move_is_a_noop_without_a_move_in_progress(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """The common case for most stops - nothing to cancel - must not raise
+    or leave a stale cancellation sitting around (see cancel_pending_move()'s
+    own docstring for why that would matter for this device's next move).
+    """
+    connected_api.cancel_pending_move("ABCDEF")
+
+    assert connected_api._move_cancel_device_id is None
+
+
+async def test_cancel_pending_move_ends_a_waiting_retry_loop_for_that_device(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop for the same blind must end its own still-retrying move.
+
+    This is the collision that made routing moves through a busy-retry
+    cycle get reverted once before (see cancel_pending_move()'s and
+    async_stop_cover()'s own docstrings): without this, a retry already
+    queued for blind X could resend open/close after a stop for X had
+    already gone out.
+    """
+
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        # See test_control_blind_with_retry_retries_on_busy_with_no_limit's
+        # own comment on why a bare `return None` won't do here.
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    # Both calls are plain synchronous state changes, made back to back
+    # before the task gets another chance to run - by the time it next
+    # looks, it sees both: the busy reply that sends it around the loop
+    # again, and the cancellation waiting at the top of that next iteration.
+    connected_api._handle_message("tE")  # busy - loop goes around to retry
+    connected_api.cancel_pending_move("ABCDEF")
+
+    assert await asyncio.wait_for(task, timeout=1) is False
+    # No resend after the busy reply - cancellation was picked up at the
+    # next loop-iteration boundary instead.
+    assert len(written(connected_api)) == 1
+
+
+async def test_cancel_pending_move_does_not_affect_a_different_devices_move(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A stop for blind Y must never cancel blind X's own in-flight move."""
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="AAAAAA")
+    )
+    await asyncio.sleep(0)
+
+    connected_api.cancel_pending_move("BBBBBB")  # unrelated device_id
+
+    connected_api._handle_message("t1")
+    assert await asyncio.wait_for(task, timeout=1) is True
 
 
 # ---------------------------------------------------------------------------
