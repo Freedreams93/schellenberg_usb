@@ -464,6 +464,7 @@ switch it to YAML mode, and paste in everything from `alias:` down.
 | `helfer` | The number helper for this blind, from step 1 |
 | `auf` | Measured seconds for a full **opening** run |
 | `ab` | Measured seconds for a full **closing** run |
+| `min_fahrzeit_doppel` | Optional, in seconds (default `3`): below this travel duration, the redundant second `open_cover`/`close_cover` send is skipped entirely — see the note below |
 | `entity` | The blind's real cover entity from this integration, e.g. `cover.living_room_blind` |
 
 **Script A — for normal use** (dashboards, automations). It does nothing if
@@ -483,6 +484,7 @@ interne_rollladenlogik_fuer_home_assistant:
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | float(3) }}"
         richtung_runter: "{{ soll > ist }}"
         dauer: >
           {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
@@ -503,14 +505,18 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.open_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.open_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.open_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ richtung_runter }}"
@@ -518,14 +524,18 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.close_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.close_cover
+                  target:
+                    entity_id: "{{ entity }}"
     - variables:
         rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
@@ -576,6 +586,7 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | float(3) }}"
         reset_richtung_runter: "{{ soll >= 50 }}"
         richtung_runter: |
           {% if soll == ist %}
@@ -611,14 +622,18 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.open_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.open_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.open_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ richtung_runter }}"
@@ -626,14 +641,18 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.close_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.close_cover
+                  target:
+                    entity_id: "{{ entity }}"
     - variables:
         rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
@@ -773,18 +792,23 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
 - The 0–100 scale used above is this helper's own convention (0 = open, 100
   = closed) and is independent of the position this integration tracks
   internally on the real `cover.*` entity — the two don't need to match.
-- Both scripts send `open_cover`/`close_cover` twice, one second apart,
-  before waiting out the calculated duration. This is a small safety margin
-  in case a single RF command is missed.
+- Both scripts send `open_cover`/`close_cover` twice, 0.3 seconds apart, as
+  a small safety margin in case a single RF command is missed — but only
+  when the calculated move takes at least `min_fahrzeit_doppel` seconds
+  (default 3; override it per call if a blind needs a different cutoff).
+  `open_cover`/`close_cover` on this integration's own `cover.*` entity wait
+  for the stick's reply before returning, and retry for as long as it
+  answers busy, so neither send is always instant. For a short move, that
+  pair of sends plus the gap between them can alone take longer than the
+  whole intended travel time — the blind would already be past its target
+  before the script even starts counting down the rest of the wait.
+  Skipping the second send below the threshold keeps short moves precise;
+  moves at or above it keep the extra safety margin.
 - `start_ts` and the second `rest_dauer` (recomputed right after the
   open/close `choose:` block, replacing the first, rougher estimate) measure
-  how much time the two sends above actually took, rather than assuming
-  it was exactly one second. `open_cover`/`close_cover` on this integration's
-  own `cover.*` entity wait for the stick's reply before returning, and
-  retry for as long as it answers busy, so that preamble is not always
-  instant - for a short move this difference is the whole budget, so a
-  fixed assumption drifts into a real, visible overshoot right where it
-  matters most.
+  how much time the sends above actually took, rather than assuming a fixed
+  value — this corrects for whatever the stick's reply/retry time turned out
+  to be, on top of the threshold logic above.
 - When the target is exactly 0 or 100, the scripts intentionally keep
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
