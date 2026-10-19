@@ -194,12 +194,18 @@ class CalibrationFlowHandler:
     async def async_step_calibration_close(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            if user_input.get("initial_state") == "open":
+            initial_state = user_input.get("initial_state")
+            if initial_state == "open":
                 self._start_calibration_capture(phase="closing")
                 return await self.async_step_calibration_close_instruction()
-            self._start_calibration_capture(phase="opening")
-            return await self.async_step_calibration_open_instruction()
+            if initial_state == "closed":
+                self._start_calibration_capture(phase="opening")
+                return await self.async_step_calibration_open_instruction()
+            # Neither real option was chosen - see the schema comment below
+            # for why this is reachable even though the field is required.
+            errors["base"] = "initial_state_required"
 
         if self._selected_device is None:
             return self.flow.async_abort(reason="device_not_found")
@@ -213,13 +219,23 @@ class CalibrationFlowHandler:
                     # looked identical to an actual, considered answer - the
                     # checkbox's own label only ever stated what *checking*
                     # it meant, with nothing on the form saying what leaving
-                    # it unchecked meant instead. A required select with no
-                    # default forces one of the two states to be picked
-                    # explicitly every time; Home Assistant's frontend
-                    # cannot submit this form with neither option chosen.
+                    # it unchecked meant instead. Replacing it with a
+                    # two-option required select was meant to force one of
+                    # the two real states to be picked explicitly every
+                    # time, on the assumption that Home Assistant's frontend
+                    # could not submit a required select with neither option
+                    # chosen - but in its "list" (radio) rendering it visibly
+                    # highlights the first option before anything is picked,
+                    # which looks exactly like a considered answer again and
+                    # reintroduces the original problem. A third, clearly
+                    # non-answer placeholder option now occupies that
+                    # highlighted first slot instead; submitting it (or
+                    # anything other than "open"/"closed", belt and braces)
+                    # is rejected above with an explicit on-screen error
+                    # instead of silently being treated as "closed".
                     vol.Required("initial_state"): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=["open", "closed"],
+                            options=["unselected", "open", "closed"],
                             mode=selector.SelectSelectorMode.LIST,
                             translation_key="initial_state",
                         )
@@ -229,6 +245,7 @@ class CalibrationFlowHandler:
             description_placeholders={
                 "device_name": self._selected_device["name"],
             },
+            errors=errors,
             last_step=False,
         )
 
@@ -450,7 +467,7 @@ class CalibrationFlowHandler:
                 if calibration_record := self._calibration_record():
                     data[CONF_LAST_CALIBRATION] = calibration_record
                 pairing_flow = cast("SchellenbergPairingSubentryFlow", self.flow)
-                return pairing_flow._finish_pairing_or_offer_repeat(
+                return pairing_flow._finish_pairing(
                     title=self._pending_device_name, data=data
                 )
 

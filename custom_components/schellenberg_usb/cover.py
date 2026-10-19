@@ -180,6 +180,18 @@ async def async_setup_entry(
             existing_entity_id = entity_registry.async_get_entity_id(
                 "cover", DOMAIN, entity_unique_id
             )
+            # Captured *before* the legacy-unique_id fallback below can set
+            # existing_entity_id: True for a blind_id whose stable unique ID
+            # has never been registered before - whether that is a genuinely
+            # brand-new pairing, or one that is about to inherit an old
+            # entity_id through that fallback (a reused remote: paired,
+            # removed, paired again). False for every later reload of an
+            # already-established blind (e.g. triggered by some *other*
+            # blind being paired/removed), where the stable unique ID is
+            # already registered on the first lookup above. See
+            # async_added_to_hass()'s use of this via
+            # SchellenbergCover's own is_newly_registered_entity.
+            is_newly_registered_entity = existing_entity_id is None
             if existing_entity_id is None:
                 for legacy_unique_id in dict.fromkeys(
                     (
@@ -298,6 +310,7 @@ async def async_setup_entry(
                         invert_direction=bool(
                             subentry.data.get(CONF_INVERT_DIRECTION, False)
                         ),
+                        is_newly_registered_entity=is_newly_registered_entity,
                     )
                 ],
                 config_subentry_id=subentry.subentry_id,
@@ -341,8 +354,22 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         status_identity_source: str | None = None,
         secondary_status_identities: object = None,
         invert_direction: bool = False,
+        is_newly_registered_entity: bool = False,
     ) -> None:
-        """Initialize the cover entity from its config subentry data."""
+        """Initialize the cover entity from its config subentry data.
+
+        is_newly_registered_entity is True only the first time this blind's
+        stable unique ID is ever set up (see async_setup_entry) - whether
+        that is a genuinely new pairing or one that just inherited an old
+        entity_id via the legacy-unique_id migration. It stays False on
+        every later reload of an already-established blind, caused by some
+        *other* blind being paired, removed, or recalibrated. Defaults to
+        False so a SchellenbergCover built directly (as the tests do,
+        bypassing async_setup_entry) gets the safe "trust restored state"
+        behavior unless a test opts in explicitly - see
+        async_added_to_hass()'s use of this flag for why that direction
+        matters.
+        """
         self._api = api
         self._device_id = device_id
         self._command_device_id = command_device_id or device_id
@@ -412,6 +439,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._initial_position_from_calibration: int | None = device_data_dict.get(
             CONF_INITIAL_POSITION
         )
+        self._is_newly_registered_entity = is_newly_registered_entity
         self._move_start_time: float | None = None
         self._move_start_position: int | None = None
         self._position_update_task: asyncio.Task[None] | None = None
@@ -489,13 +517,41 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # A calibration that finished moments ago, in the same "Pair and
         # calibrate" run that is creating this entity for the first time,
         # is more trustworthy than *any* restored state - including one
-        # that looks valid, since a reused blind_id (e.g. this same remote
-        # was paired, removed, and is now being paired again) would
-        # restore a leftover position from that earlier, unrelated device.
-        # This only ever fires once, right after such a fresh pairing;
-        # every later restart finds nothing to pop and is unaffected.
+        # that looks valid, since a reused blind_id/entity_id (e.g. this
+        # same remote was paired, removed, and is now being paired again,
+        # inheriting an old entity_id through async_setup_entry's legacy-
+        # unique_id migration) would restore a leftover position from that
+        # earlier, unrelated pairing episode.
+        #
+        # The in-memory fresh-calibration cache this originally relied on
+        # (self._api.pop_fresh_calibration_position) is reliably empty
+        # here, not just occasionally: adding this very subentry is
+        # exactly the kind of subentry-set change __init__.py's
+        # _on_entry_updated reloads the whole hub entry for, and that
+        # reload replaces entry.runtime_data with a brand-new
+        # SchellenbergUsbApi - wiping the cache - before this entity is
+        # ever constructed to read it back.
+        #
+        # CONF_INITIAL_POSITION (-> _initial_position_from_calibration) is
+        # the same value, persisted to this subentry's own data in that
+        # same calibration-complete step (see options_flow_calibration.py),
+        # so unlike the in-memory cache it survives the reload intact - but
+        # only treat it as that same trusted, restored-state-overriding
+        # signal for a blind that is itself newly registered
+        # (is_newly_registered_entity, set in async_setup_entry). Every
+        # other, already-established blind on the same hub goes through
+        # this exact same reload whenever *any* blind is paired, removed,
+        # or recalibrated, and each one also has its own, possibly
+        # years-old CONF_INITIAL_POSITION sitting in its subentry data from
+        # whenever *it* was first paired - for those, restored_from_ha is
+        # the blind's real current position, and letting a stale
+        # calibration-time snapshot override it every time some other
+        # blind changes would be its own regression.
         fresh_calibration = False
         fresh_position = self._api.pop_fresh_calibration_position(self._blind_id)
+        if fresh_position is None and self._is_newly_registered_entity:
+            fresh_position = self._initial_position_from_calibration
+
         if fresh_position is not None:
             if restored_from_ha:
                 _LOGGER.debug(
@@ -1146,6 +1202,23 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new open command")
         self._start_position_tracking()
         self.async_write_ha_state()
+        # Wait for any other transmission already in flight - another
+        # blind's own open/close/stop, or a teach/pairing/raw-transmit step
+        # - to finish before writing this one. control_blind() itself never
+        # waits or retries (see its own docstring): several blinds
+        # commanded within the same roughly-1.2s transmit window used to
+        # mean only whichever one's write happened to land while the stick
+        # was actually free would ever reach the motor - the stick answers
+        # "tE" (busy) to every other one, which control_blind() neither
+        # waits for nor retries, so those commands were silently lost while
+        # this entity's own optimistic "opening" state above still made
+        # them look like they were moving. Best-effort only, like the
+        # identical pattern already used below for the auto-stop-at-target
+        # case and in config_flow.py's motor test: if it times out, the
+        # write is attempted anyway rather than given up on. Deliberately
+        # not applied to async_stop_cover() - see its own docstring for why
+        # a manual stop must stay instant instead.
+        await self._api.wait_for_transmitter_idle("sending an open command")
         if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1209,6 +1282,9 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         await self._async_cancel_position_tracking("new close command")
         self._start_position_tracking()
         self.async_write_ha_state()
+        # Same wait, same reasoning, as async_open_cover() above - see its
+        # comment for why.
+        await self._api.wait_for_transmitter_idle("sending a close command")
         if not await self._api.control_blind(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1244,6 +1320,13 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         fighting over the stick's one RF transmitter. With open/close no
         longer using that busy-retry cycle either, there is nothing left to
         insure against with a second or third stop frame.
+
+        Unlike async_open_cover()/async_close_cover() above, this
+        deliberately never calls wait_for_transmitter_idle() either: a
+        manual stop press must always be instant, even if that means it is
+        the one write that can still collide with another still-in-flight
+        transmission and be silently dropped by a busy stick - the same
+        trade-off this method already made for the lock and the retry.
         """
         _LOGGER.debug(
             "Stopping cover %s (command_id=%s enum=%s)",

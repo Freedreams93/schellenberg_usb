@@ -1,8 +1,8 @@
 # Schellenberg USB for Home Assistant
 
-[![GitHub Release](https://img.shields.io/github/release/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/releases)
-[![License](https://img.shields.io/github/license/Freedreams93/schellenberg_usb.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
-![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Freedreams93/schellenberg_usb/build-test.yaml)
+[![GitHub Release](https://img.shields.io/github/release/Freedreams93/schellenberg_usb.svg?color=red)](https://github.com/Freedreams93/schellenberg_usb/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Freedreams93/schellenberg_usb/blob/main/LICENSE)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Freedreams93/schellenberg_usb/build-test.yaml?color=orange)
 
 Control Schellenberg RF shutters and blinds in Home Assistant with a Schellenberg
 USB FunkStick.
@@ -118,10 +118,9 @@ Besides the recommended **Pair a device and calibrate it**, the menu offers:
   before calibration. Its optional remote-programming step also does not require
   waiting for an additional motor signal.
 
-The same pairing method work
-for any Schellenberg RF receiver - electronic belt/strap winders, awning motors,
-and similar motorized devices included - which is why the menu and this guide
-both say "device" rather than "blind".
+The same pairing method works for any Schellenberg RF receiver - electronic
+belt/strap winders, awning motors, and similar motorized devices included -
+which is why the menu and this guide both say "device" rather than "blind".
 
 ## Pairing and teach-in explained simply
 
@@ -380,6 +379,9 @@ single dropped command described below, cover commands were still sent normally.
   showed `Transmit retry limit reached ... latching busy state`, and Developer
   tools stayed blocked. If you cannot update yet, use
   **Developer tools > Reset stick / reconnect serial** or restart Home Assistant.
+  As of this version, a "stick busy" reply has no retry limit at all - it is
+  retried for as long as it keeps happening - so this symptom cannot recur
+  even on a long-lived connection; that log line no longer exists.
 
 ## Advanced settings
 
@@ -775,17 +777,22 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
   calculated time, which corrects any position drift that built up over
   previous moves.
 - Every open, close, and stop command - including the ones these scripts
-  send - goes out exactly once, immediately, with no retry and no waiting
-  for the stick to be idle. The Schellenberg RF link never confirms that a
-  motor actually received a frame to begin with (only the USB stick's own
-  transmitter on/off is ever visible), so there is nothing meaningful to
-  retry against for these three commands specifically. If the stick happens
-  to answer that it is still busy with a previous command right as one of
-  these scripts fires the next one (`Transmit error - stick busy`), that
-  reply is only logged, not acted on - it is not a sign of a problem, just
+  send - goes out with no retry: once the stick has accepted an RF command
+  there is nothing meaningful to resend, since the Schellenberg RF link
+  never confirms that a motor actually received a frame to begin with
+  (only the USB stick's own transmitter on/off is ever visible). Open and
+  close do briefly wait (a few seconds at most, best-effort) for the stick
+  to report itself idle before sending, so a command issued while another
+  blind's transmission is still in flight is delayed rather than silently
+  dropped - stop is deliberately the one exception and stays instant/
+  unwaited, so a manual stop press is never queued behind anything. If the
+  stick still happens to answer that it is busy right as a command goes
+  out (`Transmit error - stick busy`), that reply is only logged, not
+  acted on for any of these three - it is not a sign of a problem, just
   the stick momentarily catching up. This differs from other, non-movement
-  requests (raw RF payload testing, teach/pairing, and similar), which still
-  wait for an idle stick and retry up to three times as before.
+  requests (raw RF payload testing, teach/pairing, and similar), which
+  wait for an idle stick and retry for as long as the stick keeps
+  reporting busy, with no retry limit.
 
 ## Optional: synchronizing multiple blinds from one switch (example automation)
 

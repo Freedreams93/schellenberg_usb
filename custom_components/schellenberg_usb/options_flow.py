@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import serialx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlowResult, OptionsFlow
 from homeassistant.helpers import selector
@@ -38,7 +37,7 @@ class SchellenbergOptionsFlowHandler(OptionsFlow):
             if new_port != current_port:
                 try:
                     await self.hass.async_add_executor_job(check_serial_port, new_port)
-                except (OSError, TimeoutError, serialx.SerialException):
+                except (OSError, TimeoutError):
                     _LOGGER.error(
                         "Failed to open serial port %s during options save", new_port
                     )

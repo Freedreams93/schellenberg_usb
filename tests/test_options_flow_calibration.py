@@ -256,6 +256,35 @@ async def test_confirming_close_advances_to_the_open_instruction_form(
     assert result["step_id"] == "calibration_open_instruction"
 
 
+async def test_submitting_without_a_real_choice_shows_an_error_and_stays_on_the_form(
+    hass: HomeAssistant, connected_api: SchellenbergUsbApi
+) -> None:
+    """Home Assistant's list-mode selector highlights its first option (the
+    new "unselected" placeholder, see options_flow_calibration.py's
+    calibration_close schema comment) before anything has actually been
+    chosen. Pressing "Weiter" on that highlighted-but-unchosen state must not
+    be silently treated as either real answer; it must reshow this same form
+    with an explicit error, and a genuine choice afterwards must still work.
+    """
+    entry, blind = _build_hub_with_blind(hass, connected_api)
+    result = await _start_calibrate_flow(hass, entry, blind)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"initial_state": "unselected"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_close"
+    assert result["errors"] == {"base": "initial_state_required"}
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"initial_state": "closed"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_open_instruction"
+
+
 async def test_full_open_and_close_legs_reach_the_summary_with_measured_times(
     hass: HomeAssistant,
     connected_api: SchellenbergUsbApi,
