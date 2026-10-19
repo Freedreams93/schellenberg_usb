@@ -484,7 +484,7 @@ interne_rollladenlogik_fuer_home_assistant:
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
-        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | float(3) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
         richtung_runter: "{{ soll > ist }}"
         dauer: >
           {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
@@ -586,7 +586,7 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
-        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | float(3) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
         reset_richtung_runter: "{{ soll >= 50 }}"
         richtung_runter: |
           {% if soll == ist %}
