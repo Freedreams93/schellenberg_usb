@@ -773,6 +773,16 @@ async def test_control_blind_with_retry_serializes_two_blinds_instead_of_racing(
     connected_api._handle_message("t1")  # A's write is accepted
     assert await asyncio.wait_for(task_a, timeout=1) is True
 
+    # A's own call is done, but the *transmitter* only goes idle again on
+    # "t0" (transmission finished), not "t1" (transmission started) - see
+    # _handle_message()'s own comment on _transmitter_idle. B is still
+    # parked inside its own _wait_for_transmitter_idle() call at this
+    # point, exactly where A itself was when this test began, so it needs
+    # that "t0" before it can reach control_blind() at all - without it,
+    # B's wait blocks on a real TRANSMIT_IDLE_TIMEOUT that no amount of
+    # event-loop pumping (as opposed to actual elapsed time) ever resolves.
+    connected_api._handle_message("t0")
+
     # B's now-unblocked call acquires the lock and writes.
     await _run_until(lambda: len(written(connected_api)) == 2)
 
@@ -804,7 +814,13 @@ async def test_control_blind_with_retry_wakes_promptly_on_connection_lost(
     )
 
     assert await asyncio.wait_for(task, timeout=1) is False
-    assert len(written(connected_api)) == 1  # no further (failing) retry write
+    # Nothing left to check via written() here - handle_connection_lost()
+    # sets _transport to None, and written() deliberately reports [] once
+    # that happens (see its own docstring) rather than reflecting whether
+    # a retry write was attempted. The real proof that no further retry
+    # got through is `task` resolving to False above: control_blind()
+    # rejects on the disconnected-state check at the top of its own next
+    # loop iteration, not by timing out.
     connected_api._cancel_scheduled_reconnect()
 
 

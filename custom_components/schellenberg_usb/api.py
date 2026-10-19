@@ -1476,7 +1476,7 @@ class SchellenbergUsbApi:
         before its next write, rather than letting an already-queued retry
         resend the move after the stop went out. Best-effort only, like
         _wait_for_transmitter_idle() itself: a cancellation that arrives
-        while already inside a long idle-wait is not pre-empted mid-wait,
+        while already inside a long idle-wait is not preempted mid-wait,
         only picked up afterwards - in practice that wait almost always
         resolves within about 1.2s (one transmit cycle), not its full 5s
         budget, so the realistic worst case is short.
