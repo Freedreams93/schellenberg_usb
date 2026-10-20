@@ -282,6 +282,189 @@ async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
     mock_start_tracking.assert_called_once_with()
 
 
+async def test_async_close_cover_skips_reset_for_redundant_resend(
+    hass: HomeAssistant,
+) -> None:
+    """A redundant re-send of an already-in-progress close must not re-base
+    the running position estimate.
+
+    Regression guard confirmed from a real log: the README's own
+    fine-position-control example scripts intentionally send
+    open_cover/close_cover a second time, ~0.3s after the first, purely
+    for RF reliability. Before this fix, async_close_cover() cancelled
+    position tracking unconditionally at call entry and only
+    re-established it once *this* call's own control_blind_with_retry()
+    succeeded - which, queued behind another blind sharing the hub-wide
+    _move_lock, measured well over a second in that log. The blind kept
+    moving under the first, already-accepted send the whole time; only
+    the HA-side estimate froze, then resumed from that stale, frozen
+    value - permanently losing however far the blind actually travelled
+    during the gap. Simulated here by marking the cover as already
+    closing with a live tracking task and a valid baseline before calling
+    async_close_cover() again, the way a real redundant re-send would
+    find it.
+    """
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    cover._async_cancel_position_tracking = AsyncMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
+    cover._attr_is_closing = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 73
+
+    await cover.async_close_cover()
+
+    cover._async_cancel_position_tracking.assert_not_awaited()
+    cover._start_position_tracking.assert_not_called()
+    assert cover._move_start_time == 1234.5
+    assert cover._move_start_position == 73
+    api.control_blind_with_retry.assert_awaited_once_with(
+        cover._command_enum, CMD_DOWN, device_id=cover._command_device_id
+    )
+
+
+async def test_async_open_cover_skips_reset_for_redundant_resend(
+    hass: HomeAssistant,
+) -> None:
+    """Mirrors test_async_close_cover_skips_reset_for_redundant_resend."""
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    cover._async_cancel_position_tracking = AsyncMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
+    cover._attr_is_opening = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 27
+
+    await cover.async_open_cover()
+
+    cover._async_cancel_position_tracking.assert_not_awaited()
+    cover._start_position_tracking.assert_not_called()
+    assert cover._move_start_time == 1234.5
+    assert cover._move_start_position == 27
+    api.control_blind_with_retry.assert_awaited_once_with(
+        cover._command_enum, CMD_UP, device_id=cover._command_device_id
+    )
+
+
+async def test_async_close_cover_redundant_resend_failure_keeps_move_alive(
+    hass: HomeAssistant,
+) -> None:
+    """A redundant re-send's own failed transmission must not abort the
+    still-genuinely-in-progress original move or raise to the caller.
+
+    Unlike a genuinely new close's failed control_blind_with_retry() (see
+    test_async_close_cover_raises_when_control_blind_with_retry_fails),
+    the first send already succeeded here - that is what makes this
+    second call a detected "redundant resend" in the first place - so the
+    blind is still really closing. Reporting the whole call as failed
+    would incorrectly flip is_closing to False and could abort a caller's
+    script mid-sequence over a reliability re-send that was never
+    required for correctness.
+    """
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(return_value=False)
+    api.transmit_block_reason = "disconnected"  # stable code, see api.py
+    cover = _build_cover(hass, api)
+    cover._async_cancel_position_tracking = AsyncMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
+    cover._attr_is_closing = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 73
+
+    await cover.async_close_cover()  # must not raise
+
+    assert cover._attr_is_closing is True
+    assert cover._move_start_time == 1234.5
+    assert cover._move_start_position == 73
+    cover._async_cancel_position_tracking.assert_not_awaited()
+
+
+async def test_async_open_cover_redundant_resend_failure_keeps_move_alive(
+    hass: HomeAssistant,
+) -> None:
+    """Mirrors test_async_close_cover_redundant_resend_failure_keeps_move_alive."""
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(return_value=False)
+    api.transmit_block_reason = "disconnected"  # stable code, see api.py
+    cover = _build_cover(hass, api)
+    cover._async_cancel_position_tracking = AsyncMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
+    cover._attr_is_opening = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 27
+
+    await cover.async_open_cover()  # must not raise
+
+    assert cover._attr_is_opening is True
+    assert cover._move_start_time == 1234.5
+    assert cover._move_start_position == 27
+    cover._async_cancel_position_tracking.assert_not_awaited()
+
+
+async def test_has_live_tracking_in_direction_false_when_not_moving(
+    hass: HomeAssistant,
+) -> None:
+    """A fresh/idle cover has no live tracking in either direction."""
+    cover = _build_cover(hass, MagicMock())
+
+    assert cover._has_live_tracking_in_direction(opening=True) is False
+    assert cover._has_live_tracking_in_direction(opening=False) is False
+
+
+async def test_has_live_tracking_in_direction_false_when_task_already_done(
+    hass: HomeAssistant,
+) -> None:
+    """A finished tracking task (the move already ended) is not live tracking.
+
+    Guards against treating a stale task reference - e.g. one that reached
+    its own 0%/100% end stop and returned, but has not yet been cleared -
+    as evidence of an in-progress move.
+    """
+    cover = _build_cover(hass, MagicMock())
+    fake_task = MagicMock()
+    fake_task.done.return_value = True
+    cover._position_update_task = fake_task
+    cover._attr_is_closing = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 73
+
+    assert cover._has_live_tracking_in_direction(opening=False) is False
+
+
+async def test_has_live_tracking_in_direction_false_for_opposite_direction(
+    hass: HomeAssistant,
+) -> None:
+    """Live tracking while opening must not count as live tracking for closing."""
+    cover = _build_cover(hass, MagicMock())
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
+    cover._attr_is_opening = True
+    cover._move_start_time = 1234.5
+    cover._move_start_position = 27
+
+    assert cover._has_live_tracking_in_direction(opening=False) is False
+    assert cover._has_live_tracking_in_direction(opening=True) is True
+
+
 async def test_async_stop_cover_sends_stop_via_control_blind_stop(
     hass: HomeAssistant,
 ) -> None:

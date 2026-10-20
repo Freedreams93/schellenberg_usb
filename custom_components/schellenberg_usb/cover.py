@@ -945,6 +945,43 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         if self._position_update_task is task:
             self._position_update_task = None
 
+    def _has_live_tracking_in_direction(self, *, opening: bool) -> bool:
+        """Return whether a move already in progress is tracked in this direction.
+
+        True only when the cover is already reported moving the same way
+        (opening/closing) AND the background tracking loop is actually
+        still running with a valid baseline. async_open_cover()/
+        async_close_cover() use this to recognise a redundant re-send of
+        an already-in-progress move - for instance a script's own
+        intentional double-send of the same open/close command roughly
+        0.3s later, sent purely for RF reliability - as distinct from a
+        genuinely new command.
+
+        Without this distinction, every such re-send used to cancel
+        tracking immediately (at call entry) and only re-establish it
+        once that re-send's own control_blind_with_retry() succeeded,
+        which can take well over a second under contention from another
+        blind sharing the hub-wide transmit lock. The blind keeps moving
+        the whole time under the first, already-accepted command; only
+        the HA-side estimate froze, then resumed from that stale, frozen
+        value - silently losing however far the blind actually travelled
+        during the gap for the rest of that move. A redundant re-send
+        detected this way skips re-freezing/re-basing the estimate
+        entirely (it still reaches the stick again below, unchanged) so
+        the running estimate stays continuous across it instead.
+        """
+        already_same_direction = (
+            self._attr_is_opening if opening else self._attr_is_closing
+        )
+        task = self._position_update_task
+        return (
+            already_same_direction
+            and task is not None
+            and not task.done()
+            and self._move_start_time is not None
+            and self._move_start_position is not None
+        )
+
     def _waiting_for_full_travel_resync(self, direction: str) -> bool:
         """Return whether a fresh full-travel confirmation is still pending."""
         if (
@@ -1180,6 +1217,15 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_enum,
             action,
         )
+        # A redundant re-send of an already-in-progress open (for instance
+        # a script's own intentional double-send, ~0.3s after the first,
+        # purely for RF reliability) must still reach the stick again
+        # below, but must not re-freeze/re-base position tracking the way
+        # a genuinely new open does just below it - the blind never
+        # stopped moving between the two sends, so there is nothing to
+        # re-base from. See _has_live_tracking_in_direction()'s own
+        # docstring for the exact mechanism this avoids.
+        is_redundant_resend = self._has_live_tracking_in_direction(opening=True)
         self._attr_is_opening = True
         self._attr_is_closing = False
         if self._attr_current_cover_position is None:
@@ -1199,7 +1245,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             new_position=self._attr_current_cover_position,
             status="estimated",
         )
-        await self._async_cancel_position_tracking("new open command")
+        if not is_redundant_resend:
+            await self._async_cancel_position_tracking("new open command")
         self.async_write_ha_state()
         # Wait for any other transmission already in flight - another
         # blind's own open/close, a teach/pairing/raw-transmit step, or
@@ -1217,13 +1264,30 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # its own docstring for why a manual stop must stay instant and
         # unretried instead.
         #
-        # Deliberately not started above either: _move_start_time,
-        # _move_start_position and the tracking loop itself only get set up
-        # once this call below actually succeeds (see there) - not here,
-        # before this blind's own command has even reached the stick.
+        # Deliberately not (re)started above either when this is a
+        # genuinely new open: _move_start_time, _move_start_position and
+        # the tracking loop itself only get set up once this call below
+        # actually succeeds (see there) - not here, before this blind's own
+        # command has even reached the stick.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
+            if is_redundant_resend:
+                # The original move (from the first send) is still
+                # genuinely under way and its own tracking is untouched -
+                # only this resend's own extra transmission didn't get
+                # through. Leave the entity and the running move alone
+                # rather than reporting the whole open as failed and
+                # potentially aborting a caller's script mid-sequence over
+                # a redundant resend that was never required for
+                # correctness.
+                _LOGGER.debug(
+                    "Redundant open resend for device %s did not reach "
+                    "the stick; the original move is unaffected",
+                    self._device_name,
+                )
+                self.async_write_ha_state()
+                return
             # The command never reached the stick - undo the optimistic
             # "opening" state set above so the entity doesn't report a
             # movement that never physically happened.
@@ -1256,10 +1320,14 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # in the same burst, the elapsed-time estimate could reach the
         # target before this blind's own command had been transmitted even
         # once - so the real command would go out afterwards with no
-        # tracking left running to stop it at the target.
-        self._move_start_position = self._attr_current_cover_position
-        self._move_start_time = time.monotonic()
-        self._start_position_tracking()
+        # tracking left running to stop it at the target. Skipped entirely
+        # for a redundant resend: the original move's own tracking has
+        # been running the whole time and already reflects however long
+        # this resend's own wait took.
+        if not is_redundant_resend:
+            self._move_start_position = self._attr_current_cover_position
+            self._move_start_time = time.monotonic()
+            self._start_position_tracking()
         self.async_write_ha_state()
 
     async def async_close_cover(
@@ -1278,6 +1346,15 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_enum,
             action,
         )
+        # A redundant re-send of an already-in-progress close (for
+        # instance a script's own intentional double-send, ~0.3s after the
+        # first, purely for RF reliability) must still reach the stick
+        # again below, but must not re-freeze/re-base position tracking
+        # the way a genuinely new close does just below it - the blind
+        # never stopped moving between the two sends, so there is nothing
+        # to re-base from. See _has_live_tracking_in_direction()'s own
+        # docstring for the exact mechanism this avoids.
+        is_redundant_resend = self._has_live_tracking_in_direction(opening=False)
         self._attr_is_opening = False
         self._attr_is_closing = True
         if self._attr_current_cover_position is None:
@@ -1297,16 +1374,34 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             new_position=self._attr_current_cover_position,
             status="estimated",
         )
-        await self._async_cancel_position_tracking("new close command")
+        if not is_redundant_resend:
+            await self._async_cancel_position_tracking("new close command")
         self.async_write_ha_state()
         # Same retry-until-accepted write, same reasoning, as
         # async_open_cover() above - see its comment for why. Also, same as
         # there: _move_start_time/_move_start_position/the tracking loop
-        # are deliberately not started above either - see the comment right
-        # after this call succeeds below for why.
+        # are deliberately not (re)started above either when this is a
+        # genuinely new close - see the comment right after this call
+        # succeeds below for why.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
+            if is_redundant_resend:
+                # The original move (from the first send) is still
+                # genuinely under way and its own tracking is untouched -
+                # only this resend's own extra transmission didn't get
+                # through. Leave the entity and the running move alone
+                # rather than reporting the whole close as failed and
+                # potentially aborting a caller's script mid-sequence over
+                # a redundant resend that was never required for
+                # correctness.
+                _LOGGER.debug(
+                    "Redundant close resend for device %s did not reach "
+                    "the stick; the original move is unaffected",
+                    self._device_name,
+                )
+                self.async_write_ha_state()
+                return
             # The command never reached the stick - undo the optimistic
             # "closing" state set above so the entity doesn't report a
             # movement that never physically happened.
@@ -1333,10 +1428,14 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # wait/retry above - otherwise a short set_cover_position() leg
         # queued behind other blinds in control_blind_with_retry()'s
         # hub-wide lock could have its target evaluated as "reached" purely
-        # from time spent waiting in that queue.
-        self._move_start_position = self._attr_current_cover_position
-        self._move_start_time = time.monotonic()
-        self._start_position_tracking()
+        # from time spent waiting in that queue. Skipped entirely for a
+        # redundant resend: the original move's own tracking has been
+        # running the whole time and already reflects however long this
+        # resend's own wait took.
+        if not is_redundant_resend:
+            self._move_start_position = self._attr_current_cover_position
+            self._move_start_time = time.monotonic()
+            self._start_position_tracking()
         self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
