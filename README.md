@@ -465,6 +465,7 @@ switch it to YAML mode, and paste in everything from `alias:` down.
 | `auf` | Measured seconds for a full **opening** run |
 | `ab` | Measured seconds for a full **closing** run |
 | `min_fahrzeit_doppel` | Optional, in seconds (default `3`): below this travel duration, the redundant second `open_cover`/`close_cover` send is skipped entirely — see the note below |
+| `stop_latenz` | Optional, in seconds (default `1.3`): for an intermediate (not 0/100) target, how much earlier than the calculated time `stop_cover` is called, to absorb it sitting queued behind other blinds' own commands before it actually transmits — see the note below |
 | `entity` | The blind's real cover entity from this integration, e.g. `cover.living_room_blind` |
 
 **Script A — for normal use** (dashboards, automations). It does nothing if
@@ -485,6 +486,7 @@ interne_rollladenlogik_fuer_home_assistant:
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
         min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
+        stop_latenz: "{{ stop_latenz | default(1.3) | float(1.3) }}"
         richtung_runter: "{{ soll > ist }}"
         dauer: >
           {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
@@ -537,7 +539,13 @@ interne_rollladenlogik_fuer_home_assistant:
                   target:
                     entity_id: "{{ entity }}"
     - variables:
-        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
+        rest_dauer: |
+          {% set roh = [0, dauer - (now().timestamp() - start_ts)] | max %}
+          {% if soll | int == 0 or soll | int == 100 %}
+            {{ roh | round(2) }}
+          {% else %}
+            {{ ([0, roh - stop_latenz] | max) | round(2) }}
+          {% endif %}
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -587,6 +595,7 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
         min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
+        stop_latenz: "{{ stop_latenz | default(1.3) | float(1.3) }}"
         reset_richtung_runter: "{{ soll >= 50 }}"
         richtung_runter: |
           {% if soll == ist %}
@@ -654,7 +663,13 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
                   target:
                     entity_id: "{{ entity }}"
     - variables:
-        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
+        rest_dauer: |
+          {% set roh = [0, dauer - (now().timestamp() - start_ts)] | max %}
+          {% if not (soll == ist) and (soll | int != 0 and soll | int != 100) %}
+            {{ ([0, roh - stop_latenz] | max) | round(2) }}
+          {% else %}
+            {{ roh | round(2) }}
+          {% endif %}
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -809,37 +824,57 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
   how much time the sends above actually took, rather than assuming a fixed
   value — this corrects for whatever the stick's reply/retry time turned out
   to be, on top of the threshold logic above.
+- `stop_latenz` (default `1.3`, in seconds) shortens that same `rest_dauer`
+  further, but only for an intermediate target — one that still needs an
+  explicit `stop_cover` below, rather than driving into an end stop. A
+  `stop_cover` call can itself sit queued for a moment before it actually
+  reaches the stick (see the note on stop below) — measured on real
+  hardware, a bit over a second when another blind's own commands were
+  using the radio at the same time — during which the blind keeps moving
+  under its already-issued open/close command. Calling `stop_cover`
+  `stop_latenz` seconds earlier leaves that much headroom to absorb a
+  delayed send before it would otherwise overshoot the target. Like the
+  double-send threshold above, this is a fixed, worst-case-ish margin, not
+  a measurement of the delay actually happening on any given run: raise it
+  if you regularly command several blinds at once and still see overshoot;
+  lower it toward `0` if your blinds are almost always moved one at a time
+  and you would rather have the extra precision than the margin. Either
+  way, an occasional full 0%/100% move (see the next note) corrects any
+  drift this leaves behind, the same way it already corrects drift from
+  other sources.
 - When the target is exactly 0 or 100, the scripts intentionally keep
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
   previous moves.
-- Stop - including any `stop_cover` these scripts might trigger - goes out
-  with no retry and no wait: once the stick has accepted an RF command there
-  is nothing meaningful to resend, since the Schellenberg RF link never
-  confirms that a motor actually received a frame to begin with (only the
-  USB stick's own transmitter on/off is ever visible), and a manual stop
-  press must stay instant rather than ever being queued behind anything.
-  Open and close are different: both wait (a few seconds at most,
-  best-effort) for the stick to report itself idle before sending, and if
-  the stick still answers that it is busy right as the command goes out
-  (`Transmit error - stick busy`), they keep retrying - with no limit on
-  the number of attempts, the same policy raw RF payload testing,
-  teach/pairing, and similar non-movement requests already use - but for
-  no longer than 15 seconds in total. Several blinds commanded together
-  are serialized one at a time rather than raced against each other, so a
-  busy reply to one is normal, not a sign of a problem, and does not mean
-  its command is lost - it is simply retried once the stick is free; that
-  15-second budget also only starts once a blind's own turn actually
-  arrives, not while it is still waiting behind others. A stop for a
-  blind that is still waiting out one of these retries ends that wait
-  immediately instead of letting it resend the open/close command after
-  the stop has already gone out. Because retrying now happens one blind
-  at a time, a blind that is stuck retrying - stick still busy, or not
-  answering at all - also holds up every other blind's own open/close
-  behind it for as long as it keeps trying: pressing **Stop** on that
-  specific blind ends its wait and frees the others right away; failing
-  that, it gives up on its own after 15 seconds, the same way any other
-  failed open/close command does (the command is reported as failed, and
+- A manual `stop_cover` — including any these scripts trigger — briefly
+  tries to get priority over other blinds' own *waiting* `open`/`close`
+  commands before transmitting, but not over whichever command currently
+  holds the radio, nor over another blind's own stop that asked for it
+  first — falling back to an instant, unretried write if that brief
+  window (a couple of seconds at most) runs out before its turn comes.
+  That queueing, when it happens, is exactly what `stop_latenz` above
+  compensates for. `open`/`close` are different: both wait (a few seconds
+  at most, best-effort) for the stick to report itself idle before
+  sending, and if the stick still answers that it is busy right as the
+  command goes out (`Transmit error - stick busy`), they keep retrying -
+  with no limit on the number of attempts, the same policy raw RF payload
+  testing, teach/pairing, and similar non-movement requests already use -
+  but for no longer than 15 seconds in total. Several blinds commanded
+  together are serialized one at a time rather than raced against each
+  other, so a busy reply to one is normal, not a sign of a problem, and
+  does not mean its command is lost - it is simply retried once the stick
+  is free; that 15-second budget also only starts once a blind's own turn
+  actually arrives, not while it is still waiting behind others. A stop
+  for a blind that is still waiting out one of these retries ends that
+  wait immediately instead of letting it resend the open/close command
+  after the stop has already gone out. Because retrying now happens one
+  blind at a time, a blind that is stuck retrying - stick still busy, or
+  not answering at all - also holds up every other blind's own open/close
+  (and, within the couple of seconds above, its own stop too) behind it
+  for as long as it keeps trying: pressing **Stop** on that specific
+  blind ends its wait and frees the others right away; failing that, it
+  gives up on its own after 15 seconds, the same way any other failed
+  open/close command does (the command is reported as failed, and
   diagnostics show the stick reported busy repeatedly and needs a reset).
 
 ## Optional: synchronizing multiple blinds from one switch (example automation)
