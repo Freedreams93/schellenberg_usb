@@ -223,19 +223,28 @@ async def test_async_open_cover_does_not_start_tracking_before_retry_succeeds(
     _move_lock.
     """
     observed: dict[str, Any] = {}
+    # A plain local variable, not the reassigned cover._start_position_tracking
+    # attribute itself: mypy keeps the latter typed as the real method's
+    # Callable[[], None] signature inside fake_retry's own nested scope (the
+    # type: ignore below only covers the assignment statement, not later
+    # reads of it from inside a closure), so reading .called through it
+    # there specifically - unlike the plain, same-scope read after this
+    # function's own await below - fails "has no attribute called". This
+    # mock is what the attribute actually holds at runtime either way.
+    mock_start_tracking = MagicMock()
 
     async def fake_retry(*_args: object, **_kwargs: object) -> bool:
         # Captured while this call is still "in flight" - standing in for
         # the real call still waiting for _move_lock, command not yet sent.
         observed["move_start_time_before"] = cover._move_start_time
         observed["move_start_position_before"] = cover._move_start_position
-        observed["tracking_started_before"] = cover._start_position_tracking.called
+        observed["tracking_started_before"] = mock_start_tracking.called
         return True
 
     api = MagicMock()
     api.control_blind_with_retry = AsyncMock(side_effect=fake_retry)
     cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = mock_start_tracking  # type: ignore[method-assign]
     cover._attr_current_cover_position = 50
 
     await cover.async_open_cover()
@@ -245,7 +254,7 @@ async def test_async_open_cover_does_not_start_tracking_before_retry_succeeds(
     assert observed["tracking_started_before"] is False
     assert cover._move_start_time is not None
     assert cover._move_start_position == 50
-    cover._start_position_tracking.assert_called_once_with()
+    mock_start_tracking.assert_called_once_with()
 
 
 async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
@@ -253,17 +262,18 @@ async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
 ) -> None:
     """Mirrors test_async_open_cover_does_not_start_tracking_before_retry_succeeds."""
     observed: dict[str, Any] = {}
+    mock_start_tracking = MagicMock()
 
     async def fake_retry(*_args: object, **_kwargs: object) -> bool:
         observed["move_start_time_before"] = cover._move_start_time
         observed["move_start_position_before"] = cover._move_start_position
-        observed["tracking_started_before"] = cover._start_position_tracking.called
+        observed["tracking_started_before"] = mock_start_tracking.called
         return True
 
     api = MagicMock()
     api.control_blind_with_retry = AsyncMock(side_effect=fake_retry)
     cover = _build_cover(hass, api)
-    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._start_position_tracking = mock_start_tracking  # type: ignore[method-assign]
     cover._attr_current_cover_position = 50
 
     await cover.async_close_cover()
@@ -273,7 +283,7 @@ async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
     assert observed["tracking_started_before"] is False
     assert cover._move_start_time is not None
     assert cover._move_start_position == 50
-    cover._start_position_tracking.assert_called_once_with()
+    mock_start_tracking.assert_called_once_with()
 
 
 async def test_async_stop_cover_sends_stop_via_control_blind(
