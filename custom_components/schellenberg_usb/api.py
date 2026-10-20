@@ -1205,35 +1205,30 @@ class SchellenbergUsbApi:
             finish_payload,
         )
 
-        for phase, payload in (
-            ("teach_60", teach_payload),
-            ("finish_40", finish_payload),
-        ):
-            _LOGGER.warning(
-                "Motor teach phase write source=%s device_id=%s enum=%s "
-                "phase=%s payload=%s",
-                source,
-                device_id or "unknown",
-                normalized_enum,
-                phase,
-                payload,
-            )
-            if not await self.send_command(payload, source=source):
-                _LOGGER.error(
-                    "Motor teach write failed source=%s device_id=%s enum=%s "
-                    "phase=%s payload=%s",
-                    source,
-                    device_id or "unknown",
-                    normalized_enum,
-                    phase,
-                    payload,
-                )
-                return False
-            if not await self._wait_for_transmitter_idle(
-                f"finishing motor teach phase {phase}"
+        # Claim the same single-writer signal real pairing uses so
+        # control_blind()/control_blind_with_retry() refuse every blind's
+        # open/close/stop for as long as this two-phase 60-then-40 write is
+        # in flight. Without this, _transmit_capability_block_reason() has
+        # no way to tell a teach sequence is running: unlike
+        # pair_device_and_wait(), teach_motor() deliberately never touches
+        # _device_mode, since the stick's own hardware mode genuinely stays
+        # "listening" throughout here - only the physical remote enters
+        # programming mode, not the stick - so "pairing_active" is the only
+        # signal available, and leaving it unset let a concurrent move race
+        # this sequence's own send_command() writes for the stick's one RF
+        # transmitter, the same class of bug _move_lock exists to close for
+        # move-vs-move. Cleared in the finally below on every exit path,
+        # including a failed write or ACK timeout, so a teach failure can
+        # never leave every blind permanently blocked.
+        self._pairing_active = True
+        self._update_status()
+        try:
+            for phase, payload in (
+                ("teach_60", teach_payload),
+                ("finish_40", finish_payload),
             ):
-                _LOGGER.error(
-                    "Motor teach phase ACK timeout source=%s device_id=%s enum=%s "
+                _LOGGER.warning(
+                    "Motor teach phase write source=%s device_id=%s enum=%s "
                     "phase=%s payload=%s",
                     source,
                     device_id or "unknown",
@@ -1241,27 +1236,53 @@ class SchellenbergUsbApi:
                     phase,
                     payload,
                 )
-                self._busy_latched = True
-                return False
+                if not await self.send_command(payload, source=source):
+                    _LOGGER.error(
+                        "Motor teach write failed source=%s device_id=%s enum=%s "
+                        "phase=%s payload=%s",
+                        source,
+                        device_id or "unknown",
+                        normalized_enum,
+                        phase,
+                        payload,
+                    )
+                    return False
+                if not await self._wait_for_transmitter_idle(
+                    f"finishing motor teach phase {phase}"
+                ):
+                    _LOGGER.error(
+                        "Motor teach phase ACK timeout source=%s device_id=%s enum=%s "
+                        "phase=%s payload=%s",
+                        source,
+                        device_id or "unknown",
+                        normalized_enum,
+                        phase,
+                        payload,
+                    )
+                    self._busy_latched = True
+                    return False
+                _LOGGER.warning(
+                    "Motor teach phase stick ACK completed source=%s device_id=%s "
+                    "enum=%s phase=%s payload=%s stick_ack_only=True",
+                    source,
+                    device_id or "unknown",
+                    normalized_enum,
+                    phase,
+                    payload,
+                )
+
             _LOGGER.warning(
-                "Motor teach phase stick ACK completed source=%s device_id=%s "
-                "enum=%s phase=%s payload=%s stick_ack_only=True",
+                "Motor teach sequence stick ACK completed source=%s device_id=%s "
+                "enum=%s phases=60_then_40 stick_ack_only=True "
+                "motor_authorization=unverified",
                 source,
                 device_id or "unknown",
                 normalized_enum,
-                phase,
-                payload,
             )
-
-        _LOGGER.warning(
-            "Motor teach sequence stick ACK completed source=%s device_id=%s "
-            "enum=%s phases=60_then_40 stick_ack_only=True "
-            "motor_authorization=unverified",
-            source,
-            device_id or "unknown",
-            normalized_enum,
-        )
-        return True
+            return True
+        finally:
+            self._pairing_active = False
+            self._update_status()
 
     async def send_raw_transmit(
         self, payload: str, *, source: str = "developer_tools"

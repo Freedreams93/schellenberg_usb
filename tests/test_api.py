@@ -1043,6 +1043,65 @@ async def test_teach_motor_latches_busy_when_ack_wait_times_out(
     ]
 
 
+async def test_teach_motor_blocks_a_concurrent_move_until_it_finishes(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A move racing teach_motor()'s own two-phase write must be refused.
+
+    teach_motor() deliberately never touches _device_mode - the stick's
+    own hardware mode genuinely does not change here, only the physical
+    remote's does, see teach_motor()'s own comment - so pairing_active is
+    the only signal _transmit_capability_block_reason() has to tell a
+    teach sequence is still in flight. Before this was added, control_blind()
+    saw neither signal set and sent straight through, racing teach_motor()'s
+    own send_command() writes for the stick's one RF transmitter - the same
+    class of bug _move_lock exists to close for move-vs-move, just never
+    closed for teach-vs-move.
+    """
+    connected_api._transmitter_idle.clear()  # force a park between phases
+
+    assert connected_api.pairing_active is False
+    task = asyncio.ensure_future(connected_api.teach_motor("10", device_id="ABCDEF"))
+    await asyncio.sleep(0)  # real yield: let teach_60 write, then park on idle
+
+    assert connected_api.pairing_active is True
+    # A different, otherwise-unrelated blind must be blocked too - this is
+    # a stick-wide signal, not scoped to the device being taught.
+    assert await connected_api.control_blind("20", CMD_UP) is False
+    assert written(connected_api) == [
+        f"{CMD_TRANSMIT}109{CMD_PAIR}0000\r\n".encode("ascii")
+    ]
+
+    connected_api._transmitter_idle.set()  # let the parked wait resolve
+    assert await task is True
+
+    # Cleared again once the sequence finishes, so a blocked teach can
+    # never leave every blind permanently stuck behind it.
+    assert connected_api.pairing_active is False
+    assert await connected_api.control_blind("20", CMD_UP) is True
+
+
+async def test_teach_motor_clears_pairing_active_even_when_a_phase_fails(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A failed teach must not leave every blind permanently blocked.
+
+    Covers the finally block's own reason for existing: an early return
+    from inside the try (a failed write here) must still clear
+    pairing_active, the same way it already does on the clean-success
+    path above.
+    """
+    connected_api._transport.write = Mock(  # type: ignore[method-assign,union-attr]
+        side_effect=OSError("gone")
+    )
+
+    assert await connected_api.teach_motor("10", device_id="ABCDEF") is False
+    assert connected_api.pairing_active is False
+
+    connected_api._transport.write = Mock()  # type: ignore[method-assign,union-attr]
+    assert await connected_api.control_blind("20", CMD_UP) is True
+
+
 # ---------------------------------------------------------------------------
 # pair_device_and_wait(): listens for an unknown transmitter's frame, then
 # runs the same teach_60/finish_40 sequence on a freshly assigned enum.
