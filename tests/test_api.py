@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -637,14 +638,22 @@ async def test_control_blind_with_retry_succeeds_on_first_accept(
     assert await asyncio.wait_for(task, timeout=1) is True
 
 
-async def test_control_blind_with_retry_retries_on_busy_with_no_limit(
+async def test_control_blind_with_retry_retries_on_busy_with_no_attempt_limit(
     connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stick that keeps saying busy is retried forever, same no-limit
-    policy as send_command()'s own busy-retry cycle (see
-    test_busy_retry_has_no_limit_and_keeps_going in the section above) -
-    independent machinery, same policy. Sends far more "tE" replies in a
-    row than would matter in practice, to prove none of them give up.
+    """A stick that keeps saying busy is retried regardless of how many
+    attempts that takes, same no-attempt-limit policy as send_command()'s
+    own busy-retry cycle (see test_busy_retry_has_no_limit_and_keeps_going
+    in the section above) - independent machinery, same policy. Sends far
+    more "tE" replies in a row than would matter in practice, to prove
+    none of them on their own give up.
+
+    Elapsed time, unlike attempt count, IS bounded - see
+    test_control_blind_with_retry_gives_up_after_the_overall_timeout right
+    below. This test's own attempts stay well inside that budget: the
+    patched-instant asyncio.sleep below only skips real delay, never
+    advances time.monotonic(), so MOVE_RETRY_OVERALL_TIMEOUT is never in
+    reach here however many attempts run.
     """
     real_sleep = asyncio.sleep
 
@@ -684,6 +693,66 @@ async def test_control_blind_with_retry_retries_on_busy_with_no_limit(
 
     connected_api._handle_message("t1")
     assert await asyncio.wait_for(task, timeout=1) is True
+
+
+class _FakeClock:
+    """A controllable stand-in for time.monotonic().
+
+    Mirrors tests/test_cover.py's identical helper: control_blind_with_
+    retry()'s overall-timeout check only cares about *elapsed* time, so a
+    fake clock that advances only when the test tells it to reproduces
+    that deterministically and instantly, without any real waiting - a
+    patched-instant asyncio.sleep (see instant_sleep just above) skips
+    real delay but never advances time.monotonic() on its own.
+    """
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+async def test_control_blind_with_retry_gives_up_after_the_overall_timeout(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Elapsed time is bounded even though attempt count is not.
+
+    See MOVE_RETRY_OVERALL_TIMEOUT's own comment: a hub-wide _move_lock
+    held open-endedly by one persistently busy/unresponsive blind would
+    otherwise block every other blind's own open/close behind it - a new
+    coupling between blinds that control_blind() alone, always instant
+    and independent, never had. The deadline is only checked once per
+    loop iteration (same as cancellation - see control_blind_with_
+    retry()'s own docstring), so this jumps the clock straight past it in
+    one step rather than simulating real elapsed time, then feeds one
+    more "tE" to wake the loop and let it notice on its next pass.
+    """
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    clock.advance(api_module.MOVE_RETRY_OVERALL_TIMEOUT + 1.0)
+    connected_api._handle_message("tE")
+
+    assert await asyncio.wait_for(task, timeout=1) is False
+    # No further write was attempted once the deadline had passed.
+    assert len(written(connected_api)) == 1
+    assert connected_api.busy_latched is True
 
 
 async def test_control_blind_with_retry_treats_a_silent_ack_timeout_like_busy(

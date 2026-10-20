@@ -822,16 +822,25 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
   Open and close are different: both wait (a few seconds at most,
   best-effort) for the stick to report itself idle before sending, and if
   the stick still answers that it is busy right as the command goes out
-  (`Transmit error - stick busy`), they keep retrying - for as long as the
-  stick keeps reporting busy, with no retry limit - until it is accepted,
-  the same policy raw RF payload testing, teach/pairing, and similar
-  non-movement requests already use. Several blinds commanded together are
-  serialized one at a time rather than raced against each other, so a busy
-  reply to one is not a sign of a problem and does not mean its command is
-  lost - it is simply retried once the stick is free. A stop for a blind
-  that is still waiting out one of these retries ends that wait instead of
-  letting it resend the open/close command after the stop has already gone
-  out.
+  (`Transmit error - stick busy`), they keep retrying - with no limit on
+  the number of attempts, the same policy raw RF payload testing,
+  teach/pairing, and similar non-movement requests already use - but for
+  no longer than 15 seconds in total. Several blinds commanded together
+  are serialized one at a time rather than raced against each other, so a
+  busy reply to one is normal, not a sign of a problem, and does not mean
+  its command is lost - it is simply retried once the stick is free; that
+  15-second budget also only starts once a blind's own turn actually
+  arrives, not while it is still waiting behind others. A stop for a
+  blind that is still waiting out one of these retries ends that wait
+  immediately instead of letting it resend the open/close command after
+  the stop has already gone out. Because retrying now happens one blind
+  at a time, a blind that is stuck retrying - stick still busy, or not
+  answering at all - also holds up every other blind's own open/close
+  behind it for as long as it keeps trying: pressing **Stop** on that
+  specific blind ends its wait and frees the others right away; failing
+  that, it gives up on its own after 15 seconds, the same way any other
+  failed open/close command does (the command is reported as failed, and
+  diagnostics show the stick reported busy repeatedly and needs a reset).
 
 ## Optional: synchronizing multiple blinds from one switch (example automation)
 

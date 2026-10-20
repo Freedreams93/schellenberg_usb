@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -65,6 +66,26 @@ TRANSMIT_IDLE_TIMEOUT = 5.0
 # the same as a busy reply (retry), never as success: staying silent is not
 # evidence the stick accepted the write.
 MOVE_ACK_TIMEOUT = 1.0
+
+# Caps how long control_blind_with_retry() keeps retrying a single move
+# once it already holds _move_lock - not how long a call waits to acquire
+# that lock in the first place, which is unbounded queueing behind other
+# blinds and not part of this budget at all. Without this, a stick that
+# stayed persistently busy (or never acked at all) for one device_id would
+# hold the hub-wide lock open-endedly and block every other blind's own
+# open/close behind it - a new coupling between blinds that control_blind()
+# alone never had, since each of its writes was always instant and
+# independent. 15s comfortably covers several full retry cycles even at
+# TRANSMIT_IDLE_TIMEOUT's and MOVE_ACK_TIMEOUT's own worst case (busy
+# replies in normal operation arrive within tens of milliseconds, per real
+# logs - see MOVE_ACK_TIMEOUT's own comment - so this is not a budget meant
+# to be exhausted in practice) without leaving every other blind
+# unresponsive for long. Giving up this way is indistinguishable, to
+# callers, from any other control_blind_with_retry() failure: it latches
+# _busy_latched, same as send_command()'s own exhausted-retry path, so the
+# existing "busy_latched" block reason explains it in the UI without a new
+# translation string.
+MOVE_RETRY_OVERALL_TIMEOUT = 15.0
 
 
 def check_serial_port(port: str) -> None:
@@ -1461,25 +1482,29 @@ class SchellenbergUsbApi:
         full cycle means a second blind's call genuinely waits in line
         instead of racing the first for the one write that matters.
 
-        Retried on "tE" endlessly, like send_command()'s own busy-retry
-        cycle - same policy, independent machinery (see _move_lock's
-        comment in __init__ for why this does not simply reuse
-        _pending_retry_command): a persistently busy stick is retried for
-        as long as it keeps saying busy rather than the command being
-        abandoned, since in practice "busy" here almost always just means
-        another blind's own ~1.1-1.2s transmission is still in flight, not
-        a genuinely stuck stick.
+        Retried on "tE" with no limit on the number of attempts, like
+        send_command()'s own busy-retry cycle - same policy, independent
+        machinery (see _move_lock's comment in __init__ for why this does
+        not simply reuse _pending_retry_command): a persistently busy
+        stick is retried rather than the command being abandoned after
+        some fixed count, since in practice "busy" here almost always
+        just means another blind's own ~1.1-1.2s transmission is still in
+        flight, not a genuinely stuck stick. Elapsed time is bounded,
+        though, by MOVE_RETRY_OVERALL_TIMEOUT - see its own comment for
+        why unlimited attempts must not also mean unlimited time spent
+        holding the hub-wide lock.
 
-        Cancellation (cancel_pending_move()) is checked once per loop
-        iteration, before that iteration's wait-for-idle and write: a stop
-        issued for this same device_id ends this loop (returns False)
-        before its next write, rather than letting an already-queued retry
-        resend the move after the stop went out. Best-effort only, like
-        _wait_for_transmitter_idle() itself: a cancellation that arrives
-        while already inside a long idle-wait is not preempted mid-wait,
-        only picked up afterwards - in practice that wait almost always
-        resolves within about 1.2s (one transmit cycle), not its full 5s
-        budget, so the realistic worst case is short.
+        Cancellation (cancel_pending_move()) and the overall timeout are
+        both checked once per loop iteration, before that iteration's
+        wait-for-idle and write: a stop issued for this same device_id, or
+        the deadline passing, ends this loop (returns False) before its
+        next write, rather than letting an already-queued retry resend the
+        move late. Best-effort only, like _wait_for_transmitter_idle()
+        itself: either arriving while already inside a long idle-wait is
+        not preempted mid-wait, only picked up afterwards - in practice
+        that wait almost always resolves within about 1.2s (one transmit
+        cycle), not its full 5s budget, so the realistic worst case is
+        short.
         """
         if action not in (CMD_UP, CMD_DOWN):
             # CMD_STOP, or anything else, must never reach here - see the
@@ -1493,10 +1518,26 @@ class SchellenbergUsbApi:
             return False
         async with self._move_lock:
             self._move_in_progress_device_id = device_id
+            # Starts now, once the lock is actually held - not when this
+            # call was first made. Time spent waiting to acquire _move_
+            # lock behind other blinds is ordinary queueing, not part of
+            # this device_id's own retry budget.
+            retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
             try:
                 while True:
                     if self._move_cancel_device_id == device_id:
                         self._move_cancel_device_id = None
+                        return False
+                    if time.monotonic() >= retry_deadline:
+                        _LOGGER.warning(
+                            "Giving up on move after retrying for %.0fs with "
+                            "no accept source=%s device_id=%s action=%s",
+                            MOVE_RETRY_OVERALL_TIMEOUT,
+                            source,
+                            device_id or "unknown",
+                            action,
+                        )
+                        self._busy_latched = True
                         return False
                     await self._wait_for_transmitter_idle("sending a move command")
                     self._move_ack_event.clear()
