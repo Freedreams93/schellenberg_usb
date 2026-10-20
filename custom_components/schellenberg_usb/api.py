@@ -322,28 +322,6 @@ class SchellenbergUsbApi:
         self._retry_count = 0
         self._last_transmit_source = "internal"
 
-        # control_blind() (open/close/stop) deliberately writes straight to
-        # the transport with no lock and no retry - see its own docstring -
-        # so it never touches _pending_retry_command either. That leaves one
-        # real ambiguity: the stick's tE/t1/t0 replies carry no id saying
-        # which write they are about, so if a control_blind() write lands
-        # while a send_command()-tracked transmission (teach, pairing,
-        # raw-transmit, verify) is still waiting on its own t0, a tE that
-        # arrives next could be about either one - not necessarily the
-        # pending command _handle_message would otherwise assume it is.
-        # Blindly retrying the pending command in that situation risks
-        # resending it for no reason; for teach specifically, its own
-        # docstring already warns that repeating command 60 outside the
-        # motor programming sequence can change the motor's rotation
-        # direction. This flag lets _handle_message tell the ambiguous case
-        # apart from the ordinary one instead of guessing: control_blind()
-        # sets it when it writes while a command is pending, send_command()
-        # clears it when a fresh pending command's own window opens, and
-        # _handle_message clears it again after acting on one ambiguous tE,
-        # so only that one reply is affected - a later, unambiguous tE for
-        # the same still-pending command is retried normally.
-        self._control_blind_write_pending_conflict = False
-
         # Set on a "t1" transmitter-on ACK and cleared on "t0" (see
         # _handle_message); reflects the stick's own report of its
         # transmitter state.
@@ -731,30 +709,6 @@ class SchellenbergUsbApi:
                     level, "Transmit error - stick busy, no pending command to retry"
                 )
                 return
-            if self._control_blind_write_pending_conflict:
-                # A control_blind() write went out while this command was
-                # still waiting on its own t0 (see
-                # _control_blind_write_pending_conflict's comment in
-                # __init__), so this busy reply could be about either
-                # transmission - the protocol gives no way to tell which.
-                # Retrying here risks resending the pending command for no
-                # reason (harmful for teach specifically, whose own
-                # docstring warns that repeating it can change the motor's
-                # rotation direction), so this one ambiguous reply is
-                # skipped instead of guessed at. Only this reply is
-                # affected: the flag is cleared here, so a later,
-                # unambiguous tE for the same still-pending command is
-                # retried normally.
-                self._control_blind_write_pending_conflict = False
-                _LOGGER.log(
-                    level,
-                    "Transmit error - stick busy, but a blind command was also "
-                    "sent while source=%s payload=%s was still pending; "
-                    "ambiguous which one this is about, not retrying",
-                    self._last_transmit_source,
-                    self._pending_retry_command,
-                )
-                return
             # Always logged at DEBUG, never escalated to WARNING like the
             # other two branches above: a busy stick retrying itself back
             # to healthy is the normal, expected case under this policy
@@ -1020,10 +974,6 @@ class SchellenbergUsbApi:
                     # would ever clear it, and it would replace the
                     # payload of a transmission that is still in flight.
                     self._pending_retry_command = command
-                    # Fresh window for this pending command: any conflict
-                    # flagged by control_blind() belonged to a previous
-                    # pending command, if any, and does not apply here.
-                    self._control_blind_write_pending_conflict = False
 
                 full_command = f"{command}\r\n".encode("ascii")
                 _LOGGER.log(
@@ -1649,13 +1599,6 @@ class SchellenbergUsbApi:
             action_name,
             raw_payload,
         )
-        if self._pending_retry_command is not None:
-            # A send_command()-tracked transmission (teach, pairing,
-            # raw-transmit, verify) is still waiting on its own t0 - see
-            # _control_blind_write_pending_conflict's own comment in
-            # __init__ for why that makes the *next* tE ambiguous rather
-            # than clearly about that pending command.
-            self._control_blind_write_pending_conflict = True
         return True
 
     @callback
@@ -2295,7 +2238,6 @@ class SchellenbergUsbApi:
         self._device_mode = None
         self._pairing_active = False
         self._pending_retry_command = None
-        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False
@@ -2468,7 +2410,6 @@ class SchellenbergUsbApi:
         self._connect_task = None
 
         self._pending_retry_command = None
-        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False

@@ -314,105 +314,6 @@ async def test_control_blind_does_not_enter_the_busy_retry_cycle(
     assert len(written(connected_api)) == 1
 
 
-async def test_control_blind_write_without_a_pending_command_stays_unflagged(
-    connected_api: SchellenbergUsbApi,
-) -> None:
-    """The ordinary case - nothing pending via send_command() - must not flag.
-
-    Companion to test_control_blind_does_not_enter_the_busy_retry_cycle
-    above: that test covers the resulting tE behavior when nothing is
-    pending; this checks the new _control_blind_write_pending_conflict
-    flag itself stays False, matching control_blind()'s own
-    `if self._pending_retry_command is not None` guard around setting it.
-    """
-    assert await connected_api.control_blind("10", CMD_UP, device_id="ABCDEF") is True
-
-    assert connected_api._control_blind_write_pending_conflict is False
-
-
-async def test_control_blind_write_while_command_pending_marks_next_tE_ambiguous(
-    connected_api: SchellenbergUsbApi,
-) -> None:
-    """A tE arriving after an overlapping control_blind() write is ambiguous.
-
-    control_blind() (open/close/stop) writes straight to the transport with
-    no lock and no bookkeeping of its own - see its own docstring - so if it
-    writes while a send_command()-tracked transmission (teach, pairing,
-    raw-transmit, verify) is still waiting on its own t0, the next tE could
-    be about either write; the protocol gives no id saying which. Blindly
-    retrying the pending command in that situation risks resending it for
-    no reason, which for teach specifically can change the motor's rotation
-    direction (see teach_motor()'s own docstring). This tE must be skipped
-    instead of guessed at, and it must not touch the pending command's own
-    retry count or the sticky busy-latch fault flag - both of which stay
-    reserved for a stick that is genuinely, unambiguously stuck.
-    """
-    assert await connected_api.send_command(f"{CMD_TRANSMIT}109{CMD_UP}0000") is True
-    assert len(written(connected_api)) == 1
-
-    assert await connected_api.control_blind("20", CMD_STOP, device_id="112233") is True
-    assert len(written(connected_api)) == 2
-
-    connected_api._handle_message("tE")
-
-    # No resend of the pending command - the second write above was the
-    # control_blind() one, not a retry of it.
-    assert len(written(connected_api)) == 2
-    assert connected_api._retry_task is None
-    assert connected_api._retry_count == 0
-    assert connected_api.busy_latched is False
-    # The pending command itself is untouched - a later, unambiguous tE
-    # (no intervening control_blind() write) must still retry it normally;
-    # see the next test.
-    assert connected_api._pending_retry_command == f"{CMD_TRANSMIT}109{CMD_UP}0000"
-    assert connected_api._control_blind_write_pending_conflict is False
-
-
-async def test_ambiguous_tE_does_not_block_a_later_unambiguous_retry(
-    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Skipping one ambiguous tE must not disable retrying altogether.
-
-    Only the one reply that arrived while a control_blind() write was also
-    in flight is ambiguous. If the stick is genuinely still busy afterwards,
-    with no further control_blind() write in between, that next tE is
-    unambiguous again and must retry the still-pending command normally.
-    """
-
-    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
-
-    assert await connected_api.send_command(f"{CMD_TRANSMIT}109{CMD_UP}0000") is True
-    await connected_api.control_blind("20", CMD_STOP, device_id="112233")
-    connected_api._handle_message("tE")  # ambiguous, skipped (previous test)
-    assert len(written(connected_api)) == 2
-
-    connected_api._handle_message("tE")  # no further control_blind() write since
-
-    assert connected_api._retry_count == 1
-    # The initial send_command() write, the control_blind() write, and now
-    # one resend of the still-pending command.
-    assert len(written(connected_api)) == 3
-
-
-async def test_a_fresh_pending_command_clears_a_stale_conflict_flag(
-    connected_api: SchellenbergUsbApi,
-) -> None:
-    """A new pending command's own window must start clean.
-
-    _control_blind_write_pending_conflict must not leak from a previous,
-    already-finished pending command into a completely new one that has not
-    raced with control_blind() at all.
-    """
-    connected_api._control_blind_write_pending_conflict = True
-
-    assert await connected_api.send_command(f"{CMD_TRANSMIT}109{CMD_UP}0000") is True
-
-    assert connected_api._control_blind_write_pending_conflict is False
-
-
 async def test_busy_retry_has_no_limit_and_keeps_going(
     connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,7 +484,6 @@ def test_handle_connection_lost_resets_retry_and_busy_state(
     connected_api._retry_count = 2
     connected_api._transmitter_active = True
     connected_api._transmitter_idle.clear()
-    connected_api._control_blind_write_pending_conflict = True
 
     connected_api.handle_connection_lost(
         connected_api._protocol,  # type: ignore[arg-type]
@@ -596,7 +496,6 @@ def test_handle_connection_lost_resets_retry_and_busy_state(
     assert connected_api._pending_retry_command is None
     assert connected_api.transmitter_active is False
     assert connected_api._transmitter_idle.is_set() is True
-    assert connected_api._control_blind_write_pending_conflict is False
     # A reconnect was scheduled as a result; don't leave it pending past
     # the end of the test.
     connected_api._cancel_scheduled_reconnect()
