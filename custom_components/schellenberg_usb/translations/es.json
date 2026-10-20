@@ -46,7 +46,7 @@
           "submit": "Emparejar"
         },
         "add_shutter_from_remote": {
-          "title": "Añadir dispositivo de control remoto",
+          "title": "Añadir dispositivo desde mando a distancia",
           "description": "Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el canal del dispositivo. Pulse el botón de programación de su mando a distancia hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el dispositivo haya aprendido el transmisor. A continuación se realiza una breve prueba. Después, confirme si la persiana se movió realmente.",
           "submit": "Emparejar"
         },
@@ -128,7 +128,7 @@
             "test_open": "Probar: Abrir la persiana",
             "test_close": "Probar: Cerrar la persiana",
             "test_stop": "Probar: Detener la persiana",
-            "discover_status": "Entrenar los comandos de radio de la persiana desde este dispositivo en un mando a distancia para mejorar el reconocimiento de la transmisión de comandos de la persiana al pulsar el mando",
+            "discover_status": "Entrenar los comandos de radio de la persiana desde esta persiana en un mando a distancia para mejorar el reconocimiento de la transmisión de comandos de la persiana al pulsar el mando",
             "set_position_open": "Establecer posición de la persiana totalmente abierta",
             "set_position_closed": "Establecer posición de la persiana totalmente cerrada",
             "set_position_manual": "Establecer posición de la persiana manualmente",
@@ -139,7 +139,7 @@
           }
         },
         "discover_status": {
-          "title": "Entrenar los comandos de radio de la persiana para esta persiana desde un mando a distancia para mejorar el reconocimiento de la transmisión de comandos al pulsar el mando",
+          "title": "Entrenar los comandos de radio de la persiana para esta persiana desde un mando a distancia para mejorar el reconocimiento de la transmisión de comandos de la persiana al pulsar el mando",
           "description": "Dispositivo seleccionado: {selected_blind}\nIdentidad de comando/transmisión: {command_identity}\n\nUtilice el mando a distancia original de Schellenberg para este canal de dispositivo después de pulsar Iniciar escucha: pulse UP, STOP, DOWN, STOP. Home Assistant escucha durante 45 segundos y agrupa cada ID de dispositivo, valor enum, comando y marca de tiempo recibidos.",
           "submit": "Iniciar escucha"
         },
