@@ -296,6 +296,7 @@ class SchellenbergUsbApi:
         self._status_discovery_phase = "idle"
         self._status_discovery_started_at: str | None = None
         self._is_connecting = False
+        self._connect_task: asyncio.Task[bool] | None = None
         self._pairing_future: asyncio.Future[str] | None = None
         self._pairing_active = False
         self._stop_pairing_task: asyncio.Task[None] | None = (
@@ -488,6 +489,28 @@ class SchellenbergUsbApi:
             else:
                 _LOGGER.warning("Failed to retrieve hub device ID")
             return True
+        except asyncio.CancelledError:
+            # Reached when start_connecting()/disconnect() cancel this
+            # call's own task while it is still awaiting real I/O above -
+            # most commonly an unload/reload racing the very first connect
+            # a fresh config entry starts in the background. Without this,
+            # a transport opened just before the cancellation landed (set
+            # above, but never reaching this method's own explicit
+            # close()-on-failure branches, since cancellation skips
+            # straight past them) stayed open and connected after the rest
+            # of the integration had already been torn down - on a single
+            # USB stick, blocking the device file from being reopened
+            # until Home Assistant restarts. Close whatever got opened so
+            # a cancelled connect leaves exactly the same disconnected
+            # state a failed one already does, then let the cancellation
+            # continue propagating as normal.
+            if self._transport is not None:
+                self._transport.close()
+            self._transport = None
+            self._protocol = None
+            self._is_connected = False
+            self._device_mode = None
+            raise
         except (OSError, TimeoutError) as err:
             _LOGGER.error(
                 "Failed to connect to %s: %s. Retrying in %.0f seconds",
@@ -504,6 +527,28 @@ class SchellenbergUsbApi:
             return False
         finally:
             self._is_connecting = False
+
+    def start_connecting(self) -> asyncio.Task[bool]:
+        """Start connect() as a tracked background task.
+
+        Used instead of a bare hass.async_create_task(self.connect(), ...)
+        wherever a connect is kicked off without being awaited directly -
+        a fresh config entry's own initial connect, and each scheduled
+        auto-reconnect. Storing the task is what lets disconnect() below
+        reliably cancel a connect() that is still in flight rather than
+        letting it run to completion and open a transport after the rest
+        of the integration already considers itself disconnected - see
+        connect()'s own CancelledError handling for the other half of
+        that fix. Also cancels any previous attempt still running, so at
+        most one connect() is ever in flight regardless of how many times
+        this is called in a row.
+        """
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+        self._connect_task = self.hass.async_create_task(
+            self.connect(), name="schellenberg-connect"
+        )
+        return self._connect_task
 
     async def _enter_listening_mode(self) -> bool:
         """Put a connected stick into B:2 listening mode when needed."""
@@ -545,7 +590,7 @@ class SchellenbergUsbApi:
         """Start the reconnect task from its timer callback."""
         self._reconnect_handle = None
         if not self._disconnect_requested:
-            self.hass.async_create_task(self.connect(), name="schellenberg-reconnect")
+            self.start_connecting()
 
     @callback
     def _handle_message(self, message: str) -> None:
@@ -2380,6 +2425,9 @@ class SchellenbergUsbApi:
         """Disconnect intentionally and cancel all pending serial work."""
         self._disconnect_requested = True
         self._cancel_scheduled_reconnect()
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+        self._connect_task = None
 
         self._pending_retry_command = None
         self._control_blind_write_pending_conflict = False

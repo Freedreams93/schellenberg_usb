@@ -482,6 +482,13 @@ async def test_async_setup_entry_schedules_the_initial_connect_as_its_own_task(
     """The initial connect attempt must be fired off as its own task rather
     than awaited inline - a slow or unresponsive stick must not block
     async_setup_entry (and therefore Home Assistant startup) on it.
+
+    The task itself is now created inside api.start_connecting() (shared
+    with the scheduled-reconnect path, so disconnect() can always find and
+    cancel whichever connect attempt is currently running) rather than
+    directly in async_setup_entry, so the tracked task's name is
+    start_connecting()'s own "schellenberg-connect", not a setup-specific
+    one.
     """
     monkeypatch.setattr(SchellenbergUsbApi, "connect", AsyncMock())
     monkeypatch.setattr(
@@ -497,4 +504,4 @@ async def test_async_setup_entry_schedules_the_initial_connect_as_its_own_task(
 
     task_spy.assert_called_once()
     _args, kwargs = task_spy.call_args
-    assert kwargs.get("name") == "schellenberg-initial-connect"
+    assert kwargs.get("name") == "schellenberg-connect"

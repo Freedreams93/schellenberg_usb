@@ -130,6 +130,97 @@ async def test_connect_resets_state_when_listening_mode_fails(
     await api.disconnect()
 
 
+async def test_connect_closes_transport_when_cancelled_after_opening_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: cancelling a connect() that already opened a
+    transport but has not finished verifying/listening/fetching the hub ID
+    yet must not leave that transport open.
+
+    This is exactly what can happen when disconnect() (an unload/reload)
+    or a newer start_connecting() attempt cancels an in-flight connect():
+    without this, the real serial port stays open with nothing left
+    referencing it, invisible to any later connect attempt.
+    """
+    api = SchellenbergUsbApi(hass, "/dev/fake-schellenberg")
+    fake_transport = FakeTransport()
+    monkeypatch.setattr(
+        api_module.serialx,  # type: ignore[attr-defined]
+        "create_serial_connection",
+        AsyncMock(return_value=(fake_transport, Mock())),
+    )
+
+    reached_verify = asyncio.Event()
+
+    async def hang_in_verify() -> bool:
+        reached_verify.set()
+        await asyncio.sleep(100)
+        return True
+
+    monkeypatch.setattr(api, "verify_device", hang_in_verify)
+
+    task = asyncio.ensure_future(api.connect())
+    await asyncio.wait_for(reached_verify.wait(), timeout=1)
+    assert api._transport is fake_transport  # type: ignore[comparison-overlap]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert api._transport is None
+    assert api._protocol is None
+    assert api._is_connected is False
+    assert fake_transport.is_closing() is True
+
+
+async def test_start_connecting_creates_a_tracked_task(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start_connecting() is the one place that fires connect() as a
+    background task, so disconnect() (or a later start_connecting() call)
+    always has a single task it can find and cancel.
+    """
+    api = SchellenbergUsbApi(hass, "/dev/fake-schellenberg")
+    monkeypatch.setattr(api, "connect", AsyncMock(return_value=True))
+
+    task = api.start_connecting()
+
+    assert api._connect_task is task
+    assert await task is True
+
+
+async def test_start_connecting_cancels_a_previous_still_running_attempt(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most one connect() may ever be in flight. Starting a new attempt
+    (for instance a scheduled reconnect firing while the very first
+    connect from setup is still hanging) must cancel the old one rather
+    than let both run concurrently against the same serial port.
+    """
+    api = SchellenbergUsbApi(hass, "/dev/fake-schellenberg")
+
+    async def hang_connect() -> bool:
+        await asyncio.sleep(100)
+        return True
+
+    monkeypatch.setattr(api, "connect", hang_connect)
+
+    first_task = api.start_connecting()
+    await asyncio.sleep(0)
+    second_task = api.start_connecting()
+
+    assert api._connect_task is second_task
+    assert first_task is not second_task
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    # Clean up the still-pending second task rather than leak it past the
+    # test - nothing here is meant to exercise its own completion.
+    second_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second_task
+
+
 async def test_send_command_writes_ascii_with_crlf_terminator(
     connected_api: SchellenbergUsbApi,
 ) -> None:
@@ -522,6 +613,32 @@ async def test_disconnect_cancels_a_pending_retry_task(
     assert connected_api._retry_task is None
     with pytest.raises(asyncio.CancelledError):
         await retry_task
+
+
+async def test_disconnect_cancels_a_pending_connect_task(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """Mirrors test_disconnect_cancels_a_pending_retry_task for _connect_task.
+
+    Regression guard: an unload/reload racing the very first connect a
+    fresh config entry starts in the background used to leave that
+    connect() attempt running untracked - nothing could cancel it, so it
+    could finish after "unload" and leave a live serial connection open
+    with no config entry left referencing it.
+    """
+
+    async def _hang() -> bool:
+        await asyncio.sleep(100)
+        return True
+
+    connect_task = asyncio.ensure_future(_hang())
+    connected_api._connect_task = connect_task
+
+    await connected_api.disconnect()
+
+    assert connected_api._connect_task is None
+    with pytest.raises(asyncio.CancelledError):
+        await connect_task
 
 
 async def test_handle_connection_lost_also_unblocks_a_waiting_move_retry(
