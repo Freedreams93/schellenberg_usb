@@ -195,6 +195,87 @@ async def test_async_close_cover_raises_when_control_blind_with_retry_fails(
     assert cover._move_start_time is None
 
 
+async def test_async_open_cover_does_not_start_tracking_before_retry_succeeds(
+    hass: HomeAssistant,
+) -> None:
+    """Regression guard for a short set_cover_position() leg queued behind
+    other blinds racing past its own target before its command is even sent.
+
+    control_blind_with_retry() serializes hub-wide through api.py's own
+    _move_lock, held for an entire write-then-retry-until-accepted cycle -
+    so a blind commanded while another one's cycle is still in flight can
+    sit waiting for that lock for a while before its own command reaches
+    the stick even once. If _move_start_time/_move_start_position and the
+    tracking loop were already running during that wait (as they used to
+    be - started optimistically before this same await, not after it),
+    the elapsed-time estimate would count that queued wait as travel time
+    too: for a short enough leg behind enough other blinds in the same
+    burst, the estimate could reach the target - and the loop would act on
+    that by firing its own stop - before this blind's own open/close
+    command had been transmitted even once. cancel_pending_move() cannot
+    catch that case either, since it is a no-op until this device_id
+    actually holds _move_lock (see its own docstring), which a call still
+    waiting for the lock has not yet done.
+
+    Proven here by a control_blind_with_retry() stand-in that looks at the
+    entity's own state *from inside the call*, before returning - exactly
+    the moment a real call would instead still be waiting its turn on
+    _move_lock.
+    """
+    observed: dict[str, Any] = {}
+
+    async def fake_retry(*_args: object, **_kwargs: object) -> bool:
+        # Captured while this call is still "in flight" - standing in for
+        # the real call still waiting for _move_lock, command not yet sent.
+        observed["move_start_time_before"] = cover._move_start_time
+        observed["move_start_position_before"] = cover._move_start_position
+        observed["tracking_started_before"] = cover._start_position_tracking.called
+        return True
+
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(side_effect=fake_retry)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._attr_current_cover_position = 50
+
+    await cover.async_open_cover()
+
+    assert observed["move_start_time_before"] is None
+    assert observed["move_start_position_before"] is None
+    assert observed["tracking_started_before"] is False
+    assert cover._move_start_time is not None
+    assert cover._move_start_position == 50
+    cover._start_position_tracking.assert_called_once_with()
+
+
+async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
+    hass: HomeAssistant,
+) -> None:
+    """Mirrors test_async_open_cover_does_not_start_tracking_before_retry_succeeds."""
+    observed: dict[str, Any] = {}
+
+    async def fake_retry(*_args: object, **_kwargs: object) -> bool:
+        observed["move_start_time_before"] = cover._move_start_time
+        observed["move_start_position_before"] = cover._move_start_position
+        observed["tracking_started_before"] = cover._start_position_tracking.called
+        return True
+
+    api = MagicMock()
+    api.control_blind_with_retry = AsyncMock(side_effect=fake_retry)
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._attr_current_cover_position = 50
+
+    await cover.async_close_cover()
+
+    assert observed["move_start_time_before"] is None
+    assert observed["move_start_position_before"] is None
+    assert observed["tracking_started_before"] is False
+    assert cover._move_start_time is not None
+    assert cover._move_start_position == 50
+    cover._start_position_tracking.assert_called_once_with()
+
+
 async def test_async_stop_cover_sends_stop_via_control_blind(
     hass: HomeAssistant,
 ) -> None:

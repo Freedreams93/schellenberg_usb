@@ -1189,10 +1189,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         )
         self._attr_is_opening = True
         self._attr_is_closing = False
-        self._move_start_time = time.monotonic()
         if self._attr_current_cover_position is None:
             self._attr_current_cover_position = 0
-        self._move_start_position = self._attr_current_cover_position
         self._position_update_source = "Home Assistant open command"
         self._position_source_kind = "HA command"
         self._full_travel_resync_direction = (
@@ -1209,7 +1207,6 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             status="estimated",
         )
         await self._async_cancel_position_tracking("new open command")
-        self._start_position_tracking()
         self.async_write_ha_state()
         # Wait for any other transmission already in flight - another
         # blind's own open/close, a teach/pairing/raw-transmit step, or
@@ -1226,6 +1223,11 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # busy reply. Deliberately not applied to async_stop_cover() - see
         # its own docstring for why a manual stop must stay instant and
         # unretried instead.
+        #
+        # Deliberately not started above either: _move_start_time,
+        # _move_start_position and the tracking loop itself only get set up
+        # once this call below actually succeeds (see there) - not here,
+        # before this blind's own command has even reached the stick.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1249,6 +1251,27 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                 )
             )
 
+        # Only now that the stick has actually accepted the command do we
+        # know the motor is genuinely about to start turning - start the
+        # elapsed-time clock and the background tracking loop from here,
+        # not earlier. Starting them optimistically above (right when this
+        # method was first called, before the wait/retry above) meant a
+        # set_cover_position() leg queued behind other blinds in
+        # control_blind_with_retry()'s hub-wide lock already had its target
+        # evaluated against time spent only waiting in that queue, not
+        # moving: for a short enough leg queued behind enough other blinds
+        # in the same burst, the elapsed-time estimate could reach the
+        # target before this blind's own command had been transmitted even
+        # once. cancel_pending_move() cannot catch that case either - it is
+        # a no-op until this device_id actually holds _move_lock (see its
+        # own docstring), which a call still waiting for the lock has not
+        # yet done - so the real command would go out afterwards with no
+        # tracking left running to stop it at the target.
+        self._move_start_position = self._attr_current_cover_position
+        self._move_start_time = time.monotonic()
+        self._start_position_tracking()
+        self.async_write_ha_state()
+
     async def async_close_cover(
         self, *, _preserve_target: bool = False, **kwargs: Any
     ) -> None:
@@ -1267,10 +1290,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         )
         self._attr_is_opening = False
         self._attr_is_closing = True
-        self._move_start_time = time.monotonic()
         if self._attr_current_cover_position is None:
             self._attr_current_cover_position = 0
-        self._move_start_position = self._attr_current_cover_position
         self._position_update_source = "Home Assistant close command"
         self._position_source_kind = "HA command"
         self._full_travel_resync_direction = (
@@ -1287,10 +1308,12 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             status="estimated",
         )
         await self._async_cancel_position_tracking("new close command")
-        self._start_position_tracking()
         self.async_write_ha_state()
         # Same retry-until-accepted write, same reasoning, as
-        # async_open_cover() above - see its comment for why.
+        # async_open_cover() above - see its comment for why. Also, same as
+        # there: _move_start_time/_move_start_position/the tracking loop
+        # are deliberately not started above either - see the comment right
+        # after this call succeeds below for why.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
@@ -1313,6 +1336,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                     reason=reason,
                 )
             )
+
+        # Same reasoning as async_open_cover()'s own comment at its mirror
+        # of this point: only start the clock and the tracking loop once
+        # the stick has actually accepted the command, not before the
+        # wait/retry above - otherwise a short set_cover_position() leg
+        # queued behind other blinds in control_blind_with_retry()'s
+        # hub-wide lock could have its target evaluated as "reached" purely
+        # from time spent waiting in that queue.
+        self._move_start_position = self._attr_current_cover_position
+        self._move_start_time = time.monotonic()
+        self._start_position_tracking()
+        self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover immediately and freeze the estimated position.
