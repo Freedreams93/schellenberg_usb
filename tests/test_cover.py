@@ -649,19 +649,19 @@ async def test_async_stop_cover_raises_when_control_blind_stop_fails(
         await cover.async_stop_cover()
 
 
-async def test_async_stop_cover_restarts_tracking_when_stop_fails_while_moving(
+async def test_async_stop_cover_leaves_moving_state_untouched_when_stop_fails(
     hass: HomeAssistant,
 ) -> None:
     """Regression: a failed stop used to leave a moving cover's position frozen.
 
-    async_stop_cover() restores the pre-stop moving state when
-    control_blind_stop() fails, on the theory that a blind whose stop never
-    reached the stick is probably still moving - but restoring
-    _move_start_time etc. alone does not resurrect the position-tracking
-    task, which was already cancelled earlier in the same call. Without an
-    explicit restart, the entity would report is_closing/is_opening forever
-    with a position frozen at the instant of the failed stop, until some
-    unrelated later command happened to start tracking again.
+    async_stop_cover() now defers freezing the position and cancelling
+    tracking until *after* control_blind_stop() succeeds (see its own
+    docstring for why) - so when it fails instead, nothing has been torn
+    down yet: is_closing, _move_start_time, _move_start_position and the
+    live tracking task are all exactly as they were, with no explicit
+    "restore" step needed and nothing to restart. Only _target_position,
+    which this method clears unconditionally up front (see its own
+    docstring for why), needs putting back on this path.
     """
     api = MagicMock()
     api.control_blind_stop = AsyncMock(return_value=False)
@@ -671,6 +671,9 @@ async def test_async_stop_cover_restarts_tracking_when_stop_fails_while_moving(
     cover._move_start_time = 123.0
     cover._move_start_position = 80
     cover._target_position = 0
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    cover._position_update_task = fake_task
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
 
     with pytest.raises(HomeAssistantError):
@@ -681,17 +684,20 @@ async def test_async_stop_cover_restarts_tracking_when_stop_fails_while_moving(
     assert cover._move_start_time == 123.0
     assert cover._move_start_position == 80
     assert cover._target_position == 0
-    cover._start_position_tracking.assert_called_once_with()
+    assert cover._position_update_task is fake_task
+    fake_task.cancel.assert_not_called()
+    cover._start_position_tracking.assert_not_called()
 
 
-async def test_async_stop_cover_does_not_restart_tracking_when_already_idle(
+async def test_async_stop_cover_does_not_touch_idle_state_when_stop_fails(
     hass: HomeAssistant,
 ) -> None:
     """A failed stop on an already-idle cover must not spin up tracking.
 
-    Companion to the regression test above: guards the `if previous_is_opening
-    or previous_is_closing` check so a fix for the moving case can't
-    regress into unconditionally restarting tracking.
+    Companion to the regression test above: with nothing torn down until
+    control_blind_stop() succeeds, a failed stop on a cover that was never
+    moving in the first place has nothing to restore, and must not call
+    _start_position_tracking() either.
     """
     api = MagicMock()
     api.control_blind_stop = AsyncMock(return_value=False)
@@ -703,6 +709,121 @@ async def test_async_stop_cover_does_not_restart_tracking_when_already_idle(
         await cover.async_stop_cover()
 
     cover._start_position_tracking.assert_not_called()
+    assert cover._position_update_task is None
+
+
+async def test_async_stop_cover_clears_target_before_awaiting_control_blind_stop(
+    hass: HomeAssistant,
+) -> None:
+    """_target_position must already be None by the time the write goes out.
+
+    Position tracking is deliberately left running across the await below
+    (see async_stop_cover()'s own docstring) - but _async_position_update_
+    loop's own auto-stop-at-target branch only triggers while a target is
+    still set, and must not fire its own, second control_blind_stop() for
+    this same blind while this one is still in flight. Checking inside
+    control_blind_stop()'s own side effect, rather than only after
+    async_stop_cover() returns, confirms the target is cleared *before*
+    the write goes out - not merely by the time the whole call finishes,
+    which a clear placed after the await would also satisfy without
+    closing the actual race.
+    """
+    seen_target_during_call: list[int | None] = []
+
+    async def _record_target(*_args: object, **_kwargs: object) -> bool:
+        seen_target_during_call.append(cover._target_position)
+        return True
+
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(side_effect=_record_target)
+    cover = _build_cover(hass, api)
+    cover._target_position = 42
+
+    await cover.async_stop_cover()
+
+    assert seen_target_during_call == [None]
+
+
+async def test_async_stop_cover_does_not_cancel_tracking_before_stop_succeeds(
+    hass: HomeAssistant,
+) -> None:
+    """Tracking must stay live for as long as control_blind_stop() is in flight.
+
+    Regression guard for the actual bug this fix addresses: cancelling the
+    tracking task (or reading its estimate) before the stop write has
+    happened reads a stale position under contention - see the test right
+    after this one, and async_stop_cover()'s own docstring, for the
+    real-hardware numbers this came from.
+    """
+    task = asyncio.ensure_future(asyncio.sleep(100))
+    still_live_when_called = False
+
+    async def _check_still_tracking(*_args: object, **_kwargs: object) -> bool:
+        nonlocal still_live_when_called
+        still_live_when_called = cover._position_update_task is task and not task.done()
+        return True
+
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(side_effect=_check_still_tracking)
+    cover = _build_cover(hass, api)
+    cover._attr_is_closing = True
+    cover._move_start_time = time.monotonic()
+    cover._move_start_position = 80
+    cover._position_update_task = task
+
+    await cover.async_stop_cover()
+
+    assert still_live_when_called is True
+    assert cover._position_update_task is None
+    assert task.cancelled()
+
+
+async def test_async_stop_cover_freezes_position_from_elapsed_time_after_stop_returns(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frozen position must reflect when the stop actually transmitted.
+
+    Regression test for the real bug: async_stop_cover() used to call
+    _update_position() (and so freeze current_cover_position) *before*
+    awaiting control_blind_stop() - using elapsed time up to the instant
+    the service was called, not up to whenever the write actually reached
+    the stick. Under contention from another blind sharing the hub-wide
+    _move_lock (see api.py), control_blind_stop() can take over a second
+    to actually write - confirmed from a real two-blind test log where
+    exactly this gap, on its own, put the frozen estimate about 6
+    percentage points away from where the blind had actually gotten to by
+    the time the stop really went out. Advancing the fake clock *inside*
+    control_blind_stop()'s own await, before it returns, reproduces that
+    gap deterministically: the frozen position must reflect the clock
+    *after* the advance, not before it.
+    """
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+
+    async def _delayed_stop(*_args: object, **_kwargs: object) -> bool:
+        # Stands in for a real transmit queued behind another blind's own
+        # command - see STOP_RETRY_BUDGET's and _move_lock's own comments
+        # in api.py for why this is a realistic, not a worst-case, gap.
+        clock.advance(1.5)
+        return True
+
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(side_effect=_delayed_stop)
+    cover = _build_cover(hass, api)
+    cover._travel_time_close = 50.0
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 100
+    cover._move_start_position = 100
+    cover._move_start_time = time.monotonic()
+
+    await cover.async_stop_cover()
+
+    # 1.5s elapsed at 50s full travel = 3 percentage points, so the frozen
+    # position must be 97 - not 100, which is what a freeze taken before
+    # control_blind_stop()'s own 1.5s advance would have produced instead.
+    assert cover._attr_current_cover_position == 97
+    assert cover._attr_is_closing is False
+    assert cover._move_start_time is None
 
 
 async def test_position_loop_stops_at_a_partial_target(

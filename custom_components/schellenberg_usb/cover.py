@@ -1485,7 +1485,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the cover immediately and freeze the estimated position.
+        """Stop the cover, freezing the estimated position once it lands.
 
         Sent via control_blind_stop(), which is to a manual stop what
         control_blind_with_retry() is to open/close: briefly serialized
@@ -1504,6 +1504,32 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         on "tE" again (via control_blind_with_retry(), see its own
         docstring), a stop must actively end any retry loop still running
         for this same blind instead of merely not starting one of its own.
+
+        Position tracking is deliberately left running - and the position
+        is not frozen - until *after* control_blind_stop() actually
+        returns, not up front the way this used to work. Freezing up front
+        made the estimate stop advancing at the instant this method was
+        called, while the real write could still be queued for over a
+        second behind another blind's own transmission under contention
+        (see control_blind_stop()'s and _move_lock's own docstrings in
+        api.py) - confirmed from a real two-blind test where that gap put
+        the frozen estimate several percentage points away from where the
+        blind had actually gotten to by the time the stop really went out,
+        on a blind whose own preceding close/open had gone out instantly
+        with no queueing at all, so the two delays did not cancel out.
+        Letting the existing elapsed-time tracking keep running for
+        however long that wait actually takes, then reading it only once
+        the write has happened, keeps the estimate accurate regardless of
+        how long the stop was queued - exactly why async_open_cover()'s and
+        async_close_cover()'s own _move_start_time is only ever set after
+        their own write succeeds, not before it either.
+
+        _target_position is cleared up front regardless: the background
+        tracking loop's own auto-stop-at-target branch (see
+        _async_position_update_loop) triggers only while a target is set,
+        and must not fire its own, second control_blind_stop() for this
+        same blind while this one is still in flight just because tracking
+        itself was deliberately left running above.
         """
         # First, and before any other statement: if this device has a move
         # retry loop still running (control_blind_with_retry(), in flight
@@ -1519,53 +1545,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_device_id,
             self._command_enum,
         )
-        previous_position = self._attr_current_cover_position
-        previous_is_opening = self._attr_is_opening
-        previous_is_closing = self._attr_is_closing
-        previous_move_start_time = self._move_start_time
-        previous_move_start_position = self._move_start_position
         previous_target_position = self._target_position
-        self._position_source_kind = "HA command"
-        self._full_travel_resync_direction = None
-        self._position_update_source = "Home Assistant stop command"
-        await self._async_cancel_position_tracking("Home Assistant stop command")
-        self._update_position()
-        self._attr_is_opening = False
-        self._attr_is_closing = False
-        self._move_start_time = None
-        self._move_start_position = None
         self._target_position = None
-        self._record_position_update(
-            source=self._position_update_source,
-            direction="stop",
-            previous_position=previous_position,
-            new_position=self._attr_current_cover_position,
-            status="estimated",
-        )
-        self.async_write_ha_state()
         if not await self._api.control_blind_stop(
             self._command_enum, device_id=self._command_device_id
         ):
-            # The stop never reached the stick. If the blind was moving, it
-            # likely still is - restore the pre-stop moving state instead of
-            # leaving it frozen at this instant, so the ongoing elapsed-time
-            # estimate (based on the original move start) keeps working
-            # instead of a prematurely frozen position. Restoring the state
-            # alone is not enough: the position-tracking task that would
-            # actually advance that estimate and clear these flags at the
-            # target/0/100 was already cancelled above, and restoring
-            # _move_start_time etc. does not resurrect it - it must be
-            # restarted explicitly, or the entity is left reporting
-            # is_opening/is_closing forever with a frozen position until an
-            # unrelated later command happens to start tracking again.
-            self._attr_is_opening = previous_is_opening
-            self._attr_is_closing = previous_is_closing
-            self._move_start_time = previous_move_start_time
-            self._move_start_position = previous_move_start_position
+            # The stop never reached the stick. Nothing else has been
+            # touched yet - position tracking, if it was running, still is,
+            # and is_opening/is_closing/_move_start_time/_move_start_position
+            # are exactly as they were, so there is nothing to restore and
+            # nothing to restart - only the target this method itself
+            # cleared above needs putting back.
             self._target_position = previous_target_position
-            if previous_is_opening or previous_is_closing:
-                self._start_position_tracking()
-            self.async_write_ha_state()
             reason = _translate_block_reason(
                 self.hass, self._api.transmit_block_reason
             ) or _runtime_translation_text(self.hass, "command_not_sent")
@@ -1577,6 +1568,29 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                     reason=reason,
                 )
             )
+
+        # Only now, with the write actually done, is it safe to stop the
+        # background tracking loop and read its estimate - see this
+        # method's own docstring for why reading it any earlier would risk
+        # a stale, prematurely frozen position under contention.
+        previous_position = self._attr_current_cover_position
+        self._position_source_kind = "HA command"
+        self._full_travel_resync_direction = None
+        self._position_update_source = "Home Assistant stop command"
+        await self._async_cancel_position_tracking("Home Assistant stop command")
+        self._update_position()
+        self._attr_is_opening = False
+        self._attr_is_closing = False
+        self._move_start_time = None
+        self._move_start_position = None
+        self._record_position_update(
+            source=self._position_update_source,
+            direction="stop",
+            previous_position=previous_position,
+            new_position=self._attr_current_cover_position,
+            status="estimated",
+        )
+        self.async_write_ha_state()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position by chaining open/close."""
