@@ -1272,7 +1272,17 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
-            if is_redundant_resend:
+            # Re-check rather than trust the snapshot taken before the
+            # await above: a real status frame (for instance the
+            # auto-stop-at-target path, or an external stop) can land
+            # while this call's own write was in flight and already
+            # stop-and-clear the original move's own tracking. When that
+            # happened there is no longer a live original move to leave
+            # alone, so fall through to ordinary failure handling below
+            # instead of silently leaving a stale "opening" state behind.
+            if is_redundant_resend and self._has_live_tracking_in_direction(
+                opening=True
+            ):
                 # The original move (from the first send) is still
                 # genuinely under way and its own tracking is untouched -
                 # only this resend's own extra transmission didn't get
@@ -1324,7 +1334,20 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # for a redundant resend: the original move's own tracking has
         # been running the whole time and already reflects however long
         # this resend's own wait took.
-        if not is_redundant_resend:
+        # Re-check here too: this call's own command just reached the
+        # stick, but if the original move it was meant to piggyback on
+        # already got stopped-and-cleared for real while this call's own
+        # write was in flight (see the matching re-check in the failure
+        # branch above), the motor is now moving under this call's own
+        # command alone, with nothing left tracking it. (Re)start tracking
+        # exactly as a fresh move would rather than skip it because of a
+        # now-stale snapshot, and re-assert the optimistic state the real
+        # stop event in between overwrote.
+        if not is_redundant_resend or not self._has_live_tracking_in_direction(
+            opening=True
+        ):
+            self._attr_is_opening = True
+            self._attr_is_closing = False
             self._move_start_position = self._attr_current_cover_position
             self._move_start_time = time.monotonic()
             self._start_position_tracking()
@@ -1386,7 +1409,17 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
-            if is_redundant_resend:
+            # Re-check rather than trust the snapshot taken before the
+            # await above: a real status frame (for instance the
+            # auto-stop-at-target path, or an external stop) can land
+            # while this call's own write was in flight and already
+            # stop-and-clear the original move's own tracking. When that
+            # happened there is no longer a live original move to leave
+            # alone, so fall through to ordinary failure handling below
+            # instead of silently leaving a stale "closing" state behind.
+            if is_redundant_resend and self._has_live_tracking_in_direction(
+                opening=False
+            ):
                 # The original move (from the first send) is still
                 # genuinely under way and its own tracking is untouched -
                 # only this resend's own extra transmission didn't get
@@ -1432,7 +1465,20 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # redundant resend: the original move's own tracking has been
         # running the whole time and already reflects however long this
         # resend's own wait took.
-        if not is_redundant_resend:
+        # Re-check here too: this call's own command just reached the
+        # stick, but if the original move it was meant to piggyback on
+        # already got stopped-and-cleared for real while this call's own
+        # write was in flight (see the matching re-check in the failure
+        # branch above), the motor is now moving under this call's own
+        # command alone, with nothing left tracking it. (Re)start tracking
+        # exactly as a fresh move would rather than skip it because of a
+        # now-stale snapshot, and re-assert the optimistic state the real
+        # stop event in between overwrote.
+        if not is_redundant_resend or not self._has_live_tracking_in_direction(
+            opening=False
+        ):
+            self._attr_is_opening = False
+            self._attr_is_closing = True
             self._move_start_position = self._attr_current_cover_position
             self._move_start_time = time.monotonic()
             self._start_position_tracking()
