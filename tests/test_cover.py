@@ -226,9 +226,9 @@ async def test_async_open_cover_does_not_start_tracking_before_retry_succeeds(
     # A plain local variable, not the reassigned cover._start_position_tracking
     # attribute itself: mypy keeps the latter typed as the real method's
     # Callable[[], None] signature inside fake_retry's own nested scope (the
-    # type: ignore below only covers the assignment statement, not later
-    # reads of it from inside a closure), so reading .called through it
-    # there specifically - unlike the plain, same-scope read after this
+    # ignore-comment below only covers the assignment statement itself, not
+    # later reads of it from inside a closure), so reading .called through
+    # it there specifically - unlike the plain, same-scope read after this
     # function's own await below - fails "has no attribute called". This
     # mock is what the attribute actually holds at runtime either way.
     mock_start_tracking = MagicMock()
