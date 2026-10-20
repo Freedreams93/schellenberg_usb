@@ -464,6 +464,7 @@ switch it to YAML mode, and paste in everything from `alias:` down.
 | `helfer` | The number helper for this blind, from step 1 |
 | `auf` | Measured seconds for a full **opening** run |
 | `ab` | Measured seconds for a full **closing** run |
+| `min_fahrzeit_doppel` | Optional, in seconds (default `3`): below this travel duration, the redundant second `open_cover`/`close_cover` send is skipped entirely — see the note below |
 | `entity` | The blind's real cover entity from this integration, e.g. `cover.living_room_blind` |
 
 **Script A — for normal use** (dashboards, automations). It does nothing if
@@ -478,15 +479,16 @@ interne_rollladenlogik_fuer_home_assistant:
     - condition: template
       value_template: "{{ ziel | int != states(helfer) | int }}"
     - variables:
+        start_ts: "{{ now().timestamp() }}"
         soll: "{{ ziel | float(0) }}"
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
         richtung_runter: "{{ soll > ist }}"
         dauer: >
           {% set diff = (ist - soll) | abs %} {% set faktor = f_ab if
           richtung_runter else f_auf %} {{ ((diff / 100.0) * faktor) | round(2) }}
-        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
         korrektur_dauer: |
           {% if soll == 0 %}
             {{ (ist / 100.0 * f_auf) | round(2) }}
@@ -503,14 +505,18 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.open_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.open_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.open_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ richtung_runter }}"
@@ -518,14 +524,20 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.close_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.close_cover
+                  target:
+                    entity_id: "{{ entity }}"
+    - variables:
+        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -569,10 +581,12 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
   max: 12
   sequence:
     - variables:
+        start_ts: "{{ now().timestamp() }}"
         soll: "{{ ziel | float(0) }}"
         ist: "{{ states(helfer) | float(0) }}"
         f_auf: "{{ auf | float(25) }}"
         f_ab: "{{ ab | float(25) }}"
+        min_fahrzeit_doppel: "{{ min_fahrzeit_doppel | default(3) | float(3) }}"
         reset_richtung_runter: "{{ soll >= 50 }}"
         richtung_runter: |
           {% if soll == ist %}
@@ -592,7 +606,6 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             {% set faktor = f_ab if richtung_runter else f_auf %}
             {{ ((diff / 100.0) * faktor) | round(2) }}
           {% endif %}
-        rest_dauer: "{{ [0, dauer - 1.0] | max | round(2) }}"
         korrektur_dauer: |
           {% if soll == 0 or (soll == ist and not reset_richtung_runter) %}
             {{ (ist / 100.0 * f_auf) | round(2) }}
@@ -609,14 +622,18 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.open_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.open_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.open_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ richtung_runter }}"
@@ -624,14 +641,20 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.close_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.close_cover
-              target:
-                entity_id: "{{ entity }}"
+            - if:
+                - condition: template
+                  value_template: "{{ dauer >= min_fahrzeit_doppel }}"
+              then:
+                - delay:
+                    hours: 0
+                    minutes: 0
+                    seconds: 0.3
+                    milliseconds: 0
+                - action: cover.close_cover
+                  target:
+                    entity_id: "{{ entity }}"
+    - variables:
+        rest_dauer: "{{ [0, dauer - (now().timestamp() - start_ts)] | max | round(2) }}"
     - delay: "{{ rest_dauer }}"
     - choose:
         - conditions:
@@ -769,30 +792,55 @@ Alexa, so each blind doesn't show up twice in the Alexa app.
 - The 0–100 scale used above is this helper's own convention (0 = open, 100
   = closed) and is independent of the position this integration tracks
   internally on the real `cover.*` entity — the two don't need to match.
-- Both scripts send `open_cover`/`close_cover` twice, one second apart,
-  before waiting out the calculated duration. This is a small safety margin
-  in case a single RF command is missed.
+- Both scripts send `open_cover`/`close_cover` twice, 0.3 seconds apart, as
+  a small safety margin in case a single RF command is missed — but only
+  when the calculated move takes at least `min_fahrzeit_doppel` seconds
+  (default 3; override it per call if a blind needs a different cutoff).
+  `open_cover`/`close_cover` on this integration's own `cover.*` entity wait
+  for the stick's reply before returning, and retry for as long as it
+  answers busy, so neither send is always instant. For a short move, that
+  pair of sends plus the gap between them can alone take longer than the
+  whole intended travel time — the blind would already be past its target
+  before the script even starts counting down the rest of the wait.
+  Skipping the second send below the threshold keeps short moves precise;
+  moves at or above it keep the extra safety margin.
+- `start_ts` and the second `rest_dauer` (recomputed right after the
+  open/close `choose:` block, replacing the first, rougher estimate) measure
+  how much time the sends above actually took, rather than assuming a fixed
+  value — this corrects for whatever the stick's reply/retry time turned out
+  to be, on top of the threshold logic above.
 - When the target is exactly 0 or 100, the scripts intentionally keep
   driving into the mechanical end stop instead of stopping at the
   calculated time, which corrects any position drift that built up over
   previous moves.
-- Every open, close, and stop command - including the ones these scripts
-  send - goes out with no retry: once the stick has accepted an RF command
-  there is nothing meaningful to resend, since the Schellenberg RF link
-  never confirms that a motor actually received a frame to begin with
-  (only the USB stick's own transmitter on/off is ever visible). Open and
-  close do briefly wait (a few seconds at most, best-effort) for the stick
-  to report itself idle before sending, so a command issued while another
-  blind's transmission is still in flight is delayed rather than silently
-  dropped - stop is deliberately the one exception and stays instant/
-  unwaited, so a manual stop press is never queued behind anything. If the
-  stick still happens to answer that it is busy right as a command goes
-  out (`Transmit error - stick busy`), that reply is only logged, not
-  acted on for any of these three - it is not a sign of a problem, just
-  the stick momentarily catching up. This differs from other, non-movement
-  requests (raw RF payload testing, teach/pairing, and similar), which
-  wait for an idle stick and retry for as long as the stick keeps
-  reporting busy, with no retry limit.
+- Stop - including any `stop_cover` these scripts might trigger - goes out
+  with no retry and no wait: once the stick has accepted an RF command there
+  is nothing meaningful to resend, since the Schellenberg RF link never
+  confirms that a motor actually received a frame to begin with (only the
+  USB stick's own transmitter on/off is ever visible), and a manual stop
+  press must stay instant rather than ever being queued behind anything.
+  Open and close are different: both wait (a few seconds at most,
+  best-effort) for the stick to report itself idle before sending, and if
+  the stick still answers that it is busy right as the command goes out
+  (`Transmit error - stick busy`), they keep retrying - with no limit on
+  the number of attempts, the same policy raw RF payload testing,
+  teach/pairing, and similar non-movement requests already use - but for
+  no longer than 15 seconds in total. Several blinds commanded together
+  are serialized one at a time rather than raced against each other, so a
+  busy reply to one is normal, not a sign of a problem, and does not mean
+  its command is lost - it is simply retried once the stick is free; that
+  15-second budget also only starts once a blind's own turn actually
+  arrives, not while it is still waiting behind others. A stop for a
+  blind that is still waiting out one of these retries ends that wait
+  immediately instead of letting it resend the open/close command after
+  the stop has already gone out. Because retrying now happens one blind
+  at a time, a blind that is stuck retrying - stick still busy, or not
+  answering at all - also holds up every other blind's own open/close
+  behind it for as long as it keeps trying: pressing **Stop** on that
+  specific blind ends its wait and frees the others right away; failing
+  that, it gives up on its own after 15 seconds, the same way any other
+  failed open/close command does (the command is reported as failed, and
+  diagnostics show the stick reported busy repeatedly and needs a reset).
 
 ## Optional: synchronizing multiple blinds from one switch (example automation)
 
@@ -974,11 +1022,12 @@ approach is:
    computed once and forgotten.
 
 Because the USB stick can only transmit one command at a time, sending many
-`set_cover_position` calls in the same second can also make the stick report
-that it is briefly busy; see
-[Developer tools refuse commands](#developer-tools-refuse-commands-pending-transmit-or-busy-stick).
-Spreading the moves out, as the `delay` steps above already do, avoids that
-in practice.
+`set_cover_position` calls in the same second can make the stick briefly
+report busy. That is not a lost command - open and close retry automatically
+until the stick accepts them (see the note on open/close behavior earlier in
+this section) - but each one still has to wait its turn, so spreading the
+moves out, as the `delay` steps above already do, keeps them synchronized
+more tightly than letting several queue up back to back would.
 
 ## Advanced protocol notes
 

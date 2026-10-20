@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +56,36 @@ DIAGNOSTIC_TRANSMIT_SOURCES = frozenset({"developer_tools", "service"})
 # payload while the previous one is still in flight on the shared serial
 # line.
 TRANSMIT_IDLE_TIMEOUT = 5.0
+
+# How long control_blind_with_retry() waits, after one of its own writes,
+# for the stick's t1 (accepted) or tE (busy) reply before assuming neither
+# arrived and retrying anyway. Real hardware answers within tens of
+# milliseconds - confirmed from real logs showing write-to-t1/tE gaps under
+# 30ms even when several blinds contend for the stick at once - so this is a
+# generous multiple of that, not a tuned budget. A timeout here is treated
+# the same as a busy reply (retry), never as success: staying silent is not
+# evidence the stick accepted the write.
+MOVE_ACK_TIMEOUT = 1.0
+
+# Caps how long control_blind_with_retry() keeps retrying a single move
+# once it already holds _move_lock - not how long a call waits to acquire
+# that lock in the first place, which is unbounded queueing behind other
+# blinds and not part of this budget at all. Without this, a stick that
+# stayed persistently busy (or never acked at all) for one device_id would
+# hold the hub-wide lock open-endedly and block every other blind's own
+# open/close behind it - a new coupling between blinds that control_blind()
+# alone never had, since each of its writes was always instant and
+# independent. 15s comfortably covers several full retry cycles even at
+# TRANSMIT_IDLE_TIMEOUT's and MOVE_ACK_TIMEOUT's own worst case (busy
+# replies in normal operation arrive within tens of milliseconds, per real
+# logs - see MOVE_ACK_TIMEOUT's own comment - so this is not a budget meant
+# to be exhausted in practice) without leaving every other blind
+# unresponsive for long. Giving up this way is indistinguishable, to
+# callers, from any other control_blind_with_retry() failure: it latches
+# _busy_latched, same as send_command()'s own exhausted-retry path, so the
+# existing "busy_latched" block reason explains it in the UI without a new
+# translation string.
+MOVE_RETRY_OVERALL_TIMEOUT = 15.0
 
 
 def check_serial_port(port: str) -> None:
@@ -211,6 +242,43 @@ class SchellenbergUsbApi:
         self._transmitter_idle = asyncio.Event()
         self._transmitter_idle.set()
         self._busy_latched = False
+
+        # control_blind_with_retry() - the retrying path async_open_cover()/
+        # async_close_cover() use - gets its own single-flight lock and ack
+        # signal, deliberately separate from _transmit_lock/
+        # _pending_retry_command above. Those are send_command()'s own
+        # bookkeeping for teach/pairing/raw-transmit, sized for exactly one
+        # in-flight command; routing blind moves through that same single
+        # slot was tried before (git history) and a second contending move
+        # silently clobbered the first's retry tracking, undetected because
+        # it was never exercised by more than two commands close together.
+        # _move_lock is held for a whole write-then-maybe-retry-until-
+        # accepted cycle, not just the write, so a second blind commanded
+        # moments later genuinely queues behind it instead of racing it -
+        # several entities independently waiting on one shared "idle" event
+        # can all observe idle between the same two ACKs and all write in
+        # the same instant, confirmed from a real log showing six writes
+        # within 15ms of each other and five of them answered "tE". A lock
+        # held across the full cycle makes that race structurally
+        # impossible instead of merely unlikely.
+        self._move_lock = asyncio.Lock()
+        # Which blind's move control_blind_with_retry() is currently
+        # attempting (write, maybe-retry) - read by cancel_pending_move() so
+        # a stop for that same blind can end a stale retry loop instead of
+        # letting it resend after the stop, the exact collision that made
+        # routing moves through the busy-retry cycle get reverted before.
+        self._move_in_progress_device_id: str | None = None
+        # Set by cancel_pending_move() when it matches _move_in_progress_
+        # device_id; control_blind_with_retry() checks this at each retry
+        # boundary and gives up (returns False) rather than writing again.
+        self._move_cancel_device_id: str | None = None
+        # True only between a move's write and learning its outcome;
+        # _handle_message's t1/tE branches only touch _move_ack_result/
+        # _move_ack_event while this is True, so they never fire for a t1/
+        # tE that belongs to an unrelated send_command()-tracked transmission.
+        self._move_awaiting_ack = False
+        self._move_ack_event = asyncio.Event()
+        self._move_ack_result: bool | None = None  # True=accepted, False=busy
 
     async def connect(self) -> bool:
         """Establish, verify, and initialize the serial connection."""
@@ -418,6 +486,14 @@ class SchellenbergUsbApi:
                 # _retry_count's attempt number starts over from here,
                 # counting busy answers in a row rather than per connection.
                 self._retry_count = 0
+                if self._move_awaiting_ack:
+                    # This t1 is the reply to control_blind_with_retry()'s
+                    # own most recent write - see that method - never to a
+                    # send_command()-tracked one, since moves and pairing
+                    # traffic cannot overlap (_transmit_capability_block_
+                    # reason() refuses a blind move while pairing is active).
+                    self._move_ack_result = True
+                    self._move_ack_event.set()
                 _LOGGER.log(
                     level,
                     "ACK start response=%s source=%s",
@@ -453,6 +529,14 @@ class SchellenbergUsbApi:
                 if self._last_transmit_source in DIAGNOSTIC_TRANSMIT_SOURCES
                 else logging.DEBUG
             )
+            if self._move_awaiting_ack:
+                # Same reasoning as the t1 branch above: this tE is the
+                # reply to control_blind_with_retry()'s own write, handled
+                # entirely by that method's own retry loop - independent of,
+                # and never touching, _pending_retry_command/_retry_task
+                # below, which remain send_command()'s alone.
+                self._move_ack_result = False
+                self._move_ack_event.set()
             if not self._pending_retry_command:
                 # control_blind() (open/close/stop) never sets this - see
                 # its own docstring - so a busy reply to one of those three
@@ -1346,6 +1430,147 @@ class SchellenbergUsbApi:
             self._control_blind_write_pending_conflict = True
         return True
 
+    @callback
+    def cancel_pending_move(self, device_id: str) -> None:
+        """End device_id's in-flight move retry loop, if it has one.
+
+        Called by async_stop_cover() and the auto-stop-at-target path in
+        cover.py right before they send a stop, so a
+        control_blind_with_retry() call still waiting out a busy stick for
+        *this same blind* gives up instead of resending the open/close
+        command after the stop has already gone out - the exact collision
+        that made routing moves through a busy-retry cycle get reverted
+        once before (see async_stop_cover()'s own docstring). A no-op
+        whenever device_id has no move currently in progress, which is the
+        common case for most stops - never blocks, never raises, safe to
+        call unconditionally before every stop.
+
+        Deliberately keyed off _move_in_progress_device_id rather than
+        setting _move_cancel_device_id unconditionally: a stop for a blind
+        with no move in flight must not leave a stale cancellation sitting
+        around for that same blind's next, completely unrelated move to
+        trip over.
+        """
+        if self._move_in_progress_device_id == device_id:
+            self._move_cancel_device_id = device_id
+
+    async def control_blind_with_retry(
+        self,
+        device_enum: str,
+        action: str,
+        *,
+        device_id: str | None = None,
+        source: str = "cover",
+    ) -> bool:
+        """Open or close a blind, retrying "stick busy" until accepted.
+
+        Never call this for CMD_STOP - stop must stay exactly as instant
+        and unretried as control_blind() itself already is; see that
+        method's and async_stop_cover()'s own docstrings for why. This
+        exists only for async_open_cover()/async_close_cover().
+
+        Serializes hub-wide through _move_lock, held for this whole
+        write-then-maybe-retry-until-accepted cycle rather than just the
+        write - see _move_lock's own comment in __init__ for the race this
+        closes that a shared "wait for idle, then write" pattern does not:
+        confirmed from a real log, several blinds commanded together can
+        all observe the transmitter idle between the same two ACKs and all
+        write within the same ~15ms window, of which the stick then accepts
+        exactly one and answers "tE" to the rest - which control_blind()
+        neither waits for nor retries on its own, so those commands used to
+        vanish rather than merely arrive late. Holding this lock across the
+        full cycle means a second blind's call genuinely waits in line
+        instead of racing the first for the one write that matters.
+
+        Retried on "tE" with no limit on the number of attempts, like
+        send_command()'s own busy-retry cycle - same policy, independent
+        machinery (see _move_lock's comment in __init__ for why this does
+        not simply reuse _pending_retry_command): a persistently busy
+        stick is retried rather than the command being abandoned after
+        some fixed count, since in practice "busy" here almost always
+        just means another blind's own ~1.1-1.2s transmission is still in
+        flight, not a genuinely stuck stick. Elapsed time is bounded,
+        though, by MOVE_RETRY_OVERALL_TIMEOUT - see its own comment for
+        why unlimited attempts must not also mean unlimited time spent
+        holding the hub-wide lock.
+
+        Cancellation (cancel_pending_move()) and the overall timeout are
+        both checked once per loop iteration, before that iteration's
+        wait-for-idle and write: a stop issued for this same device_id, or
+        the deadline passing, ends this loop (returns False) before its
+        next write, rather than letting an already-queued retry resend the
+        move late. Best-effort only, like _wait_for_transmitter_idle()
+        itself: either arriving while already inside a long idle-wait is
+        not preempted mid-wait, only picked up afterwards - in practice
+        that wait almost always resolves within about 1.2s (one transmit
+        cycle), not its full 5s budget, so the realistic worst case is
+        short.
+        """
+        if action not in (CMD_UP, CMD_DOWN):
+            # CMD_STOP, or anything else, must never reach here - see the
+            # docstring above.
+            _LOGGER.error(
+                "control_blind_with_retry blocked reason=not_a_move source=%s "
+                "action=%s",
+                source,
+                action,
+            )
+            return False
+        async with self._move_lock:
+            self._move_in_progress_device_id = device_id
+            # Starts now, once the lock is actually held - not when this
+            # call was first made. Time spent waiting to acquire _move_
+            # lock behind other blinds is ordinary queueing, not part of
+            # this device_id's own retry budget.
+            retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
+            try:
+                while True:
+                    if self._move_cancel_device_id == device_id:
+                        self._move_cancel_device_id = None
+                        return False
+                    if time.monotonic() >= retry_deadline:
+                        _LOGGER.warning(
+                            "Giving up on move after retrying for %.0fs with "
+                            "no accept source=%s device_id=%s action=%s",
+                            MOVE_RETRY_OVERALL_TIMEOUT,
+                            source,
+                            device_id or "unknown",
+                            action,
+                        )
+                        self._busy_latched = True
+                        return False
+                    await self._wait_for_transmitter_idle("sending a move command")
+                    self._move_ack_event.clear()
+                    self._move_ack_result = None
+                    self._move_awaiting_ack = True
+                    sent = await self.control_blind(
+                        device_enum, action, device_id=device_id, source=source
+                    )
+                    if not sent:
+                        self._move_awaiting_ack = False
+                        return False
+                    try:
+                        await asyncio.wait_for(
+                            self._move_ack_event.wait(), timeout=MOVE_ACK_TIMEOUT
+                        )
+                    except TimeoutError:
+                        _LOGGER.warning(
+                            "No t1/tE reply to move write within %.1fs "
+                            "source=%s device_id=%s - retrying",
+                            MOVE_ACK_TIMEOUT,
+                            source,
+                            device_id or "unknown",
+                        )
+                    self._move_awaiting_ack = False
+                    if self._move_ack_result is True:
+                        return True
+                    # False (busy) or None (no reply at all, treated the
+                    # same way - see the docstring) - retry, after the same
+                    # brief pause send_command()'s own retry uses.
+                    await asyncio.sleep(0.1)
+            finally:
+                self._move_in_progress_device_id = None
+
     def initialize_next_device_enum(self) -> str:
         """Get the next available device enum based on registered devices.
 
@@ -1684,6 +1909,18 @@ class SchellenbergUsbApi:
             self._retry_task.cancel()
         self._retry_task = None
 
+        # Unstick a control_blind_with_retry() loop that may be waiting on
+        # _move_ack_event right now: treating this as "busy" wakes it
+        # immediately instead of leaving it to time out on its own (up to
+        # MOVE_ACK_TIMEOUT). It loops back to control_blind(), which now
+        # fails outright on the disconnected state above, so it returns
+        # False on its very next iteration rather than retrying forever.
+        if self._move_awaiting_ack:
+            self._move_ack_result = False
+            self._move_ack_event.set()
+        self._move_in_progress_device_id = None
+        self._move_cancel_device_id = None
+
         error = ConnectionError(f"serial connection lost: {exc}")
         for future in (
             self._verify_future,
@@ -1841,6 +2078,14 @@ class SchellenbergUsbApi:
         if self._retry_task is not None and not self._retry_task.done():
             self._retry_task.cancel()
         self._retry_task = None
+        # Same reasoning as handle_connection_lost(): wake a
+        # control_blind_with_retry() loop that may be waiting right now
+        # instead of leaving it to its own timeout.
+        if self._move_awaiting_ack:
+            self._move_ack_result = False
+            self._move_ack_event.set()
+        self._move_in_progress_device_id = None
+        self._move_cancel_device_id = None
         stop_task = self._stop_pairing_task
         self._stop_pairing_task = None
         if (
