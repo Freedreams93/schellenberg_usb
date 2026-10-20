@@ -1778,6 +1778,63 @@ async def test_send_raw_transmit_success_normalizes_case_and_sends_payload(
     assert written(connected_api) == [f"{payload}\r\n".encode("ascii")]
 
 
+async def test_send_raw_transmit_blocks_a_concurrent_move_until_it_finishes(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A move racing send_raw_transmit()'s own write must be refused.
+
+    send_raw_transmit() is not teach/pairing and never touches _device_mode
+    either, so pairing_active is the only signal _transmit_capability_
+    block_reason() has to tell a raw send is still in flight - the same
+    reasoning, and the same fix, as teach_motor()'s own equivalent test.
+    Before this was added, control_blind() saw neither signal set and sent
+    straight through, racing this method's own send_command() write for the
+    stick's one RF transmitter.
+    """
+    connected_api._transmitter_idle.clear()  # force a park after the write
+    payload = f"{CMD_TRANSMIT}109{CMD_UP}0000"
+
+    assert connected_api.pairing_active is False
+    task = asyncio.ensure_future(connected_api.send_raw_transmit(payload))
+    await asyncio.sleep(0)  # real yield: let it write, then park on idle
+
+    assert connected_api.pairing_active is True
+    # A different, otherwise-unrelated blind must be blocked too - this is
+    # a stick-wide signal, not scoped to the raw payload's own device/enum.
+    assert await connected_api.control_blind("20", CMD_UP) is False
+    assert written(connected_api) == [f"{payload}\r\n".encode("ascii")]
+
+    connected_api._transmitter_idle.set()  # let the parked wait resolve
+    assert await task is True
+
+    # Cleared again once the send finishes, so a blocked raw send can never
+    # leave every blind permanently stuck behind it.
+    assert connected_api.pairing_active is False
+    assert await connected_api.control_blind("20", CMD_UP) is True
+
+
+async def test_send_raw_transmit_clears_pairing_active_even_when_the_write_fails(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """A failed raw send must not leave every blind permanently blocked.
+
+    Covers the finally block's own reason for existing: an early return
+    from inside the try (a failed write here) must still clear
+    pairing_active, the same way it already does on the clean-success path
+    above.
+    """
+    connected_api._transport.write = Mock(  # type: ignore[method-assign,union-attr]
+        side_effect=OSError("gone")
+    )
+    payload = f"{CMD_TRANSMIT}109{CMD_UP}0000"
+
+    assert await connected_api.send_raw_transmit(payload) is False
+    assert connected_api.pairing_active is False
+
+    connected_api._transport.write = Mock()  # type: ignore[method-assign,union-attr]
+    assert await connected_api.control_blind("20", CMD_UP) is True
+
+
 # ---------------------------------------------------------------------------
 # _handle_message(): the "ss" status frame and the "RFTU_" verification
 # reply. Every other test above feeds _handle_message() an ACK ("t1"/"t0"/

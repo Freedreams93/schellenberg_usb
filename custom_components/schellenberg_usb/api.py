@@ -1498,34 +1498,56 @@ class SchellenbergUsbApi:
             normalized,
             len(normalized),
         )
-        sent = await self.send_command(normalized, source=source)
-        if not sent:
-            _LOGGER.error(
-                "Raw RF transmit result source=%s payload=%s result=write_failed "
+        # Claim the same single-writer signal teach_motor()/
+        # pair_device_and_wait() use so control_blind()/
+        # control_blind_with_retry() refuse every blind's open/close/stop
+        # for as long as this transmit-then-wait-for-idle cycle is in
+        # flight. Without this, a raw payload sent from here could
+        # physically collide on the wire with an unrelated blind's own move
+        # or stop - the same class of bug _pairing_active's teach_motor()
+        # fix closed for teach, left open here until now because a raw
+        # payload is not teach/pairing and _device_mode genuinely does not
+        # change for it either, so "pairing_active" is the only signal
+        # available, same reasoning as teach_motor()'s own. Cleared in the
+        # finally below on every exit path, including a failed write or
+        # idle timeout, so a failed raw send can never leave every blind
+        # permanently blocked.
+        self._pairing_active = True
+        self._update_status()
+        try:
+            sent = await self.send_command(normalized, source=source)
+            if not sent:
+                _LOGGER.error(
+                    "Raw RF transmit result source=%s payload=%s "
+                    "result=write_failed stick_ack_only=True motor_result=unknown",
+                    source,
+                    normalized,
+                )
+                return False
+
+            if not await self._wait_for_transmitter_idle("finishing raw RF transmit"):
+                _LOGGER.error(
+                    "Raw RF transmit result source=%s payload=%s "
+                    "result=ack_timeout stick_ack_only=True motor_result=unknown",
+                    source,
+                    normalized,
+                )
+                self._busy_latched = True
+                return False
+
+            _LOGGER.log(
+                logging.WARNING
+                if source in DIAGNOSTIC_TRANSMIT_SOURCES
+                else logging.DEBUG,
+                "Raw RF transmit result source=%s payload=%s result=written "
                 "stick_ack_only=True motor_result=unknown",
                 source,
                 normalized,
             )
-            return False
-
-        if not await self._wait_for_transmitter_idle("finishing raw RF transmit"):
-            _LOGGER.error(
-                "Raw RF transmit result source=%s payload=%s result=ack_timeout "
-                "stick_ack_only=True motor_result=unknown",
-                source,
-                normalized,
-            )
-            self._busy_latched = True
-            return False
-
-        _LOGGER.log(
-            logging.WARNING if source in DIAGNOSTIC_TRANSMIT_SOURCES else logging.DEBUG,
-            "Raw RF transmit result source=%s payload=%s result=written "
-            "stick_ack_only=True motor_result=unknown",
-            source,
-            normalized,
-        )
-        return True
+            return True
+        finally:
+            self._pairing_active = False
+            self._update_status()
 
     async def control_blind(
         self,
