@@ -201,20 +201,17 @@ async def test_async_open_cover_does_not_start_tracking_before_retry_succeeds(
     other blinds racing past its own target before its command is even sent.
 
     control_blind_with_retry() serializes hub-wide through api.py's own
-    _move_lock, held for an entire write-then-retry-until-accepted cycle -
-    so a blind commanded while another one's cycle is still in flight can
-    sit waiting for that lock for a while before its own command reaches
-    the stick even once. If _move_start_time/_move_start_position and the
+    _move_lock and does not return until its command is actually accepted
+    - so a blind commanded while another one's own transmission is still
+    in flight can sit waiting a while before its own command reaches the
+    stick even once. If _move_start_time/_move_start_position and the
     tracking loop were already running during that wait (as they used to
     be - started optimistically before this same await, not after it),
     the elapsed-time estimate would count that queued wait as travel time
     too: for a short enough leg behind enough other blinds in the same
     burst, the estimate could reach the target - and the loop would act on
     that by firing its own stop - before this blind's own open/close
-    command had been transmitted even once. cancel_pending_move() cannot
-    catch that case either, since it is a no-op until this device_id
-    actually holds _move_lock (see its own docstring), which a call still
-    waiting for the lock has not yet done.
+    command had been transmitted even once.
 
     Proven here by a control_blind_with_retry() stand-in that looks at the
     entity's own state *from inside the call*, before returning - exactly

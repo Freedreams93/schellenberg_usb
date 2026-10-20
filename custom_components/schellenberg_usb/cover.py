@@ -1255,10 +1255,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # moving: for a short enough leg queued behind enough other blinds
         # in the same burst, the elapsed-time estimate could reach the
         # target before this blind's own command had been transmitted even
-        # once. cancel_pending_move() cannot catch that case either - it is
-        # a no-op until this device_id actually holds _move_lock (see its
-        # own docstring), which a call still waiting for the lock has not
-        # yet done - so the real command would go out afterwards with no
+        # once - so the real command would go out afterwards with no
         # tracking left running to stop it at the target.
         self._move_start_position = self._attr_current_cover_position
         self._move_start_time = time.monotonic()

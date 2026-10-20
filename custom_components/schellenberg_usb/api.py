@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -87,11 +88,14 @@ MOVE_ACK_TIMEOUT = 1.0
 # translation string.
 MOVE_RETRY_OVERALL_TIMEOUT = 15.0
 
-# Total time control_blind_stop() spends, combined, trying to acquire
-# _move_lock and then retrying on "tE" once it holds it, before giving up
+# Total time control_blind_stop() spends, combined, waiting for the
+# transmitter to go idle, acquiring _move_lock (with priority - see
+# _PriorityLock), and retrying on "tE" once it holds it, before giving up
 # and falling back to a plain control_blind() write - see that method's
-# own docstring for why it reuses _move_lock rather than a second,
-# independent one. A manual stop must never queue behind a move's full
+# own docstring for why it shares _move_lock rather than a second,
+# independent one, and why priority is what keeps this bounded by one
+# transmit cycle rather than however many other blinds' moves happen to be
+# queued. A manual stop must never queue behind a move's full
 # MOVE_RETRY_OVERALL_TIMEOUT budget, so this is deliberately much shorter:
 # comfortably more than one full transmit cycle (~1.1-1.2s per real logs,
 # the same figure MOVE_ACK_TIMEOUT's own comment cites) so the realistic
@@ -100,6 +104,100 @@ MOVE_RETRY_OVERALL_TIMEOUT = 15.0
 # inside this budget, while a stick stuck retrying for seconds on end
 # still leaves stop falling back quickly instead of hanging.
 STOP_RETRY_BUDGET = 2.0
+
+
+class _PriorityLock:
+    """An exclusive async lock where a "priority" acquire jumps the queue.
+
+    Behaves exactly like asyncio.Lock for ordinary (priority=False)
+    acquires: free lock with nobody already queued is taken immediately,
+    otherwise the caller queues and release() wakes the oldest waiter,
+    first-come-first-served. The one addition is a second queue for
+    priority=True acquires, which release() always drains before the
+    ordinary one - so a priority caller is served ahead of any ordinary
+    caller that is still *waiting*, though never ahead of whoever
+    *currently holds* the lock, and never ahead of another, earlier
+    priority waiter.
+
+    Exists only so control_blind_stop() can share exclusion with
+    control_blind_with_retry() against the exact write-instant each one
+    cares about (see _move_lock's own comment in __init__ for why a
+    second, independent lock does not work here) without a stop queueing
+    behind some *other* blind's own already-queued move the way a plain
+    asyncio.Lock would - confirmed from a real log where a manual stop,
+    requested before a second blind's own close even reached the lock,
+    still waited out that unrelated close's entire ~1.1-1.2s transmit
+    cycle, because the lock gave it no way to go first. Both callers now
+    only ever hold this lock for the brief write-then-await-ack step, not
+    for an entire wait-for-idle-then-retry cycle (see both their own
+    docstrings), so in the common case there is nothing queued for a
+    priority acquire to jump ahead of in the first place; this exists for
+    the genuine contention that remains when two callers want to write at
+    close to the same instant.
+
+    The implementation mirrors CPython's own asyncio.Lock fairness
+    mechanics (see its acquire()/release()/_wake_up_first()): release()
+    does not remove the woken waiter from its queue - the waiter removes
+    itself, once it actually resumes, in a finally block - so a brand-new
+    acquire() arriving in the gap between release() and that resumption
+    cannot see an (incorrectly) empty queue and cut in line ahead of a
+    waiter that has already been woken but not yet run.
+    """
+
+    def __init__(self) -> None:
+        self._locked = False
+        self._priority_waiters: deque[asyncio.Future[None]] = deque()
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    def locked(self) -> bool:
+        """Return True while some caller currently holds the lock."""
+        return self._locked
+
+    async def acquire(self, *, priority: bool = False) -> None:
+        """Wait for and take the lock, optionally ahead of ordinary waiters."""
+        if not self._locked and not self._has_live_waiters():
+            self._locked = True
+            return
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        queue = self._priority_waiters if priority else self._waiters
+        queue.append(fut)
+        try:
+            try:
+                await fut
+            finally:
+                queue.remove(fut)
+        except asyncio.CancelledError:
+            if not self._locked:
+                self._wake_up_first()
+            raise
+        self._locked = True
+
+    def release(self) -> None:
+        """Release the lock, waking the next waiter (priority queue first)."""
+        if not self._locked:
+            raise RuntimeError("Lock is not acquired.")
+        self._locked = False
+        self._wake_up_first()
+
+    def _has_live_waiters(self) -> bool:
+        return any(
+            not fut.cancelled() for fut in (*self._priority_waiters, *self._waiters)
+        )
+
+    def _wake_up_first(self) -> None:
+        for queue in (self._priority_waiters, self._waiters):
+            if queue:
+                fut = queue[0]
+                if not fut.done():
+                    fut.set_result(None)
+                return
+
+    async def __aenter__(self) -> _PriorityLock:
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.release()
 
 
 def check_serial_port(port: str) -> None:
@@ -266,25 +364,35 @@ class SchellenbergUsbApi:
         # slot was tried before (git history) and a second contending move
         # silently clobbered the first's retry tracking, undetected because
         # it was never exercised by more than two commands close together.
-        # _move_lock is held for a whole write-then-maybe-retry-until-
-        # accepted cycle, not just the write, so a second blind commanded
-        # moments later genuinely queues behind it instead of racing it -
-        # several entities independently waiting on one shared "idle" event
-        # can all observe idle between the same two ACKs and all write in
-        # the same instant, confirmed from a real log showing six writes
-        # within 15ms of each other and five of them answered "tE". A lock
-        # held across the full cycle makes that race structurally
-        # impossible instead of merely unlikely.
+        # _move_lock is held only for the brief write-then-await-ack step of
+        # one attempt, not for the whole wait-for-idle-then-maybe-retry
+        # cycle around it - see control_blind_with_retry()'s and
+        # control_blind_stop()'s own docstrings for why the wait itself
+        # happens outside the lock. What the lock does guarantee: several
+        # entities independently waiting on one shared "idle" event can all
+        # observe idle between the same two ACKs, but only one of them ever
+        # gets to actually check-idle-and-write at a time - confirmed from a
+        # real log showing six writes within 15ms of each other and five of
+        # them answered "tE" before this existed. Each attempt re-checks
+        # idle immediately after acquiring the lock (another holder may have
+        # written, and gone busy again, in between) and simply loops back to
+        # waiting - lock-free - rather than writing into a wire that just
+        # went busy again.
         #
-        # control_blind_stop() also briefly acquires this same lock (with
-        # its own short timeout, never queueing for the full cycle above)
-        # rather than getting a second, independent one of its own: two
-        # separate locks would not exclude each other, so a stop-task and
-        # a move-task could still each observe the shared idle event go
-        # true and race to write at the same instant - exactly the race
-        # this lock exists to make impossible for two moves, reopened for
-        # move-vs-stop if stop did not share it.
-        self._move_lock = asyncio.Lock()
+        # control_blind_stop() shares this same lock, with priority (see
+        # _PriorityLock above), rather than getting a second, independent
+        # one of its own: two separate locks would not exclude each other,
+        # so a stop-task and a move-task could still each observe the
+        # shared idle event go true and race to write at the same instant -
+        # exactly the race this lock exists to make impossible for two
+        # moves, reopened for move-vs-stop if stop did not share it. Giving
+        # stop priority is what actually keeps it from queueing behind an
+        # unrelated blind's own pending move - confirmed from a real log
+        # where a manual stop, requested before a second blind's own close
+        # even reached this lock, still waited out that close's entire
+        # ~1.1-1.2s transmit cycle under an earlier version of this fix that
+        # held the lock across the whole wait, not just the write.
+        self._move_lock = _PriorityLock()
         # Which blind's move control_blind_with_retry() is currently
         # attempting (write, maybe-retry) - read by cancel_pending_move() so
         # a stop for that same blind can end a stale retry loop instead of
@@ -1514,18 +1622,24 @@ class SchellenbergUsbApi:
         anywhere near as long. This exists only for async_open_cover()/
         async_close_cover().
 
-        Serializes hub-wide through _move_lock, held for this whole
-        write-then-maybe-retry-until-accepted cycle rather than just the
-        write - see _move_lock's own comment in __init__ for the race this
-        closes that a shared "wait for idle, then write" pattern does not:
-        confirmed from a real log, several blinds commanded together can
-        all observe the transmitter idle between the same two ACKs and all
-        write within the same ~15ms window, of which the stick then accepts
-        exactly one and answers "tE" to the rest - which control_blind()
-        neither waits for nor retries on its own, so those commands used to
-        vanish rather than merely arrive late. Holding this lock across the
-        full cycle means a second blind's call genuinely waits in line
-        instead of racing the first for the one write that matters.
+        Waits for the transmitter to go idle *outside* _move_lock, then
+        acquires it only for the brief check-idle-and-write-then-await-ack
+        step of one attempt - see _move_lock's own comment in __init__ for
+        why: several blinds commanded together can all observe the
+        transmitter idle between the same two ACKs and all write within the
+        same ~15ms window, of which the stick then accepts exactly one and
+        answers "tE" to the rest - which control_blind() neither waits for
+        nor retries on its own, so those commands used to vanish rather
+        than merely arrive late. The lock makes that race structurally
+        impossible: once held, the wire is re-checked idle one more time
+        (another holder may have written, and gone busy again, while this
+        attempt was queued for the lock) - still busy, this loops back to
+        waiting for idle again, lock-free, rather than writing into it.
+        Not holding the lock across the wait itself (an earlier version of
+        this fix did) is what lets a higher-priority control_blind_stop()
+        call go first once the wire actually clears, instead of queueing
+        behind every blind's own pending move the way holding the lock
+        throughout the wait did - confirmed from a real log.
 
         Retried on "tE" with no limit on the number of attempts, like
         send_command()'s own busy-retry cycle - same policy, independent
@@ -1535,9 +1649,9 @@ class SchellenbergUsbApi:
         some fixed count, since in practice "busy" here almost always
         just means another blind's own ~1.1-1.2s transmission is still in
         flight, not a genuinely stuck stick. Elapsed time is bounded,
-        though, by MOVE_RETRY_OVERALL_TIMEOUT - see its own comment for
-        why unlimited attempts must not also mean unlimited time spent
-        holding the hub-wide lock.
+        though, by MOVE_RETRY_OVERALL_TIMEOUT, measured from this call's
+        very first attempt - see its own comment for why unlimited attempts
+        must not also mean unlimited elapsed time.
 
         Cancellation (cancel_pending_move()) and the overall timeout are
         both checked once per loop iteration, before that iteration's
@@ -1561,30 +1675,36 @@ class SchellenbergUsbApi:
                 action,
             )
             return False
-        async with self._move_lock:
-            self._move_in_progress_device_id = device_id
-            # Starts now, once the lock is actually held - not when this
-            # call was first made. Time spent waiting to acquire _move_
-            # lock behind other blinds is ordinary queueing, not part of
-            # this device_id's own retry budget.
-            retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
-            try:
-                while True:
-                    if self._move_cancel_device_id == device_id:
-                        self._move_cancel_device_id = None
-                        return False
-                    if time.monotonic() >= retry_deadline:
-                        _LOGGER.warning(
-                            "Giving up on move after retrying for %.0fs with "
-                            "no accept source=%s device_id=%s action=%s",
-                            MOVE_RETRY_OVERALL_TIMEOUT,
-                            source,
-                            device_id or "unknown",
-                            action,
-                        )
-                        self._busy_latched = True
-                        return False
-                    await self._wait_for_transmitter_idle("sending a move command")
+        # Set for this call's whole duration, not just once _move_lock is
+        # actually held - cancel_pending_move() can then end this call even
+        # while it is still only waiting for idle, before ever reaching the
+        # lock, which is strictly more responsive than waiting for that.
+        self._move_in_progress_device_id = device_id
+        retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
+        try:
+            while True:
+                if self._move_cancel_device_id == device_id:
+                    self._move_cancel_device_id = None
+                    return False
+                if time.monotonic() >= retry_deadline:
+                    _LOGGER.warning(
+                        "Giving up on move after retrying for %.0fs with "
+                        "no accept source=%s device_id=%s action=%s",
+                        MOVE_RETRY_OVERALL_TIMEOUT,
+                        source,
+                        device_id or "unknown",
+                        action,
+                    )
+                    self._busy_latched = True
+                    return False
+                await self._wait_for_transmitter_idle("sending a move command")
+                async with self._move_lock:
+                    if not self._transmitter_idle.is_set():
+                        # Lost the race for the lock to someone else who
+                        # wrote in the meantime - the wire is busy again,
+                        # so wait our turn afresh instead of writing into
+                        # it.
+                        continue
                     self._move_ack_event.clear()
                     self._move_ack_result = None
                     self._move_awaiting_ack = True
@@ -1607,14 +1727,14 @@ class SchellenbergUsbApi:
                             device_id or "unknown",
                         )
                     self._move_awaiting_ack = False
-                    if self._move_ack_result is True:
-                        return True
-                    # False (busy) or None (no reply at all, treated the
-                    # same way - see the docstring) - retry, after the same
-                    # brief pause send_command()'s own retry uses.
-                    await asyncio.sleep(0.1)
-            finally:
-                self._move_in_progress_device_id = None
+                if self._move_ack_result is True:
+                    return True
+                # False (busy) or None (no reply at all, treated the
+                # same way - see the docstring) - retry, after the same
+                # brief pause send_command()'s own retry uses.
+                await asyncio.sleep(0.1)
+        finally:
+            self._move_in_progress_device_id = None
 
     async def control_blind_stop(
         self,
@@ -1623,14 +1743,14 @@ class SchellenbergUsbApi:
         device_id: str | None = None,
         source: str = "cover",
     ) -> bool:
-        """Stop a blind, briefly serialized against moves and other stops.
+        """Stop a blind, served ahead of any blind's own pending move.
 
         async_stop_cover() used to call control_blind() directly for this -
         one immediate, unlocked write, same as open/close used to be before
         control_blind_with_retry() existed for them. That is still exactly
-        what happens here when _move_lock cannot be acquired promptly (see
-        below), so this is never worse than the old behavior; it only adds
-        latency in the case the old behavior always silently lost.
+        what happens here once STOP_RETRY_BUDGET runs out (see below), so
+        this is never worse than the old behavior; it only adds latency in
+        the case the old behavior always silently lost.
 
         That old, lock-free write could still physically collide with
         another write already in flight: another blind's stop sent in the
@@ -1645,55 +1765,54 @@ class SchellenbergUsbApi:
         exact failure mode _move_lock's own comment in __init__ describes
         for two moves sharing only a wait instead of a lock.
 
-        So this reuses _move_lock itself, but only waits up to
-        STOP_RETRY_BUDGET to acquire it - a manual stop must never queue
-        behind a move's full, up-to-MOVE_RETRY_OVERALL_TIMEOUT retry
-        budget. Acquired in time (the common case: the lock is free, or
-        held only for one other stop's or one move's single transmit
-        cycle), this waits for the transmitter to go idle and then writes,
-        exactly as a move does, so stop and move genuinely exclude each
-        other instead of merely racing less often. Not acquired within
-        that budget - a move has been retrying for a while - this falls
-        back to the plain, unlocked control_blind() write described
-        above, at exactly today's existing risk, rather than making the
-        stop press wait any further.
+        So this shares _move_lock itself, requesting priority (see
+        _PriorityLock above) so it is served ahead of any *other* blind's
+        own pending move still waiting for its turn - critical, since this
+        method, like control_blind_with_retry(), only ever holds the lock
+        for the brief check-idle-and-write-then-await-ack step, never for
+        the wait itself, so a stop's own wait is normally for nothing more
+        than whatever is on the wire right now (this blind's own just-fired
+        move, in the collision this fix exists for, or someone else's
+        single transmit cycle), not an unrelated blind's whole queued-up
+        move. STOP_RETRY_BUDGET bounds the combined time spent on that wait,
+        the lock, and any "tE" retries once writing - comfortably more than
+        one full transmit cycle (~1.1-1.2s per real logs), but nowhere near
+        a move's own, much longer MOVE_RETRY_OVERALL_TIMEOUT, so a manual
+        stop can still never queue behind a move's full retry budget the
+        way it could before priority existed to let it go first. Exhausted
+        - the wire or the lock stayed busy throughout, or "tE" kept coming
+        back - this falls back to the plain, unlocked control_blind() write
+        described above, logged as a warning rather than the stop simply
+        vanishing the way it used to before this whole fix existed.
 
-        Once the lock is held, retried on "tE" the same way a move is,
-        reusing the same _move_awaiting_ack/_move_ack_event/_move_ack_
-        result bookkeeping - safe here specifically because holding
-        _move_lock guarantees no move can be in its own write-and-await-
-        ack phase at the same time. Bounded by the same overall
-        STOP_RETRY_BUDGET deadline that bounded the lock acquisition
-        above (time already spent queueing counts against it), and unlike
-        the old plain write, exhausting it is logged as a warning instead
-        of the stop simply vanishing.
+        Once writing, reuses the same _move_awaiting_ack/_move_ack_event/
+        _move_ack_result bookkeeping a move does - safe here specifically
+        because holding _move_lock guarantees no move can be in its own
+        write-and-await-ack phase at the same time.
         """
         deadline = time.monotonic() + STOP_RETRY_BUDGET
-        try:
-            await asyncio.wait_for(self._move_lock.acquire(), timeout=STOP_RETRY_BUDGET)
-        except TimeoutError:
-            _LOGGER.debug(
-                "Stop could not acquire move lock within %.1fs, falling back "
-                "to a plain write source=%s device_id=%s",
-                STOP_RETRY_BUDGET,
-                source,
-                device_id or "unknown",
-            )
-            return await self.control_blind(
-                device_enum, CMD_STOP, device_id=device_id, source=source
-            )
-        try:
-            while True:
-                if time.monotonic() >= deadline:
-                    _LOGGER.warning(
-                        "Giving up on stop after retrying for %.1fs with no "
-                        "accept source=%s device_id=%s",
-                        STOP_RETRY_BUDGET,
-                        source,
-                        device_id or "unknown",
-                    )
-                    return False
-                await self._wait_for_transmitter_idle("sending a stop command")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not await self._wait_for_transmitter_idle(
+                "sending a stop command", timeout=remaining
+            ):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    self._move_lock.acquire(priority=True), timeout=remaining
+                )
+            except TimeoutError:
+                break
+            try:
+                if not self._transmitter_idle.is_set():
+                    # Lost the race for the lock to someone else who wrote
+                    # in the meantime - wait our turn afresh.
+                    continue
                 self._move_ack_event.clear()
                 self._move_ack_result = None
                 self._move_awaiting_ack = True
@@ -1716,11 +1835,21 @@ class SchellenbergUsbApi:
                         device_id or "unknown",
                     )
                 self._move_awaiting_ack = False
-                if self._move_ack_result is True:
-                    return True
-                await asyncio.sleep(0.1)
-        finally:
-            self._move_lock.release()
+            finally:
+                self._move_lock.release()
+            if self._move_ack_result is True:
+                return True
+            await asyncio.sleep(0.1)
+        _LOGGER.warning(
+            "Giving up on stop after %.1fs with no accept, falling back to "
+            "a plain write source=%s device_id=%s",
+            STOP_RETRY_BUDGET,
+            source,
+            device_id or "unknown",
+        )
+        return await self.control_blind(
+            device_enum, CMD_STOP, device_id=device_id, source=source
+        )
 
     def initialize_next_device_enum(self) -> str:
         """Get the next available device enum based on registered devices.

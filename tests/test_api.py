@@ -997,6 +997,227 @@ async def test_control_blind_stop_falls_back_to_a_plain_write_when_the_lock_is_b
         connected_api._move_lock.release()
 
 
+def _blind_payload(enum: str, action: str) -> bytes:
+    """Build the exact bytes control_blind() writes for one command.
+
+    Mirrors control_blind()'s own `raw_payload` f-string so tests can
+    assert which of two concurrently-queued commands actually reached the
+    wire first, without depending on the particular command_id/source
+    values logged around the write.
+    """
+    return f"{CMD_TRANSMIT}{enum}9{action}0000\r\n".encode("ascii")
+
+
+async def test_control_blind_stop_goes_before_an_unrelated_blinds_queued_move(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """Regression for the real log: a stop must not wait out another
+    blind's own already-queued move.
+
+    An earlier version of this fix held _move_lock across the whole
+    wait-for-idle-then-write cycle, so whichever call acquired the lock
+    first - even if it then had nothing to do but wait out the wire -
+    blocked every later caller, a stop included, for that entire transmit
+    cycle (confirmed from a real log: a manual stop requested before a
+    second blind's own close even reached the lock still waited out that
+    close's whole ~1.1-1.2s transmit cycle). Priority (see _PriorityLock)
+    fixes this: once the wire actually clears, a waiting stop goes before
+    a waiting move, regardless of which one asked for the lock earlier.
+    """
+    # Some other transmission is already in flight - stands in for this
+    # same blind's own just-fired move in the real log.
+    connected_api._handle_message("t1")
+
+    # Blind B's own close is queued behind the busy wire - an ordinary
+    # waiter, exactly like Kuechenrolladen's second close in the real log.
+    task_b = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("20", CMD_DOWN, device_id="BBBBBB")
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not task_b.done()
+    assert written(connected_api) == []
+
+    # Blind A's stop now also arrives, queued behind the same busy wire.
+    task_stop = asyncio.ensure_future(
+        connected_api.control_blind_stop("10", device_id="AAAAAA")
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not task_stop.done()
+    assert written(connected_api) == []
+
+    # The wire clears - both are waiting on the same idle event, but the
+    # stop, not B's move, must be the one that actually gets to write next.
+    connected_api._handle_message("t0")
+
+    await _run_until(lambda: len(written(connected_api)) == 1)
+    assert written(connected_api)[-1] == _blind_payload("10", CMD_STOP)
+    assert not task_b.done()
+
+    connected_api._handle_message("t1")  # the stop is accepted
+    assert await asyncio.wait_for(task_stop, timeout=1) is True
+
+    # Only now, once the stop's own transmission has also finished, does
+    # B's move get its turn.
+    connected_api._handle_message("t0")
+    await _run_until(lambda: len(written(connected_api)) == 2)
+    assert written(connected_api)[-1] == _blind_payload("20", CMD_DOWN)
+    connected_api._handle_message("t1")
+    assert await asyncio.wait_for(task_b, timeout=1) is True
+
+
+# ---------------------------------------------------------------------------
+# _PriorityLock: the custom lock control_blind_stop() shares with
+# control_blind_with_retry() via priority=True, exercised directly rather
+# than only indirectly through the two methods above.
+# ---------------------------------------------------------------------------
+
+
+async def test_priority_lock_free_acquire_is_immediate() -> None:
+    lock = api_module._PriorityLock()
+    assert lock.locked() is False
+    await lock.acquire()
+    assert lock.locked() is True
+    lock.release()
+    assert lock.locked() is False
+
+
+async def test_priority_lock_release_without_acquire_raises() -> None:
+    lock = api_module._PriorityLock()
+    with pytest.raises(RuntimeError):
+        lock.release()
+
+
+async def test_priority_lock_ordinary_waiters_stay_fifo() -> None:
+    """Two ordinary acquires queue in arrival order, like asyncio.Lock."""
+    lock = api_module._PriorityLock()
+    await lock.acquire()
+
+    order: list[str] = []
+
+    async def waiter(name: str) -> None:
+        await lock.acquire()
+        order.append(name)
+        lock.release()
+
+    task_a = asyncio.ensure_future(waiter("a"))
+    await asyncio.sleep(0)
+    task_b = asyncio.ensure_future(waiter("b"))
+    await asyncio.sleep(0)
+
+    lock.release()  # hands off to whichever queued first
+    await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=1)
+
+    assert order == ["a", "b"]
+
+
+async def test_priority_lock_priority_jumps_ordinary_waiters() -> None:
+    """A priority acquire is served before an ordinary one still queued.
+
+    The actual bug fix this exists for: control_blind_stop() must not
+    wait behind an unrelated blind's own move that merely asked for the
+    lock earlier.
+    """
+    lock = api_module._PriorityLock()
+    await lock.acquire()
+
+    order: list[str] = []
+
+    async def ordinary_waiter() -> None:
+        await lock.acquire()
+        order.append("ordinary")
+        lock.release()
+
+    async def priority_waiter() -> None:
+        await lock.acquire(priority=True)
+        order.append("priority")
+        lock.release()
+
+    ordinary_task = asyncio.ensure_future(ordinary_waiter())
+    await asyncio.sleep(0)  # ordinary waiter queues first
+    priority_task = asyncio.ensure_future(priority_waiter())
+    await asyncio.sleep(0)
+
+    lock.release()
+    await asyncio.wait_for(asyncio.gather(ordinary_task, priority_task), timeout=1)
+
+    assert order == ["priority", "ordinary"]
+
+
+async def test_priority_lock_priority_never_preempts_the_current_holder() -> None:
+    """Priority jumps other *waiters*, never whoever already holds the lock."""
+    lock = api_module._PriorityLock()
+    await lock.acquire()
+    assert lock.locked() is True
+
+    priority_task = asyncio.ensure_future(lock.acquire(priority=True))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not priority_task.done()  # still held by the first acquire
+
+    lock.release()
+    await asyncio.wait_for(priority_task, timeout=1)
+    assert lock.locked() is True
+    lock.release()
+
+
+async def test_priority_lock_two_priority_waiters_stay_fifo_among_themselves() -> None:
+    lock = api_module._PriorityLock()
+    await lock.acquire()
+
+    order: list[str] = []
+
+    async def waiter(name: str) -> None:
+        await lock.acquire(priority=True)
+        order.append(name)
+        lock.release()
+
+    task_a = asyncio.ensure_future(waiter("a"))
+    await asyncio.sleep(0)
+    task_b = asyncio.ensure_future(waiter("b"))
+    await asyncio.sleep(0)
+
+    lock.release()
+    await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=1)
+
+    assert order == ["a", "b"]
+
+
+async def test_priority_lock_async_context_manager() -> None:
+    lock = api_module._PriorityLock()
+    async with lock:
+        assert lock.locked() is True
+    assert lock.locked() is False
+
+
+async def test_priority_lock_cancelled_waiter_does_not_strand_the_next_one() -> None:
+    """A waiter cancelled before its turn must not block whoever is next.
+
+    Exercises the queue-removal/_wake_up_first() interaction release()
+    relies on (see _PriorityLock's own docstring on mirroring asyncio.
+    Lock's fairness mechanics): if a cancelled waiter were not cleaned up
+    correctly, the next waiter could be left waiting forever even after
+    release() runs.
+    """
+    lock = api_module._PriorityLock()
+    await lock.acquire()
+
+    victim = asyncio.ensure_future(lock.acquire())
+    await asyncio.sleep(0)
+    survivor = asyncio.ensure_future(lock.acquire())
+    await asyncio.sleep(0)
+
+    victim.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await victim
+
+    lock.release()
+    await asyncio.wait_for(survivor, timeout=1)
+    assert lock.locked() is True
+    lock.release()
+
+
 async def test_cancel_pending_move_is_a_noop_without_a_move_in_progress(
     connected_api: SchellenbergUsbApi,
 ) -> None:
