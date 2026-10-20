@@ -35,7 +35,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.schellenberg_usb.const import (
     CMD_DOWN,
-    CMD_STOP,
     CMD_UP,
     CONF_CLOSE_TIME,
     CONF_DEVICE_ENUM,
@@ -156,7 +155,7 @@ async def test_async_close_cover_sends_down_via_control_blind_with_retry(
 async def test_async_open_cover_raises_when_control_blind_with_retry_fails(
     hass: HomeAssistant,
 ) -> None:
-    """Mirrors test_async_stop_cover_raises_when_control_blind_fails for open.
+    """Mirrors test_async_stop_cover_raises_when_control_blind_stop_fails for open.
 
     Regression guard: a failed open used to leave _attr_is_opening stuck
     True, reporting a movement that never physically happened.
@@ -177,7 +176,7 @@ async def test_async_open_cover_raises_when_control_blind_with_retry_fails(
 async def test_async_close_cover_raises_when_control_blind_with_retry_fails(
     hass: HomeAssistant,
 ) -> None:
-    """Mirrors test_async_stop_cover_raises_when_control_blind_fails for close.
+    """Mirrors test_async_stop_cover_raises_when_control_blind_stop_fails for close.
 
     Regression guard: a failed close used to leave _attr_is_closing stuck
     True, reporting a movement that never physically happened.
@@ -286,31 +285,35 @@ async def test_async_close_cover_does_not_start_tracking_before_retry_succeeds(
     mock_start_tracking.assert_called_once_with()
 
 
-async def test_async_stop_cover_sends_stop_via_control_blind(
+async def test_async_stop_cover_sends_stop_via_control_blind_stop(
     hass: HomeAssistant,
 ) -> None:
-    """Stop itself is still one direct, unlocked, unretried control_blind() call.
+    """Stop itself is sent via control_blind_stop(), not the plain control_blind().
 
-    async_stop_cover()'s own initiating stop always went through this same
-    control_blind() path, same as open/close - it was only the two automatic
+    async_stop_cover() used to call control_blind() directly for its
+    initiating stop, same as open/close - it was only the two automatic
     follow-up stop frames sent after it that used to bypass the transmit
     lock via send_priority_stop(). Confirmed real-hardware testing showed one
     of those follow-ups could still collide with an in-flight open/close
     command's own busy-retry, fighting over the stick's one RF transmitter.
-    Those follow-ups (and send_priority_stop() itself) are long gone - now
-    that open/close retry on "tE" again via control_blind_with_retry() (see
-    its own docstring), the same kind of collision is instead prevented by
-    cancel_pending_move() - see the test right below this one.
+    Those follow-ups (and send_priority_stop() itself) are long gone; the
+    direct control_blind() call that replaced them has since been replaced
+    in turn by control_blind_stop(), which briefly serializes against
+    exactly that kind of collision instead of merely accepting it - see its
+    own docstring and test_api.py's tests for control_blind_stop() itself.
+    control_blind() must not be called from here any more at all.
     """
     api = MagicMock()
     api.control_blind = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
 
     await cover.async_stop_cover()
 
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_STOP, device_id=cover._command_device_id
+    api.control_blind_stop.assert_awaited_once_with(
+        cover._command_enum, device_id=cover._command_device_id
     )
+    api.control_blind.assert_not_awaited()
 
 
 async def test_async_stop_cover_cancels_a_pending_move_for_this_device_first(
@@ -320,22 +323,22 @@ async def test_async_stop_cover_cancels_a_pending_move_for_this_device_first(
 
     Regression guard for the exact collision described above and in
     async_stop_cover()'s own docstring: cancel_pending_move() has to run
-    before control_blind()'s write, not after, or a retry already queued
-    by control_blind_with_retry() for this blind could resend open/close
-    once this stop has already gone out.
+    before control_blind_stop()'s write, not after, or a retry already
+    queued by control_blind_with_retry() for this blind could resend
+    open/close once this stop has already gone out.
     """
     call_order: list[str] = []
 
     def _record_cancel(_device_id: str) -> None:
         call_order.append("cancel")
 
-    def _record_stop(*_args: object, **_kwargs: object) -> bool:
+    async def _record_stop(*_args: object, **_kwargs: object) -> bool:
         call_order.append("stop")
         return True
 
     api = MagicMock()
     api.cancel_pending_move = Mock(side_effect=_record_cancel)
-    api.control_blind = AsyncMock(side_effect=_record_stop)
+    api.control_blind_stop = AsyncMock(side_effect=_record_stop)
     cover = _build_cover(hass, api)
 
     await cover.async_stop_cover()
@@ -344,22 +347,25 @@ async def test_async_stop_cover_cancels_a_pending_move_for_this_device_first(
     assert call_order == ["cancel", "stop"]
 
 
-async def test_async_stop_cover_does_not_wait_for_transmitter_idle(
+async def test_async_stop_cover_does_not_itself_wait_for_transmitter_idle(
     hass: HomeAssistant,
 ) -> None:
-    """Stop is the one exception to the new open/close idle-wait.
+    """async_stop_cover() leaves any idle-waiting entirely to control_blind_stop().
 
-    Companion to test_async_open/close_cover_waits_for_transmitter_idle_
-    before_sending above: a manual stop press must stay instant even while
-    another transmission is in flight, so adding the wait to open/close
-    must not accidentally also reach stop - see async_stop_cover()'s own
-    docstring for why. api.wait_for_transmitter_idle is still configured
-    (rather than left as a bare, non-awaitable MagicMock attribute) so
-    this would fail loudly with a TypeError, not silently pass, if it ever
-    were awaited.
+    control_blind_stop() does now wait for the transmitter to go idle in
+    some cases (see its own docstring and test_api.py) - but that happens
+    inside api.py, behind one call. This guards against async_stop_cover()
+    itself ever also calling api.wait_for_transmitter_idle() directly, the
+    way the old async_open_cover()/async_close_cover() pattern did before
+    control_blind_with_retry() absorbed it for them: that would double the
+    wait rather than close any gap, since control_blind_stop() already
+    does it. api.wait_for_transmitter_idle is still configured (rather
+    than left as a bare, non-awaitable MagicMock attribute) so this would
+    fail loudly with a TypeError, not silently pass, if it ever were
+    awaited from here.
     """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
 
@@ -368,11 +374,11 @@ async def test_async_stop_cover_does_not_wait_for_transmitter_idle(
     api.wait_for_transmitter_idle.assert_not_awaited()
 
 
-async def test_async_stop_cover_raises_when_control_blind_fails(
+async def test_async_stop_cover_raises_when_control_blind_stop_fails(
     hass: HomeAssistant,
 ) -> None:
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=False)
+    api.control_blind_stop = AsyncMock(return_value=False)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
 
@@ -385,17 +391,17 @@ async def test_async_stop_cover_restarts_tracking_when_stop_fails_while_moving(
 ) -> None:
     """Regression: a failed stop used to leave a moving cover's position frozen.
 
-    async_stop_cover() restores the pre-stop moving state when control_blind()
-    fails, on the theory that a blind whose stop never reached the stick is
-    probably still moving - but restoring _move_start_time etc. alone does not
-    resurrect the position-tracking task, which was already cancelled earlier
-    in the same call. Without an explicit restart, the entity would report
-    is_closing/is_opening forever with a position frozen at the instant of the
-    failed stop, until some unrelated later command happened to start tracking
-    again.
+    async_stop_cover() restores the pre-stop moving state when
+    control_blind_stop() fails, on the theory that a blind whose stop never
+    reached the stick is probably still moving - but restoring
+    _move_start_time etc. alone does not resurrect the position-tracking
+    task, which was already cancelled earlier in the same call. Without an
+    explicit restart, the entity would report is_closing/is_opening forever
+    with a position frozen at the instant of the failed stop, until some
+    unrelated later command happened to start tracking again.
     """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=False)
+    api.control_blind_stop = AsyncMock(return_value=False)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._attr_is_closing = True
@@ -425,7 +431,7 @@ async def test_async_stop_cover_does_not_restart_tracking_when_already_idle(
     regress into unconditionally restarting tracking.
     """
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=False)
+    api.control_blind_stop = AsyncMock(return_value=False)
     api.transmit_block_reason = "disconnected"  # stable code, see api.py
     cover = _build_cover(hass, api)
     cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -444,8 +450,7 @@ async def test_position_loop_stops_at_a_partial_target(
 
     monkeypatch.setattr(asyncio, "sleep", instant_sleep)
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     monkeypatch.setattr(
         cover,
@@ -463,12 +468,12 @@ async def test_position_loop_stops_at_a_partial_target(
     # test_async_stop_cover_cancels_a_pending_move_for_this_device_first
     # above for the collision this prevents.
     api.cancel_pending_move.assert_called_once_with(cover._command_device_id)
-    # The stop must wait for the move's own open/close transmission to be
-    # clear of the transmitter before it is sent - see the matching comment
-    # in _async_position_update_loop() - and only then actually be sent.
-    api.wait_for_transmitter_idle.assert_awaited_once()
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_STOP, device_id=cover._command_device_id
+    # control_blind_stop() is what now waits for the move's own open/close
+    # transmission to be clear of the transmitter before writing - see its
+    # own docstring and test_api.py - so this loop only needs to call it,
+    # not wait separately itself.
+    api.control_blind_stop.assert_awaited_once_with(
+        cover._command_enum, device_id=cover._command_device_id
     )
     assert cover._target_position is None
 
@@ -493,8 +498,7 @@ async def test_position_loop_stops_early_to_compensate_stop_latency(
 
     monkeypatch.setattr(asyncio, "sleep", instant_sleep)
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api, device_data={CONF_CLOSE_TIME: 6.0})
     monkeypatch.setattr(
         cover,
@@ -509,8 +513,8 @@ async def test_position_loop_stops_early_to_compensate_stop_latency(
 
     # Same reasoning as test_position_loop_stops_at_a_partial_target above.
     api.cancel_pending_move.assert_called_once_with(cover._command_device_id)
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_STOP, device_id=cover._command_device_id
+    api.control_blind_stop.assert_awaited_once_with(
+        cover._command_enum, device_id=cover._command_device_id
     )
     # The entity still reports having reached the *requested* target, not
     # the earlier point the stop was actually sent at - compensation is
@@ -576,8 +580,7 @@ async def test_position_loop_does_not_stop_before_the_compensated_lead(
 
     monkeypatch.setattr(asyncio, "sleep", counting_sleep)
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
-    api.wait_for_transmitter_idle = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api, device_data={CONF_CLOSE_TIME: 6.0})
     monkeypatch.setattr(
         cover,
@@ -591,8 +594,7 @@ async def test_position_loop_does_not_stop_before_the_compensated_lead(
     with pytest.raises(_LoopKeptRunning):
         await cover._async_position_update_loop()
 
-    api.control_blind.assert_not_awaited()
-    api.wait_for_transmitter_idle.assert_not_awaited()
+    api.control_blind_stop.assert_not_awaited()
     api.cancel_pending_move.assert_not_called()
     assert cover._target_position == 20
 
@@ -600,13 +602,16 @@ async def test_position_loop_does_not_stop_before_the_compensated_lead(
 async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An explicit 0/100 target needs neither the wait nor a stop command.
+    """An explicit 0/100 target needs neither a wait nor a stop command.
 
     Extends test_position_loop_reaching_an_endstop_target_sends_no_active_stop
-    (which only checks control_blind) to also cover the new
-    wait_for_transmitter_idle() call, since both are gated by the same
+    (which only checks control_blind_stop) to also cover
+    api.wait_for_transmitter_idle, since both are gated by the same
     needs_stop_command condition and a future change to one must not
-    silently un-gate the other.
+    silently un-gate the other. api.wait_for_transmitter_idle is not
+    called from this loop directly any more either way - control_blind_
+    stop() does its own waiting internally - but is kept configured here
+    so this would fail loudly, not silently pass, if that ever changed.
     """
 
     async def instant_sleep(*_args: object, **_kwargs: object) -> None:
@@ -614,7 +619,7 @@ async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
 
     monkeypatch.setattr(asyncio, "sleep", instant_sleep)
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     api.wait_for_transmitter_idle = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     monkeypatch.setattr(
@@ -629,7 +634,7 @@ async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
     await cover._async_position_update_loop()
 
     api.wait_for_transmitter_idle.assert_not_awaited()
-    api.control_blind.assert_not_awaited()
+    api.control_blind_stop.assert_not_awaited()
     api.cancel_pending_move.assert_not_called()
 
 
@@ -647,7 +652,7 @@ async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
 
     monkeypatch.setattr(asyncio, "sleep", instant_sleep)
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     monkeypatch.setattr(
         cover,
@@ -660,7 +665,7 @@ async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
 
     await cover._async_position_update_loop()
 
-    api.control_blind.assert_not_awaited()
+    api.control_blind_stop.assert_not_awaited()
     # No stop command here means no move-retry loop to end either - see
     # cancel_pending_move()'s own docstring on why calling it when nothing
     # for this device is in progress would be harmless but is still never
@@ -1076,15 +1081,15 @@ async def test_set_cover_position_equal_to_current_while_moving_stops_instead(
     """Reaching exactly the already-in-flight target by a new command of the
     same value must stop, not let the loop drive past it."""
     api = MagicMock()
-    api.control_blind = AsyncMock(return_value=True)
+    api.control_blind_stop = AsyncMock(return_value=True)
     cover = _build_cover(hass, api)
     cover._attr_is_opening = True
     cover._attr_current_cover_position = 50
 
     await cover.async_set_cover_position(**{ATTR_POSITION: 50})
 
-    api.control_blind.assert_awaited_once_with(
-        cover._command_enum, CMD_STOP, device_id=cover._command_device_id
+    api.control_blind_stop.assert_awaited_once_with(
+        cover._command_enum, device_id=cover._command_device_id
     )
 
 

@@ -893,6 +893,110 @@ async def test_control_blind_with_retry_wakes_promptly_on_connection_lost(
     connected_api._cancel_scheduled_reconnect()
 
 
+async def test_control_blind_stop_serializes_two_stops_instead_of_racing(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """The stop-vs-stop collision fix: two blinds stopped together must queue.
+
+    Mirrors test_control_blind_with_retry_serializes_two_blinds_instead_of_
+    racing above, but for two concurrent control_blind_stop() calls: both
+    used to go through the plain, lock-free control_blind() and could write
+    within the same instant, one of them answered "tE" and silently lost
+    since control_blind() itself never waits for or retries that reply.
+    control_blind_stop() closes this by sharing _move_lock (see its own
+    docstring), so blind B's write must not reach the wire at all until
+    blind A's first attempt has learned its outcome.
+    """
+    task_a = asyncio.ensure_future(
+        connected_api.control_blind_stop("10", device_id="AAAAAA")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+    # A has written and is now awaiting its ack.
+
+    task_b = asyncio.ensure_future(
+        connected_api.control_blind_stop("20", device_id="BBBBBB")
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not task_a.done()
+    assert not task_b.done()
+    assert len(written(connected_api)) == 1
+
+    connected_api._handle_message("t1")  # A's stop is accepted
+    assert await asyncio.wait_for(task_a, timeout=1) is True
+
+    # Same reasoning as the move-vs-move test: B is parked waiting for the
+    # transmitter to actually go idle ("t0"), not merely for A's own task
+    # to finish ("t1").
+    connected_api._handle_message("t0")
+
+    await _run_until(lambda: len(written(connected_api)) == 2)
+
+    connected_api._handle_message("t1")  # B's stop is accepted
+    assert await asyncio.wait_for(task_b, timeout=1) is True
+
+
+async def test_control_blind_stop_waits_for_its_own_blinds_in_flight_transmission(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """The Kuechenrolladen case: a stop must not collide with its own move's write.
+
+    Regression for a real log pattern: a blind's own close command's first
+    write was still transmitting (no "t0" yet) when its stop arrived right
+    after. cancel_pending_move() only ends a *retry* that has not happened
+    yet, it cannot un-send a write already on the wire - so the fix has to
+    be control_blind_stop() itself waiting for the transmitter to clear
+    before writing, exactly like a move already does.
+    """
+    # Simulate this blind's own close write still being in flight: nothing
+    # needs to be awaiting ack for a bare "t1" to clear _transmitter_idle.
+    connected_api._handle_message("t1")
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_stop("10", device_id="ABCDEF")
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not task.done()
+    assert written(connected_api) == []
+
+    # The in-flight transmission finally finishes.
+    connected_api._handle_message("t0")
+
+    await _run_until(lambda: len(written(connected_api)) == 1)
+    connected_api._handle_message("t1")  # the stop itself is accepted
+    assert await asyncio.wait_for(task, timeout=1) is True
+
+
+async def test_control_blind_stop_falls_back_to_a_plain_write_when_the_lock_is_busy(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop must never queue for long behind a move's own retry budget.
+
+    STOP_RETRY_BUDGET is patched down to a near-instant value so this does
+    not need a real multi-second wait: _move_lock.acquire() wrapped in
+    asyncio.wait_for() needs genuinely elapsed time to time out (same
+    caveat as test_control_blind_with_retry_treats_a_silent_ack_timeout_
+    like_busy's own docstring - patching asyncio.sleep alone would not be
+    enough), unlike the monotonic-deadline checks a fake clock can jump.
+    """
+    monkeypatch.setattr(api_module, "STOP_RETRY_BUDGET", 0.05)
+    await connected_api._move_lock.acquire()
+    try:
+        assert (
+            await asyncio.wait_for(
+                connected_api.control_blind_stop("10", device_id="ABCDEF"),
+                timeout=1,
+            )
+            is True
+        )
+        # Exactly the old, plain, unlocked, unretried control_blind() write -
+        # never worse than before control_blind_stop() existed.
+        assert len(written(connected_api)) == 1
+    finally:
+        connected_api._move_lock.release()
+
+
 async def test_cancel_pending_move_is_a_noop_without_a_move_in_progress(
     connected_api: SchellenbergUsbApi,
 ) -> None:
