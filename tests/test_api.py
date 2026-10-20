@@ -872,6 +872,46 @@ async def test_control_blind_with_retry_gives_up_after_the_overall_timeout(
     assert connected_api.busy_latched is True
 
 
+async def test_control_blind_with_retry_gives_up_while_still_waiting_for_the_lock(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overall timeout must also bound acquire() itself, not only the
+    wait-for-idle/write/ack cycle that runs after it is granted.
+
+    Regression: that acquire() used to be a bare `await self._move_lock.
+    acquire()`, outside any timeout - so a move stuck behind a long enough
+    queue for the lock could block indefinitely, well past
+    MOVE_RETRY_OVERALL_TIMEOUT, before ever reaching the deadline check
+    above that is supposed to bound it. Reproduced here by having the test
+    itself hold _move_lock for the call's whole duration, so it can only
+    ever finish through the new acquire()-level timeout, never by actually
+    being granted the lock.
+
+    MOVE_RETRY_OVERALL_TIMEOUT is patched down to a short but non-zero
+    value, not faked via _FakeClock like the test above: this path's
+    timeout is enforced by asyncio.wait_for's own real-time timer (see
+    test_control_blind_with_retry_treats_a_silent_ack_timeout_like_busy's
+    docstring on why patched-instant sleep/a clock jump cannot substitute
+    for that), so it needs real elapsed time to fire - and zero would
+    instead trip the plain `time.monotonic() >= retry_deadline` check
+    above on the very first pass, before this call ever reaches the new
+    timeout at all.
+    """
+    monkeypatch.setattr(api_module, "MOVE_RETRY_OVERALL_TIMEOUT", 0.1)
+    await connected_api._move_lock.acquire()  # held for good - never released
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+
+    assert await asyncio.wait_for(task, timeout=1) is False
+    # Gave up waiting for the lock itself - no write was ever attempted.
+    assert written(connected_api) == []
+    assert connected_api.busy_latched is True
+
+    connected_api._move_lock.release()
+
+
 async def test_control_blind_with_retry_treats_a_silent_ack_timeout_like_busy(
     connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:

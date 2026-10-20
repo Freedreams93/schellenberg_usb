@@ -225,6 +225,44 @@ async def test_reset_stick_not_ready_reports_status(hass: HomeAssistant) -> None
     assert "mode=unknown" in flow._developer_notice
 
 
+# --- Entering calibration from the reconfigure menu (async_step_calibrate) -
+
+
+async def test_calibrate_aborts_when_subentry_has_no_enum(hass: HomeAssistant) -> None:
+    """Regression: the guard used to only check the two device_id halves,
+    so a subentry with valid device_ids but no enum data anywhere (neither
+    CONF_COMMAND_ENUM/CONF_DEVICE_ENUM nor CONF_STATUS_ENUM) sailed straight
+    through it. status_enum ended up None and reached
+    handler.set_selected_device() with "enum": None, from there into the
+    serial payload itself unchecked, instead of aborting here with a clear
+    reason. See the matching comment on async_step_calibrate()'s guard in
+    config_flow.py.
+    """
+    flow = make_flow(hass)
+    flow._get_reconfigure_subentry = MagicMock(
+        return_value=make_subentry(**{CONF_COMMAND_ENUM: "", CONF_STATUS_ENUM: ""})
+    )
+
+    result = await flow.async_step_calibrate()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "device_not_found"
+
+
+async def test_calibrate_proceeds_when_subentry_is_well_formed(
+    hass: HomeAssistant,
+) -> None:
+    """Sanity check for the guard above: a subentry with every device_id
+    and enum field present must not be rejected by it.
+    """
+    flow = make_flow(hass)
+    flow._get_reconfigure_subentry = MagicMock(return_value=make_subentry())
+
+    result = await flow.async_step_calibrate()
+
+    assert result["type"] != FlowResultType.ABORT
+
+
 # --- Manual position sync (set_position_open/closed/manual) ---------------
 
 

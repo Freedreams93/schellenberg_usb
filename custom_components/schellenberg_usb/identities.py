@@ -19,7 +19,11 @@ def normalize_status_identity(
     """Normalize one status identity, returning None when it is malformed."""
     normalized_id = str(device_id).strip().upper()
     normalized_enum = str(device_enum).strip().upper()
-    if len(normalized_enum) <= 2:
+    # Guarded on non-empty first: "".zfill(2) is "00", a real, specific
+    # enum some other device could legitimately use - padding a genuinely
+    # missing enum into it would silently accept malformed input as that
+    # enum instead of correctly falling through to the rejection below.
+    if normalized_enum and len(normalized_enum) <= 2:
         normalized_enum = normalized_enum.zfill(2)
     if (
         len(normalized_id) != 6

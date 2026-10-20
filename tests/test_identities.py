@@ -20,6 +20,19 @@ def test_normalize_status_identity_accepts_and_rejects() -> None:
     assert normalize_status_identity("5D3E7G", "01") is None
 
 
+def test_normalize_status_identity_rejects_an_empty_enum_instead_of_padding_it() -> (
+    None
+):
+    """Regression: "".zfill(2) is "00", a real enum some other device could use.
+
+    The zfill guard used to run unconditionally, so a device_enum that was
+    empty (rather than merely a short, genuine value like "1") silently
+    became the specific, valid-looking enum "00" instead of being rejected
+    as the malformed input it actually was.
+    """
+    assert normalize_status_identity("5D3E7C", "") is None
+
+
 def test_parse_status_identities_text_accepts_documented_separators() -> None:
     text = "5D3E7C/01, ABCDEF-02\n112233:3"
     assert parse_status_identities_text(text) == (

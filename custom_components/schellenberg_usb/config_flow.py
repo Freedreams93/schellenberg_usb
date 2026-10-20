@@ -1937,7 +1937,17 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         )
         status_device_id = subentry.data.get(CONF_STATUS_DEVICE_ID, command_device_id)
         status_enum = subentry.data.get(CONF_STATUS_ENUM, command_enum)
-        if not command_device_id or not status_device_id:
+        # The enum halves need the same guard as the device_id halves just
+        # above: a subentry missing both CONF_COMMAND_ENUM/CONF_DEVICE_ENUM
+        # (or their status equivalents) leaves command_enum/status_enum
+        # None, which would otherwise reach handler.set_selected_device()
+        # and from there the serial payload itself unchecked.
+        if (
+            not command_device_id
+            or not status_device_id
+            or not command_enum
+            or not status_enum
+        ):
             return self.async_abort(reason="device_not_found")
 
         stable_id = (

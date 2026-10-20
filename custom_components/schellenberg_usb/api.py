@@ -1761,7 +1761,23 @@ class SchellenbergUsbApi:
                     )
                     self._busy_latched = True
                     return False
-                await self._move_lock.acquire()
+                # Bounded by retry_deadline too, not just the wait-for-
+                # idle/write/ack cycle after acquiring: acquire() itself
+                # used to be unbounded, so a move stuck behind a
+                # sufficiently long queue of other moves/stops could run
+                # well past MOVE_RETRY_OVERALL_TIMEOUT before this loop
+                # ever got back to checking it. On timeout, loop back to
+                # the top rather than giving up here directly - by the
+                # time wait_for's own timeout has elapsed, the check above
+                # is guaranteed to be true, so it gives up there with its
+                # usual warning/return instead of this duplicating it.
+                try:
+                    await asyncio.wait_for(
+                        self._move_lock.acquire(),
+                        timeout=retry_deadline - time.monotonic(),
+                    )
+                except TimeoutError:
+                    continue
                 try:
                     if self._move_lock.has_priority_waiter():
                         # A stop is waiting its turn - step back now
