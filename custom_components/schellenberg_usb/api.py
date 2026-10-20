@@ -120,20 +120,20 @@ class _PriorityLock:
     priority waiter.
 
     Exists only so control_blind_stop() can share exclusion with
-    control_blind_with_retry() against the exact write-instant each one
-    cares about (see _move_lock's own comment in __init__ for why a
-    second, independent lock does not work here) without a stop queueing
-    behind some *other* blind's own already-queued move the way a plain
-    asyncio.Lock would - confirmed from a real log where a manual stop,
-    requested before a second blind's own close even reached the lock,
-    still waited out that unrelated close's entire ~1.1-1.2s transmit
-    cycle, because the lock gave it no way to go first. Both callers now
-    only ever hold this lock for the brief write-then-await-ack step, not
-    for an entire wait-for-idle-then-retry cycle (see both their own
-    docstrings), so in the common case there is nothing queued for a
-    priority acquire to jump ahead of in the first place; this exists for
-    the genuine contention that remains when two callers want to write at
-    close to the same instant.
+    control_blind_with_retry() (see _move_lock's own comment in __init__
+    for why a second, independent lock does not work here) without
+    queueing behind some *other* blind's own already-queued move the way
+    sharing a plain asyncio.Lock would - confirmed from a real log where a
+    manual stop, requested before a second blind's own close even reached
+    the lock, still waited out that unrelated close's entire ~1.1-1.2s
+    transmit cycle, because the lock gave it no way to go first.
+    has_priority_waiter() is the other half of that fix: both callers hold
+    this lock across their own wait-for-the-transmitter-to-go-idle step
+    (not only the write - see both their own docstrings for why), and an
+    ordinary holder checks it, both before starting that wait and again
+    the instant it resolves, to voluntarily step back - release without
+    writing, then loop around to request the lock again - the moment a
+    stop is waiting its turn, rather than finishing its own turn first.
 
     The implementation mirrors CPython's own asyncio.Lock fairness
     mechanics (see its acquire()/release()/_wake_up_first()): release()
@@ -178,6 +178,15 @@ class _PriorityLock:
             raise RuntimeError("Lock is not acquired.")
         self._locked = False
         self._wake_up_first()
+
+    def has_priority_waiter(self) -> bool:
+        """Return True while any priority=True acquire is currently queued.
+
+        Lets an ordinary holder voluntarily yield the lock to a higher-
+        priority caller instead of finishing its own turn first - see
+        control_blind_with_retry()'s own use of this.
+        """
+        return any(not fut.cancelled() for fut in self._priority_waiters)
 
     def _has_live_waiters(self) -> bool:
         return any(
@@ -364,34 +373,34 @@ class SchellenbergUsbApi:
         # slot was tried before (git history) and a second contending move
         # silently clobbered the first's retry tracking, undetected because
         # it was never exercised by more than two commands close together.
-        # _move_lock is held only for the brief write-then-await-ack step of
-        # one attempt, not for the whole wait-for-idle-then-maybe-retry
-        # cycle around it - see control_blind_with_retry()'s and
-        # control_blind_stop()'s own docstrings for why the wait itself
-        # happens outside the lock. What the lock does guarantee: several
-        # entities independently waiting on one shared "idle" event can all
-        # observe idle between the same two ACKs, but only one of them ever
-        # gets to actually check-idle-and-write at a time - confirmed from a
-        # real log showing six writes within 15ms of each other and five of
-        # them answered "tE" before this existed. Each attempt re-checks
-        # idle immediately after acquiring the lock (another holder may have
-        # written, and gone busy again, in between) and simply loops back to
-        # waiting - lock-free - rather than writing into a wire that just
-        # went busy again.
+        # _move_lock is held for a whole wait-for-idle-then-write-then-
+        # await-ack cycle, not just the write - several entities
+        # independently waiting on one shared "idle" event can all observe
+        # idle between the same two ACKs and all write in the same instant,
+        # confirmed from a real log showing six writes within 15ms of each
+        # other and five of them answered "tE". A lock held across the full
+        # cycle makes that race structurally impossible instead of merely
+        # unlikely.
         #
-        # control_blind_stop() shares this same lock, with priority (see
-        # _PriorityLock above), rather than getting a second, independent
-        # one of its own: two separate locks would not exclude each other,
-        # so a stop-task and a move-task could still each observe the
-        # shared idle event go true and race to write at the same instant -
-        # exactly the race this lock exists to make impossible for two
-        # moves, reopened for move-vs-stop if stop did not share it. Giving
-        # stop priority is what actually keeps it from queueing behind an
-        # unrelated blind's own pending move - confirmed from a real log
-        # where a manual stop, requested before a second blind's own close
-        # even reached this lock, still waited out that close's entire
-        # ~1.1-1.2s transmit cycle under an earlier version of this fix that
-        # held the lock across the whole wait, not just the write.
+        # control_blind_stop() shares this same lock, requesting priority
+        # (see _PriorityLock above), rather than getting a second,
+        # independent one of its own: two separate locks would not exclude
+        # each other, so a stop-task and a move-task could still each
+        # observe the shared idle event go true and race to write at the
+        # same instant - exactly the race this lock exists to make
+        # impossible for two moves, reopened for move-vs-stop if stop did
+        # not share it. Priority alone is not enough, though: it only lets
+        # a stop jump an ordinary *waiter*, never whoever already holds the
+        # lock, so an ordinary holder that merely got here first could
+        # still occupy the lock for an entire transmit cycle doing nothing
+        # but wait, with a later-arriving stop unable to do anything but
+        # wait behind it - confirmed from a real log where exactly this
+        # cost a manual stop over a second, long enough to visibly
+        # overshoot the target. has_priority_waiter() closes that: an
+        # ordinary holder checks it - both right after acquiring and again
+        # the instant its own idle-wait resolves - and voluntarily releases
+        # without writing, rather than finishing its turn, the moment a
+        # stop is waiting for this lock.
         self._move_lock = _PriorityLock()
         # Which blind's move control_blind_with_retry() is currently
         # attempting (write, maybe-retry) - read by cancel_pending_move() so
@@ -1622,24 +1631,34 @@ class SchellenbergUsbApi:
         anywhere near as long. This exists only for async_open_cover()/
         async_close_cover().
 
-        Waits for the transmitter to go idle *outside* _move_lock, then
-        acquires it only for the brief check-idle-and-write-then-await-ack
-        step of one attempt - see _move_lock's own comment in __init__ for
-        why: several blinds commanded together can all observe the
+        Serializes hub-wide through _move_lock, held across this whole
+        wait-for-idle-then-write-then-await-ack cycle, same as before this
+        fix's own rework - see _move_lock's own comment in __init__ for the
+        race this closes that a shared "wait for idle, then write" pattern
+        does not: several blinds commanded together can all observe the
         transmitter idle between the same two ACKs and all write within the
         same ~15ms window, of which the stick then accepts exactly one and
         answers "tE" to the rest - which control_blind() neither waits for
         nor retries on its own, so those commands used to vanish rather
-        than merely arrive late. The lock makes that race structurally
-        impossible: once held, the wire is re-checked idle one more time
-        (another holder may have written, and gone busy again, while this
-        attempt was queued for the lock) - still busy, this loops back to
-        waiting for idle again, lock-free, rather than writing into it.
-        Not holding the lock across the wait itself (an earlier version of
-        this fix did) is what lets a higher-priority control_blind_stop()
-        call go first once the wire actually clears, instead of queueing
-        behind every blind's own pending move the way holding the lock
-        throughout the wait did - confirmed from a real log.
+        than merely arrive late.
+
+        The one addition is has_priority_waiter(): checked both right
+        after acquiring the lock and again the instant the idle-wait
+        resolves, and either time, a waiting control_blind_stop() call
+        makes this attempt release the lock without writing and loop
+        around to request it again, rather than finishing its own turn
+        first. Without this, a move that merely got to the lock first
+        could hold it for an entire transmit cycle doing nothing but
+        wait - exactly what let a stop end up queueing behind a completely
+        unrelated blind's own pending move for that whole cycle, confirmed
+        from a real log where this cost a stop over a second, long enough
+        for the blind being stopped to visibly overshoot its target.
+        Checking twice (not only once, before the wait) matters because
+        the realistic case is a stop arriving *while* this attempt is
+        already parked waiting for idle - by the time that wait resolves,
+        the stop has had the whole rest of that same wait to register
+        itself as a priority waiter, and the second check catches it right
+        before the write that would otherwise go out first.
 
         Retried on "tE" with no limit on the number of attempts, like
         send_command()'s own busy-retry cycle - same policy, independent
@@ -1697,13 +1716,21 @@ class SchellenbergUsbApi:
                     )
                     self._busy_latched = True
                     return False
-                await self._wait_for_transmitter_idle("sending a move command")
-                async with self._move_lock:
-                    if not self._transmitter_idle.is_set():
-                        # Lost the race for the lock to someone else who
-                        # wrote in the meantime - the wire is busy again,
-                        # so wait our turn afresh instead of writing into
-                        # it.
+                await self._move_lock.acquire()
+                try:
+                    if self._move_lock.has_priority_waiter():
+                        # A stop is waiting its turn - step back now
+                        # instead of starting a potentially long wait on
+                        # idle while holding the lock in front of it.
+                        continue
+                    if not await self._wait_for_transmitter_idle(
+                        "sending a move command"
+                    ):
+                        continue
+                    if self._move_lock.has_priority_waiter():
+                        # A stop started waiting its turn while this call
+                        # was parked above - still time to yield, one
+                        # write away from going out ahead of it.
                         continue
                     self._move_ack_event.clear()
                     self._move_ack_result = None
@@ -1727,6 +1754,8 @@ class SchellenbergUsbApi:
                             device_id or "unknown",
                         )
                     self._move_awaiting_ack = False
+                finally:
+                    self._move_lock.release()
                 if self._move_ack_result is True:
                     return True
                 # False (busy) or None (no reply at all, treated the
@@ -1767,23 +1796,31 @@ class SchellenbergUsbApi:
 
         So this shares _move_lock itself, requesting priority (see
         _PriorityLock above) so it is served ahead of any *other* blind's
-        own pending move still waiting for its turn - critical, since this
-        method, like control_blind_with_retry(), only ever holds the lock
-        for the brief check-idle-and-write-then-await-ack step, never for
-        the wait itself, so a stop's own wait is normally for nothing more
-        than whatever is on the wire right now (this blind's own just-fired
-        move, in the collision this fix exists for, or someone else's
-        single transmit cycle), not an unrelated blind's whole queued-up
-        move. STOP_RETRY_BUDGET bounds the combined time spent on that wait,
-        the lock, and any "tE" retries once writing - comfortably more than
-        one full transmit cycle (~1.1-1.2s per real logs), but nowhere near
-        a move's own, much longer MOVE_RETRY_OVERALL_TIMEOUT, so a manual
-        stop can still never queue behind a move's full retry budget the
-        way it could before priority existed to let it go first. Exhausted
-        - the wire or the lock stayed busy throughout, or "tE" kept coming
-        back - this falls back to the plain, unlocked control_blind() write
-        described above, logged as a warning rather than the stop simply
-        vanishing the way it used to before this whole fix existed.
+        own pending move still only waiting for its turn - critical,
+        because this method acquires the lock *before* waiting for the
+        transmitter to go idle, same as control_blind_with_retry() does
+        (both hold it across the whole wait, not only the write - see that
+        method's own docstring for why a plain, unlocked wait does not
+        work and why has_priority_waiter() is still needed on top of
+        that). Acquiring with priority means this never queues behind an
+        ordinary move that is merely *waiting* for the lock, only ever
+        behind whoever actually holds it right now - and that in turn is
+        normally for nothing more than whatever is on the wire right now
+        (this blind's own just-fired move, in the collision this fix
+        exists for, or someone else's single transmit cycle), not an
+        unrelated blind's whole queued-up move, since has_priority_
+        waiter() makes an ordinary holder step back for this call rather
+        than finish its own wait-then-write first. STOP_RETRY_BUDGET
+        bounds the combined time spent acquiring the lock, waiting for
+        idle, and any "tE" retries once writing - comfortably more than
+        one full transmit cycle (~1.1-1.2s per real logs), but nowhere
+        near a move's own, much longer MOVE_RETRY_OVERALL_TIMEOUT, so a
+        manual stop can still never queue behind a move's full retry
+        budget. Exhausted - the lock or the wire stayed busy throughout,
+        or "tE" kept coming back - this falls back to the plain, unlocked
+        control_blind() write described above, logged as a warning rather
+        than the stop simply vanishing the way it used to before this
+        whole fix existed.
 
         Once writing, reuses the same _move_awaiting_ack/_move_ack_event/
         _move_ack_result bookkeeping a move does - safe here specifically
@@ -1795,13 +1832,6 @@ class SchellenbergUsbApi:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            if not await self._wait_for_transmitter_idle(
-                "sending a stop command", timeout=remaining
-            ):
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
             try:
                 await asyncio.wait_for(
                     self._move_lock.acquire(priority=True), timeout=remaining
@@ -1809,9 +1839,12 @@ class SchellenbergUsbApi:
             except TimeoutError:
                 break
             try:
-                if not self._transmitter_idle.is_set():
-                    # Lost the race for the lock to someone else who wrote
-                    # in the meantime - wait our turn afresh.
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if not await self._wait_for_transmitter_idle(
+                    "sending a stop command", timeout=remaining
+                ):
                     continue
                 self._move_ack_event.clear()
                 self._move_ack_result = None

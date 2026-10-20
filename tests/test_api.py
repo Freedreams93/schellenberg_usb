@@ -1162,6 +1162,30 @@ async def test_priority_lock_priority_never_preempts_the_current_holder() -> Non
     lock.release()
 
 
+async def test_priority_lock_has_priority_waiter() -> None:
+    """has_priority_waiter() is what lets an ordinary holder step back.
+
+    See control_blind_with_retry()'s own use of this: it is what actually
+    keeps a holder that merely got to the lock first from occupying it for
+    an entire transmit cycle doing nothing but wait once a higher-priority
+    control_blind_stop() call is waiting its turn.
+    """
+    lock = api_module._PriorityLock()
+    assert lock.has_priority_waiter() is False
+
+    await lock.acquire()
+    assert lock.has_priority_waiter() is False  # nothing queued yet
+
+    priority_task = asyncio.ensure_future(lock.acquire(priority=True))
+    await asyncio.sleep(0)
+    assert lock.has_priority_waiter() is True
+
+    lock.release()
+    await asyncio.wait_for(priority_task, timeout=1)
+    assert lock.has_priority_waiter() is False  # served, no longer queued
+    lock.release()
+
+
 async def test_priority_lock_two_priority_waiters_stay_fifo_among_themselves() -> None:
     lock = api_module._PriorityLock()
     await lock.acquire()
