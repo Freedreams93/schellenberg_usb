@@ -974,7 +974,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._attr_is_opening if opening else self._attr_is_closing
         )
         task = self._position_update_task
-        return (
+        return bool(
             already_same_direction
             and task is not None
             and not task.done()
