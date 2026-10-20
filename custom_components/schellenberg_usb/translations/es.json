@@ -34,10 +34,10 @@
       "step": {
         "user": {
           "title": "Añadir un dispositivo",
-          "description": "Elija cómo desea configurar este dispositivo.",
+          "description": "Elija cómo desea configurar este dispositivo. Compatible con persianas enrollables, enrolladores de cinta/correa electrónicos, motores de toldo y otros motores compatibles con Schellenberg.",
           "menu_options": {
             "pair_device": "Emparejar y calibrar",
-            "add_shutter_from_remote": "Añadir dispositivo desde mando a distancia"
+            "add_shutter_from_remote": "Añadir dispositivo desde mando a distancia (recomendado)"
           }
         },
         "pair_device": {
@@ -47,7 +47,7 @@
         },
         "add_shutter_from_remote": {
           "title": "Añadir dispositivo desde mando a distancia",
-          "description": "Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el canal del dispositivo. Pulse el botón de programación de su mando a distancia hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el dispositivo haya aprendido el transmisor. A continuación se realiza una breve prueba. Después, confirme si la persiana se movió realmente.",
+          "description": "Este método de emparejamiento se recomienda para cualquier dispositivo Schellenberg compatible por radiofrecuencia, ya sea un motor de persiana, un enrollador de cinta/correa electrónico o un motor de toldo. Después de pulsar Emparejar, utilice un mando a distancia original ya emparejado en un plazo de 2 minutos y seleccione el canal del dispositivo. Pulse el botón de programación de su mando a distancia hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant detectará la trama y enviará el comando de aprendizaje 60, seguido del comando de finalización 40 en el mismo valor enum. Una confirmación ACK de la memoria USB no demuestra que el dispositivo haya aprendido el transmisor. A continuación se realiza una breve prueba. Después, confirme si la persiana se movió realmente.",
           "submit": "Emparejar"
         },
         "name_device": {
