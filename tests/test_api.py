@@ -1769,7 +1769,7 @@ async def test_handle_message_ss_frame_updates_tracking_and_dispatches_signal(
     # command(CMD_UP) + padding(00, ignored) + signal(00, ignored)
     connected_api._handle_message("ss" + "10" + "ABCDEF" + "0000" + CMD_UP + "0000")
 
-    frame = connected_api.get_last_received("ABCDEF", "10")
+    frame = connected_api.get_last_received_for_identities([("ABCDEF", "10")])
     assert frame is not None
     assert frame["matched"] is True
     assert frame["identity_role"] == "primary"
@@ -1813,7 +1813,7 @@ async def test_handle_message_ss_frame_unmatched_device_skips_the_per_entity_sig
 
     connected_api._handle_message("ss" + "20" + "FEDCBA" + "0000" + CMD_STOP + "0000")
 
-    frame = connected_api.get_last_received("FEDCBA", "20")
+    frame = connected_api.get_last_received_for_identities([("FEDCBA", "20")])
     assert frame is not None
     assert frame["matched"] is False
     assert frame["identity_role"] == "unmatched"

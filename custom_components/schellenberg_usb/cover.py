@@ -246,33 +246,55 @@ async def async_setup_entry(
                 device_registry, (DOMAIN, stable_device_id), entry.entry_id
             )
 
+            primary_status_text = (
+                f"{status_device_id}/{status_enum}"
+                if status_device_id
+                else _runtime_translation_text(hass, "unknown_label")
+            )
+            current_model = _runtime_translation_text(
+                hass,
+                "device_model_motor",
+                command_device_id=command_device_id,
+                command_enum=command_enum,
+                primary_status_text=primary_status_text,
+                secondary_count=len(secondary_status_identities),
+            )
             if device is None:
-                primary_status_text = (
-                    f"{status_device_id}/{status_enum}"
-                    if status_device_id
-                    else _runtime_translation_text(hass, "unknown_label")
-                )
                 device = device_registry.async_get_or_create(
                     config_entry_id=entry.entry_id,
                     config_subentry_id=subentry.subentry_id,
                     identifiers={(DOMAIN, stable_device_id)},
                     name=device_name,
                     manufacturer="Schellenberg",
-                    model=_runtime_translation_text(
-                        hass,
-                        "device_model_motor",
-                        command_device_id=command_device_id,
-                        command_enum=command_enum,
-                        primary_status_text=primary_status_text,
-                        secondary_count=len(secondary_status_identities),
-                    ),
+                    model=current_model,
                 )
-            elif not async_device_on_subentry_compat(
-                device, entry.entry_id, subentry.subentry_id
-            ):
-                async_reassign_device_subentry_compat(
-                    device_registry, device, entry.entry_id, subentry.subentry_id
-                )
+            else:
+                if not async_device_on_subentry_compat(
+                    device, entry.entry_id, subentry.subentry_id
+                ):
+                    async_reassign_device_subentry_compat(
+                        device_registry, device, entry.entry_id, subentry.subentry_id
+                    )
+                # The device registry entry above is only ever written at
+                # first creation by HA itself - unlike device_name and
+                # current_model, both freshly recomputed from the
+                # subentry's *current* data on every setup/reload. Without
+                # this sync, editing a blind's name or status-identity
+                # fields through async_step_edit's "edit" form
+                # (config_flow.py) silently reported success while the
+                # device page, dashboards and entity list kept showing
+                # whatever was registered at the very first pairing,
+                # forever - found during the same audit as the entries
+                # above. Guarded by the equality check so a reload with no
+                # real identity/name change (the overwhelmingly common case
+                # - most reloads are plain HA restarts, not edits) never
+                # writes to the device registry or fires its update event.
+                if device.name != device_name or device.model != current_model:
+                    device_registry.async_update_device(
+                        device.id,
+                        name=device_name,
+                        model=current_model,
+                    )
             stable_device_registry_id = device.id
             _LOGGER.debug(
                 "Created/updated device %s for paired device %s",
@@ -1094,6 +1116,23 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                             await self._api.control_blind_stop(
                                 self._command_enum,
                                 device_id=self._command_device_id,
+                            )
+                        else:
+                            # A plain open_cover()/close_cover() reaching 0/100
+                            # confirms this via _confirm_full_travel_resync()
+                            # (see the target_position-is-None branch below) -
+                            # set_cover_position(0)/set_cover_position(100)
+                            # reaching the exact same physical endstop through
+                            # this branch instead never did, leaving
+                            # _position_confirmed_since_restart stuck and the
+                            # diagnostics history missing its "estimated from
+                            # full travel" record for this transit, even
+                            # though the live position reported above is
+                            # identical either way - found during the same
+                            # audit as the entries above.
+                            self._confirm_full_travel_resync(
+                                "closing" if self._attr_is_closing else "opening",
+                                self._target_position,
                             )
                         self._move_start_time = None
                         self._move_start_position = None

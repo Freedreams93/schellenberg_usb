@@ -257,6 +257,47 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
+def _foreign_capture_device_ids(
+    entry: Any, *, exclude_subentry_id: str | None = None
+) -> frozenset[str]:
+    """Collect every *other* blind's own confirmed device identities.
+
+    Used to scope CalibrationFlowHandler's capture-wide fallback listener
+    (options_flow_calibration.py's handle_capture_event) to frames that
+    cannot be positively attributed to a different, already-paired blind
+    on this same hub - without this, a second blind's RF traffic arriving
+    while this one is being paired or recalibrated could silently satisfy
+    this one's movement-start/stop wait instead, corrupting the open/close
+    time being measured - found during the independent audit alongside
+    the CHANGELOG entries above this one.
+
+    Deliberately permissive otherwise: an id belonging to *nobody* yet -
+    including this same blind's own not-yet-discovered or not-yet-
+    persisted real status identity - is never excluded by this, since
+    that is exactly the ambiguity the capture-wide fallback exists to
+    tolerate for a brand-new pairing or a first recalibration (see
+    test_differing_status_identity_still_completes_via_capture_signal in
+    tests/test_options_flow_calibration.py). Only a device id positively
+    claimed by some *other* blind subentry is ever excluded.
+    """
+    foreign_ids: set[str] = set()
+    for other_subentry in entry.subentries.values():
+        if other_subentry.subentry_id == exclude_subentry_id:
+            continue
+        if other_subentry.subentry_type != SUBENTRY_TYPE_BLIND:
+            continue
+        data = other_subentry.data
+        for key in (CONF_COMMAND_DEVICE_ID, CONF_DEVICE_ID, CONF_STATUS_DEVICE_ID):
+            value = data.get(key)
+            if value:
+                foreign_ids.add(str(value).strip().upper())
+        for identity in normalize_status_identities(
+            data.get(CONF_SECONDARY_STATUS_IDENTITIES)
+        ):
+            foreign_ids.add(identity[0])
+    return frozenset(foreign_ids)
+
+
 class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
     """Flow for adding new blind devices as subentries."""
 
@@ -717,6 +758,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 "entity_id": device_id,
                 "name": device_name,
                 "enum": device_enum,
+                # This is a brand-new pairing, so there is no subentry of its
+                # own yet to exclude - every *other* blind already on this
+                # hub is a candidate to exclude from the capture-wide
+                # fallback below (see _foreign_capture_device_ids()'s own
+                # docstring).
+                "foreign_capture_device_ids": _foreign_capture_device_ids(
+                    self._get_entry()
+                ),
             }
         )
         handler.enable_subentry_creation(
@@ -1999,6 +2048,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 CONF_CLOSE_TIME: subentry.data.get(CONF_CLOSE_TIME),
                 CONF_INVERT_DIRECTION: subentry.data.get(CONF_INVERT_DIRECTION, False),
                 "enum": status_enum,
+                # Excludes only this same subentry - its own not-yet-
+                # reconfirmed identity must never be treated as "foreign"
+                # (see _foreign_capture_device_ids()'s own docstring).
+                "foreign_capture_device_ids": _foreign_capture_device_ids(
+                    self._get_entry(), exclude_subentry_id=subentry.subentry_id
+                ),
             }
         )
 

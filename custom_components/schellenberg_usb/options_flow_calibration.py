@@ -560,6 +560,16 @@ class CalibrationFlowHandler:
         if self._selected_device is None:
             return False
         device_id = self._selected_device["id"]
+        # Device ids positively confirmed to belong to some *other*,
+        # already-paired blind on this hub - never this one's own
+        # not-yet-confirmed identity, see _foreign_capture_device_ids()'s
+        # own docstring in config_flow.py (both set_selected_device() call
+        # sites always provide this key; the empty-frozenset default below
+        # only guards a handler used directly in a test without going
+        # through either of them).
+        foreign_device_ids: frozenset[str] = (
+            self._selected_device.get("foreign_capture_device_ids") or frozenset()
+        )
         self._wait_event = asyncio.Event()
 
         @callback
@@ -569,8 +579,24 @@ class CalibrationFlowHandler:
 
         @callback
         def handle_capture_event(_captured_device_id: str, command: str) -> None:
-            if command == event_type and self._wait_event:
-                self.flow.hass.loop.call_soon_threadsafe(self._wait_event.set)
+            # Unlike handle_device_event above (whose signal name already
+            # encodes device_id), this hub-wide fallback fires for every
+            # device's frames while a capture window is open (see
+            # SIGNAL_DEVICE_EVENT_CAPTURE's own comment in api.py) - without
+            # this check it accepted a *different*, unrelated blind moving
+            # on the same hub at the same moment as a false positive for
+            # this one, corrupting the open/close time being measured here -
+            # found during the same audit as the entries above. Only ever
+            # rejects a frame positively attributed to one of those other
+            # blinds; anything not yet claimed by anyone - including this
+            # same blind's own not-yet-confirmed real identity, exactly the
+            # case this fallback exists for - is still accepted, same as
+            # before this fix.
+            if command != event_type or not self._wait_event:
+                return
+            if _captured_device_id.strip().upper() in foreign_device_ids:
+                return
+            self.flow.hass.loop.call_soon_threadsafe(self._wait_event.set)
 
         self._event_listener_unsubs = [
             async_dispatcher_connect(

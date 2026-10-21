@@ -1057,6 +1057,57 @@ async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
     api.cancel_pending_move.assert_not_called()
 
 
+async def test_position_loop_set_position_endstop_also_confirms_full_travel(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reaching 0/100 via an *explicit* target (set_cover_position) must
+    confirm full-travel resync exactly like the plain open_cover()/
+    close_cover() path (the target_position-is-None branch further below)
+    already does - found during the independent audit alongside the
+    CHANGELOG entries above this one. Before this fix, this branch set the
+    live position correctly but never called _confirm_full_travel_resync(),
+    so _position_confirmed_since_restart stayed False and the diagnostics
+    history never recorded this transit, even though the blind had, in
+    fact, just completed a full, verified close.
+    """
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(return_value=True)
+    cover = _build_cover(hass, api)
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 0),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 5
+    cover._target_position = 0
+    cover._move_start_position = 100
+    # Set right after a Home Assistant restart, exactly like
+    # async_close_cover's own logic - see _waiting_for_full_travel_resync's
+    # own tests above for what this gates.
+    cover._full_travel_resync_direction = "closing"
+
+    await cover._async_position_update_loop()
+
+    assert cover._position_confirmed_since_restart is True
+    assert cover._full_travel_resync_direction is None
+    api.record_position_update.assert_called_once_with(
+        cover._command_device_id,
+        source=cover._position_update_source,
+        direction="closing",
+        previous_position=100,
+        new_position=0,
+        position_source=cover._position_source_kind,
+        confirmed_since_restart=True,
+        status="estimated from full travel",
+    )
+
+
 # ---------------------------------------------------------------------------
 # _update_position(): the elapsed-time position estimate itself.
 #
@@ -1879,6 +1930,70 @@ async def test_async_setup_entry_creates_device_and_cover_with_stable_id(
         )
         is None
     )
+
+
+async def test_async_setup_entry_resyncs_device_registry_name_and_model_on_edit(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a blind's name or status identity (config_flow.py's "edit"
+    form, via async_update_and_abort() -> the entry-update listener's
+    async_reload() -> this same async_setup_entry() running again) must
+    update the already-existing device registry entry's name/model to
+    match - found during the independent audit alongside the CHANGELOG
+    entries above this one. Before this fix, device_registry.async_get_or_
+    create()'s name=/model= kwargs were only ever honored on the device's
+    very first creation; every later call found the device already
+    existing and left its name/model exactly as first registered, forever,
+    regardless of how many times the blind was "renamed" through that
+    form. The reload trigger itself is already covered by test_init.py;
+    this test is only about what async_setup_entry() does once it runs.
+    """
+    api = MagicMock()
+    entry = _build_hub_entry(hass, api)
+    subentry = _add_blind_subentry(
+        hass, entry, unique_id="blind-uuid-1", title="Old Name"
+    )
+
+    await async_setup_entry(hass, entry, Mock())
+
+    device_registry = dr.async_get(hass)
+    device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, "blind-uuid-1"), entry.entry_id
+    )
+    assert device is not None
+    assert device.name == "Old Name"
+    original_model = device.model
+
+    # Simulate async_step_edit's commit: a new title, plus a changed status
+    # identity (which feeds into the device's `model` string).
+    updated_data = dict(entry.subentries[subentry.subentry_id].data)
+    updated_data[CONF_STATUS_DEVICE_ID] = "112233"
+    updated_data[CONF_STATUS_ENUM] = "05"
+    hass.config_entries.async_update_subentry(
+        entry,
+        entry.subentries[subentry.subentry_id],
+        title="New Name",
+        data=updated_data,
+    )
+
+    await async_setup_entry(hass, entry, Mock())
+
+    device = async_get_device_by_identifier_compat(
+        device_registry, (DOMAIN, "blind-uuid-1"), entry.entry_id
+    )
+    assert device is not None
+    assert device.name == "New Name"
+    assert device.model != original_model
+
+    # A third run with nothing changed since must leave the registry
+    # alone - most reloads are plain HA restarts, not edits, and firing a
+    # device-registry update event every time would be needless churn.
+    update_spy = Mock(wraps=device_registry.async_update_device)
+    monkeypatch.setattr(device_registry, "async_update_device", update_spy)
+
+    await async_setup_entry(hass, entry, Mock())
+
+    update_spy.assert_not_called()
 
 
 async def test_async_setup_entry_migrates_a_legacy_entity_unique_id(

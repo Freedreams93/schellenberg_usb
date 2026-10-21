@@ -2056,15 +2056,6 @@ class SchellenbergUsbApi:
         return self._fresh_calibration_positions.pop(blind_id, None)
 
     @callback
-    def get_last_received(
-        self, status_device_id: str, status_enum: str
-    ) -> dict[str, Any] | None:
-        """Return a copy of the latest frame for an exact status identity."""
-        identity = normalize_status_identity(status_device_id, status_enum)
-        message = self._last_received_messages.get(identity) if identity else None
-        return dict(message) if message is not None else None
-
-    @callback
     def get_last_received_for_identities(
         self, identities: object
     ) -> dict[str, Any] | None:
