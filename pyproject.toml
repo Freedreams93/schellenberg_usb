@@ -6,16 +6,21 @@ readme = "README.md"
 # custom-component) - unrelated to the *integration's* own minimum
 # supported Home Assistant version, which stays governed by hacs.json's
 # "homeassistant" key (2025.3.0) so users on older Core installs are not
-# dropped by this bump. The upper bound exists only to keep uv's own
-# cross-version lock resolution solvable: left open-ended, uv must also
-# resolve a lockfile valid for (not yet released) Python 3.15+, and
-# Home Assistant's own metadata pins mutually exclusive uv/pillow
-# versions on either side of that boundary - confirmed from a real
-# Dependabot run failing both dependencies with "No solution found when
-# resolving dependencies for split (markers: python_full_version >=
-# '3.15')", which itself suggests this exact fix ("Consider limiting
-# your project's supported Python versions using `requires-python`").
-requires-python = ">=3.14.2,<3.15"
+# dropped by this bump.
+#
+# No upper bound, deliberately, even though that is what currently makes
+# Dependabot's own "uv" group update fail (see CHANGELOG.md's v1.2.0
+# entry on this) - uv.lock's own requires-python has to move together
+# with this value, and this sandbox has no PyPI access to regenerate it
+# (confirmed: `uv lock` here fails outright on DNS resolution for
+# pypi.org). A first attempt here added `,<3.15` without updating
+# uv.lock to match, which `uv sync --locked` - CI's own install step -
+# correctly rejected as a lockfile/pyproject.toml mismatch, turning a
+# Dependabot-only inconvenience into every CI run failing before pytest
+# ever starts. Reverted for that reason. Fixing this for real needs a
+# `uv lock` run somewhere with actual network access - a maintainer's
+# own machine, not this one.
+requires-python = ">=3.14.2"
 dependencies = [
     # A minimum instead of an exact pin: Home Assistant Core's own serialx
     # requirement moves forward on its own schedule (it went from 1.10.0 to
