@@ -1389,6 +1389,19 @@ async def test_cancel_pending_move_is_not_clobbered_by_a_concurrent_second_move(
     the overwrite, this drives two blinds' own calls concurrently - as
     test_control_blind_with_retry_serializes_two_blinds_instead_of_racing
     does - and cancels the *first* one while the *second* is also tracked.
+
+    This goes further than calling cancel_pending_move() in isolation: A
+    starts, then B starts right after while A is still tracked as
+    in-flight - the actual clobbering window - and the test does not end
+    until *both* have been brought to their own, different target by an
+    actual control_blind_stop() call each, cancel_pending_move() first for
+    both, mirroring cover.py's own async_stop_cover() sequence exactly.
+    A's own first attempt is made to hit a busy reply so its retry loop -
+    and with it _moves_in_progress still genuinely holding "AAAAAA" - is
+    still live at the moment its cancellation lands; without that,
+    cancel_pending_move("AAAAAA") would find nothing to cancel and this
+    would collapse into the always-a-no-op case the test named above
+    already covers, proving nothing about the overwrite at all.
     """
     real_sleep = asyncio.sleep
 
@@ -1446,6 +1459,41 @@ async def test_cancel_pending_move_is_not_clobbered_by_a_concurrent_second_move(
     )
     connected_api._handle_message("t1")  # B's write is accepted
     assert await asyncio.wait_for(task_b, timeout=1) is True
+
+    # A has now reached its own target and gets its own real stop, exactly
+    # the way cover.py's async_stop_cover() drives one: cancel first, then
+    # the stop itself. The cancel is already a no-op by now (A's retry
+    # loop is long since finished) - this only proves cancel_pending_move()
+    # stays harmless when called unconditionally, per its own docstring,
+    # once there is genuinely nothing left for it to cancel. The last "t1"
+    # above (B's own accepted write) cleared _transmitter_idle - see
+    # _handle_message()'s own comment, any accepted write does that, not
+    # only a move's - so the stop below needs a "t0" before it can reach
+    # the wire, the same as any other call would.
+    connected_api.cancel_pending_move("AAAAAA")
+    stop_a = asyncio.ensure_future(
+        connected_api.control_blind_stop("10", device_id="AAAAAA")
+    )
+    connected_api._handle_message("t0")
+    await _run_until(
+        lambda: written(connected_api).count(_blind_payload("10", CMD_STOP)) == 1
+    )
+    connected_api._handle_message("t1")  # A's own stop is accepted
+    assert await asyncio.wait_for(stop_a, timeout=1) is True
+
+    # B then reaches its own, different target and gets its own stop too -
+    # unaffected by anything done for A above. The test ends only once
+    # this, B's own stop, has actually been accepted as well.
+    connected_api.cancel_pending_move("BBBBBB")  # same unconditional no-op
+    stop_b = asyncio.ensure_future(
+        connected_api.control_blind_stop("20", device_id="BBBBBB")
+    )
+    connected_api._handle_message("t0")  # A's own stop-ack above cleared this
+    await _run_until(
+        lambda: written(connected_api).count(_blind_payload("20", CMD_STOP)) == 1
+    )
+    connected_api._handle_message("t1")  # B's own stop is accepted
+    assert await asyncio.wait_for(stop_b, timeout=1) is True
 
 
 # ---------------------------------------------------------------------------
