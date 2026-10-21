@@ -75,7 +75,16 @@ def make_flow(hass: HomeAssistant) -> Any:
     directly - _get_entry() is mocked to hand back an object whose
     runtime_data is this same api, matching how _async_developer_command()
     and async_step_reset_stick() actually fetch it
-    (self._get_entry().runtime_data).
+    (self._get_entry().runtime_data). subentries is an empty dict for the
+    same reason: a real ConfigEntry always carries that attribute (every
+    other module reads entry.subentries unconditionally - cover.py,
+    sensor.py, switch.py, __init__.py, diagnostics.py - none of them
+    guard against it being absent), and async_step_calibrate()'s
+    recalibration path now reads it too, via
+    _foreign_capture_device_ids(self._get_entry(), ...), to learn which
+    device ids belong to this hub's *other* paired blinds. None of this
+    module's tests exercise more than one blind, so the empty default -
+    "no other blinds" - is correct for all of them.
     """
     flow: Any = SchellenbergPairingSubentryFlow()
     flow.hass = hass
@@ -110,7 +119,9 @@ def make_flow(hass: HomeAssistant) -> Any:
     api.busy_latched = False
     api.transmit_block_reason = None
     flow._api = api
-    flow._get_entry = MagicMock(return_value=SimpleNamespace(runtime_data=api))
+    flow._get_entry = MagicMock(
+        return_value=SimpleNamespace(runtime_data=api, subentries={})
+    )
     return flow
 
 
