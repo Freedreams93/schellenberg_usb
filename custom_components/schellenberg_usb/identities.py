@@ -6,6 +6,18 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .const import (
+    CONF_COMMAND_DEVICE_ID,
+    CONF_COMMAND_ENUM,
+    CONF_DEVICE_ENUM,
+    CONF_DEVICE_ID,
+    CONF_SECONDARY_STATUS_IDENTITIES,
+    CONF_STATUS_DEVICE_ID,
+    CONF_STATUS_ENUM,
+    CONF_STATUS_IDENTITY_SOURCE,
+    STATUS_IDENTITY_SOURCE_UNKNOWN,
+)
+
 type StatusIdentity = tuple[str, str]
 
 _STATUS_IDENTITY_PATTERN = re.compile(
@@ -99,6 +111,50 @@ def format_status_identities(value: object) -> str:
         f"{device_id}/{device_enum}"
         for device_id, device_enum in normalize_status_identities(value)
     )
+
+
+def resolve_blind_identities(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve one blind subentry's command/status identities from its data.
+
+    Shared by config_flow.py's developer-tools diagnostics step and
+    diagnostics.py's structured diagnostics dump, so the fallback priority
+    below only has to be right in one place instead of two drifting copies
+    of it: CONF_COMMAND_DEVICE_ID/CONF_COMMAND_ENUM take priority over the
+    legacy CONF_DEVICE_ID/CONF_DEVICE_ENUM, and
+    CONF_STATUS_IDENTITY_SOURCE == STATUS_IDENTITY_SOURCE_UNKNOWN means "no
+    confirmed primary status identity yet" regardless of whatever
+    CONF_STATUS_DEVICE_ID/CONF_STATUS_ENUM values happen to still be sitting
+    in the subentry's data from before it became unconfirmed.
+    """
+    command_device_id = str(
+        data.get(CONF_COMMAND_DEVICE_ID) or data.get(CONF_DEVICE_ID, "")
+    ).upper()
+    command_enum = str(
+        data.get(CONF_COMMAND_ENUM) or data.get(CONF_DEVICE_ENUM, "")
+    ).upper()
+    configured_source = str(data.get(CONF_STATUS_IDENTITY_SOURCE) or "legacy")
+    if configured_source == STATUS_IDENTITY_SOURCE_UNKNOWN:
+        primary_identity = None
+    else:
+        primary_identity = normalize_status_identity(
+            data.get(CONF_STATUS_DEVICE_ID) or command_device_id,
+            data.get(CONF_STATUS_ENUM) or command_enum,
+        )
+    secondary_status_identities = normalize_status_identities(
+        data.get(CONF_SECONDARY_STATUS_IDENTITIES)
+    )
+    status_identities = (
+        *((primary_identity,) if primary_identity is not None else ()),
+        *secondary_status_identities,
+    )
+    return {
+        "command_device_id": command_device_id,
+        "command_enum": command_enum,
+        "status_identity_source": configured_source,
+        "primary_identity": primary_identity,
+        "secondary_status_identities": secondary_status_identities,
+        "status_identities": status_identities,
+    }
 
 
 #: Commands api.py's frame handler accepts as confirming the direction *it

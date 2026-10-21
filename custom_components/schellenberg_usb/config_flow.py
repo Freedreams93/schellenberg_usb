@@ -54,8 +54,8 @@ from .const import (
 from .identities import (
     format_status_identities,
     normalize_status_identities,
-    normalize_status_identity,
     parse_status_identities_text,
+    resolve_blind_identities,
     serialize_status_identities,
 )
 from .options_flow import SchellenbergOptionsFlowHandler
@@ -755,20 +755,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         """Return normalized protocol details for the selected blind."""
         subentry = self._get_reconfigure_subentry()
         data = subentry.data
-        command_device_id = str(
-            data.get(CONF_COMMAND_DEVICE_ID) or data.get(CONF_DEVICE_ID, "")
-        ).upper()
-        command_enum = str(
-            data.get(CONF_COMMAND_ENUM) or data.get(CONF_DEVICE_ENUM, "")
-        ).upper()
-        configured_source = str(data.get(CONF_STATUS_IDENTITY_SOURCE) or "legacy")
-        if configured_source == STATUS_IDENTITY_SOURCE_UNKNOWN:
-            primary_identity = None
-        else:
-            primary_identity = normalize_status_identity(
-                data.get(CONF_STATUS_DEVICE_ID) or command_device_id,
-                data.get(CONF_STATUS_ENUM) or command_enum,
-            )
+        resolved = resolve_blind_identities(data)
+        command_device_id = resolved["command_device_id"]
+        command_enum = resolved["command_enum"]
+        configured_source = resolved["status_identity_source"]
+        primary_identity = resolved["primary_identity"]
+        secondary_status_identities = resolved["secondary_status_identities"]
+        status_identities = resolved["status_identities"]
         primary_status_device_id = (
             primary_identity[0]
             if primary_identity is not None
@@ -776,13 +769,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         )
         primary_status_enum = (
             primary_identity[1] if primary_identity is not None else "--"
-        )
-        secondary_status_identities = normalize_status_identities(
-            data.get(CONF_SECONDARY_STATUS_IDENTITIES)
-        )
-        status_identities = (
-            *((primary_identity,) if primary_identity is not None else ()),
-            *secondary_status_identities,
         )
         source_label = {
             STATUS_IDENTITY_SOURCE_MANUAL: _runtime_translation_text(

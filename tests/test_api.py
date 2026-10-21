@@ -1961,3 +1961,76 @@ async def test_pop_fresh_calibration_position_without_a_prior_set_is_none(
 ) -> None:
     """A blind_id nothing was ever set for pops to None, not a KeyError."""
     assert connected_api.pop_fresh_calibration_position("NEVER_SET") is None
+
+
+# ---------------------------------------------------------------------------
+# get_last_received_for_identities()/get_last_secondary_frame(): previously
+# exercised only through MagicMock stand-ins in
+# tests/test_pairing_subentry_flow.py, never against a real
+# SchellenbergUsbApi with real frame data - including the "pick the newest
+# of several matching identities" branch, which no test anywhere reached.
+# ---------------------------------------------------------------------------
+
+
+def test_get_last_received_for_identities_returns_the_newest_matching_frame(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """Of several identities supplied at once, the one with the highest
+    recorded sequence number wins, regardless of dict insertion order.
+    """
+    connected_api._last_received_messages[("ABCDEF", "10")] = {
+        "device_id": "ABCDEF",
+        "enum": "10",
+        "command": "01",
+        "sequence": 5,
+    }
+    connected_api._last_received_messages[("ABCDEF", "20")] = {
+        "device_id": "ABCDEF",
+        "enum": "20",
+        "command": "02",
+        "sequence": 7,
+    }
+
+    result = connected_api.get_last_received_for_identities(
+        (("ABCDEF", "10"), ("ABCDEF", "20"))
+    )
+
+    assert result is not None
+    assert result["enum"] == "20"
+    assert result["sequence"] == 7
+
+
+def test_get_last_received_for_identities_returns_none_without_a_match(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """No frame recorded for any supplied identity - not even an empty dict,
+    which int(message["sequence"]) would otherwise crash comparing against.
+    """
+    connected_api._last_received_messages[("ABCDEF", "10")] = {
+        "device_id": "ABCDEF",
+        "enum": "10",
+        "command": "01",
+        "sequence": 1,
+    }
+
+    assert connected_api.get_last_received_for_identities((("FEDCBA", "99"),)) is None
+    assert connected_api.get_last_received_for_identities(()) is None
+
+
+def test_get_last_secondary_frame_delegates_to_get_last_received_for_identities(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """get_last_secondary_frame() is a thin wrapper (see its own docstring) -
+    this is the regression test for that delegation itself, not just the
+    lookup logic it delegates to (covered directly above).
+    """
+    connected_api._last_received_messages[("ABCDEF", "30")] = {
+        "device_id": "ABCDEF",
+        "enum": "30",
+        "command": "00",
+        "sequence": 1,
+    }
+
+    assert connected_api.get_last_secondary_frame(
+        (("ABCDEF", "30"),)
+    ) == connected_api.get_last_received_for_identities((("ABCDEF", "30"),))

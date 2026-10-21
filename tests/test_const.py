@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from custom_components.schellenberg_usb.const import (
     CALIBRATION_TIMEOUT,
     CMD_DOWN,
@@ -28,6 +30,7 @@ from custom_components.schellenberg_usb.const import (
     SIGNAL_PAIRING_TIMEOUT,
     SIGNAL_STICK_STATUS_UPDATED,
     VERIFY_TIMEOUT,
+    resolve_direction_command,
 )
 
 
@@ -96,3 +99,25 @@ def test_timeout_relationships() -> None:
     assert CALIBRATION_TIMEOUT > PAIRING_TIMEOUT
     # Pairing should be longer than verification
     assert PAIRING_TIMEOUT > VERIFY_TIMEOUT
+
+
+def test_resolve_direction_command() -> None:
+    """Replaces five independently-duplicated CMD_UP/CMD_DOWN ternaries
+    (cover.py's async_open_cover/async_close_cover and config_flow.py's
+    motor-test, developer-command, and teach-motor steps) - previously
+    covered only indirectly, through each of those five call sites' own
+    tests, never as a function in its own right.
+    """
+    assert resolve_direction_command("open", invert_direction=False) == CMD_UP
+    assert resolve_direction_command("open", invert_direction=True) == CMD_DOWN
+    assert resolve_direction_command("close", invert_direction=False) == CMD_DOWN
+    assert resolve_direction_command("close", invert_direction=True) == CMD_UP
+
+
+def test_resolve_direction_command_rejects_an_unknown_direction() -> None:
+    """Only "open"/"close" are valid - anything else is a programming error
+    at the call site, not a value that should silently fall through to
+    either command.
+    """
+    with pytest.raises(ValueError, match="sideways"):
+        resolve_direction_command("sideways", invert_direction=False)
