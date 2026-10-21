@@ -6,8 +6,16 @@ readme = "README.md"
 # custom-component) - unrelated to the *integration's* own minimum
 # supported Home Assistant version, which stays governed by hacs.json's
 # "homeassistant" key (2025.3.0) so users on older Core installs are not
-# dropped by this bump.
-requires-python = ">=3.14.2"
+# dropped by this bump. The upper bound exists only to keep uv's own
+# cross-version lock resolution solvable: left open-ended, uv must also
+# resolve a lockfile valid for (not yet released) Python 3.15+, and
+# Home Assistant's own metadata pins mutually exclusive uv/pillow
+# versions on either side of that boundary - confirmed from a real
+# Dependabot run failing both dependencies with "No solution found when
+# resolving dependencies for split (markers: python_full_version >=
+# '3.15')", which itself suggests this exact fix ("Consider limiting
+# your project's supported Python versions using `requires-python`").
+requires-python = ">=3.14.2,<3.15"
 dependencies = [
     # A minimum instead of an exact pin: Home Assistant Core's own serialx
     # requirement moves forward on its own schedule (it went from 1.10.0 to
