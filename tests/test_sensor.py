@@ -92,6 +92,36 @@ def test_mode_sensor_maps_each_known_mode_to_its_own_icon(hass: HomeAssistant) -
         assert sensor.icon == expected_icon
 
 
+def test_sensor_model_follows_configured_hass_language(hass: HomeAssistant) -> None:
+    """Regression: the hub device's "model" must be the same regardless of
+    which entity happens to create its device registry entry first.
+    __init__.py's hub device and switch.py's SchellenbergLedSwitch already
+    translate it for this exact same device identifier
+    ({(DOMAIN, entry.entry_id)}) via runtime_translation_text(hass,
+    "device_model") - these sensors used to hardcode the English "USB
+    Stick" instead, regardless of the configured language.
+    """
+    hass.config.language = "de"
+    api = MagicMock()
+    sensor = SchellenbergConnectionSensor(api, _build_entry(hass), hass)
+
+    assert sensor._attr_device_info is not None
+    assert sensor._attr_device_info.get("model") == "USB-Stick"
+
+
+def test_sensor_model_defaults_to_english_without_hass(hass: HomeAssistant) -> None:
+    """Built the same way async_setup_entry built these before this fix
+    (hass omitted), the model must keep showing the same English text it
+    always did - this must not regress for any caller that still
+    constructs a sensor without passing hass.
+    """
+    api = MagicMock()
+    sensor = SchellenbergConnectionSensor(api, _build_entry(hass))
+
+    assert sensor._attr_device_info is not None
+    assert sensor._attr_device_info.get("model") == "USB Stick"
+
+
 async def test_sensor_updates_on_dispatcher_signal(hass: HomeAssistant) -> None:
     """A sensor must refresh its state when the stick status signal fires."""
     api = MagicMock()
@@ -113,6 +143,7 @@ async def test_async_setup_entry_creates_three_sensors_grouped_under_hub(
     hass: HomeAssistant,
 ) -> None:
     """All three sensors must be added under the hub subentry, not ungrouped."""
+    hass.config.language = "de"
     api = MagicMock()
     api.device_version = "20180510_DFBD"
     entry = _build_entry(hass)
@@ -146,3 +177,12 @@ async def test_async_setup_entry_creates_three_sensors_grouped_under_hub(
         "SchellenbergModeSensor",
     }
     assert subentry_ids == [hub_subentry.subentry_id]
+    # Regression: async_setup_entry must pass hass through to each sensor so
+    # its device model is translated like the hub device and the LED switch
+    # (see test_sensor_model_follows_configured_hass_language) - previously
+    # it built these sensors with no hass at all.
+    assert all(
+        entity._attr_device_info is not None
+        and entity._attr_device_info.get("model") == "USB-Stick"
+        for entity in added
+    )

@@ -47,15 +47,46 @@ def normalize_status_identity(
     return normalized_id, normalized_enum
 
 
+def _split_status_identity_tokens(text: str) -> list[str]:
+    """Split comma/semicolon/newline-separated text into stripped, non-empty tokens.
+
+    Shared by parse_status_identities_text() (strict - raises on the first
+    malformed token) and normalize_status_identities()'s own string-input
+    branch (lenient - skips a malformed token instead), so the two only
+    ever differ in how they react to a bad token, never in how the text is
+    split into tokens to begin with.
+    """
+    return [token for raw in re.split(r"[,;\n]+", text) if (token := raw.strip())]
+
+
 def normalize_status_identities(value: object) -> tuple[StatusIdentity, ...]:
-    """Normalize persisted list or text representations, ignoring invalid items."""
+    """Normalize persisted list or text representations, ignoring invalid items.
+
+    A string is tokenized the same way parse_status_identities_text() does,
+    but a malformed token is skipped here rather than discarding every
+    other, well-formed token found in the same string - matching this
+    function's own docstring and the list/iterable branch below, which
+    already tolerates one bad item without losing the valid ones around it.
+    """
     if value is None or value == "":
         return ()
     if isinstance(value, str):
-        try:
-            return parse_status_identities_text(value)
-        except ValueError:
-            return ()
+        token_identities: list[StatusIdentity] = []
+        for token in _split_status_identity_tokens(value):
+            match = _STATUS_IDENTITY_PATTERN.fullmatch(token)
+            if match is None:
+                continue
+            # Named distinctly from the iterable branch's own `identity`
+            # below - both live in this same function's scope, and mypy
+            # treats a second *annotated* declaration of one name in one
+            # scope as a redefinition even across mutually-exclusive
+            # branches (this one is unannotated, so it would not itself
+            # trigger that check, but naming it `identity` too would still
+            # read as the same variable reused for two different things).
+            token_identity = normalize_status_identity(match.group(1), match.group(2))
+            if token_identity is not None and token_identity not in token_identities:
+                token_identities.append(token_identity)
+        return tuple(token_identities)
     if not isinstance(value, Iterable) or isinstance(value, (bytes, Mapping)):
         return ()
 
@@ -75,15 +106,18 @@ def normalize_status_identities(value: object) -> tuple[StatusIdentity, ...]:
 
 
 def parse_status_identities_text(value: object) -> tuple[StatusIdentity, ...]:
-    """Parse comma/newline-separated DEVICE_ID/ENUM identities strictly."""
+    """Parse comma/newline-separated DEVICE_ID/ENUM identities strictly.
+
+    Unlike normalize_status_identities()'s own string-input handling above,
+    this raises ValueError on the first malformed token instead of skipping
+    it - relied on directly by config_flow.py's manual-edit text field so a
+    typo is rejected with a visible form error instead of silently dropped.
+    """
     text = str(value or "").strip()
     if not text:
         return ()
     identities: list[StatusIdentity] = []
-    for raw_token in re.split(r"[,;\n]+", text):
-        token = raw_token.strip()
-        if not token:
-            continue
+    for token in _split_status_identity_tokens(text):
         match = _STATUS_IDENTITY_PATTERN.fullmatch(token)
         if match is None:
             raise ValueError(f"invalid status identity: {token}")

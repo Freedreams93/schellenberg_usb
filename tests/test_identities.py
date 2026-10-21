@@ -74,6 +74,20 @@ def test_normalize_status_identities_accepts_multiple_input_shapes() -> None:
     assert normalize_status_identities("garbage") == ()
 
 
+def test_normalize_status_identities_keeps_valid_tokens_around_a_bad_one() -> None:
+    """Regression: one malformed token in a comma/newline-separated string
+    used to discard every identity parsed from that string, not just the
+    bad token - inconsistent with this function's own docstring ("ignoring
+    invalid items") and with the list/iterable branch of the same function,
+    which already drops only the bad item and keeps the well-formed ones
+    around it.
+    """
+    assert normalize_status_identities("5D3E7C/01, garbage, ABCDEF/02") == (
+        ("5D3E7C", "01"),
+        ("ABCDEF", "02"),
+    )
+
+
 def test_summarize_status_discovery_frames_prefers_most_recognized_group() -> None:
     frames = [
         {"device_id": "5D3E7C", "enum": "01", "command": "01", "time": "10:00:00"},
