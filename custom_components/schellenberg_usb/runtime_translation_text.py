@@ -719,6 +719,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "geschätzt / seit Neustart nicht bestätigt"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "gemessen während der Kopplung / seit Neustart nicht bestätigt"
+        ),
         "not recorded": "nicht erfasst",
         "startup default": "Startvorgabe",
         "restored HA state": "aus Home-Assistant-Zustand wiederhergestellt",
@@ -733,6 +736,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Manueller Positionsabgleich über die Entwicklerwerkzeuge"
         ),
         "completed calibration": "abgeschlossene Kalibrierung",
+        "fresh calibration result": "frisches Kalibrierungsergebnis",
         "startup default (no restored HA state)": (
             "Startvorgabe (kein wiederhergestellter Home-Assistant-Zustand)"
         ),
@@ -782,6 +786,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "estimada / no confirmada desde el reinicio"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "medida durante el emparejamiento / no confirmada desde el reinicio"
+        ),
         "not recorded": "no registrado",
         "startup default": "valor predeterminado al iniciar",
         "restored HA state": "estado restaurado de Home Assistant",
@@ -796,6 +803,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Sincronización manual de posición desde Herramientas de desarrollo"
         ),
         "completed calibration": "calibración completada",
+        "fresh calibration result": "resultado reciente de la calibración",
         "startup default (no restored HA state)": (
             "valor predeterminado al iniciar (sin estado restaurado de Home Assistant)"
         ),
@@ -845,6 +853,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "estimée / non confirmée depuis le redémarrage"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "mesurée pendant l'appairage / non confirmée depuis le redémarrage"
+        ),
         "not recorded": "non enregistré",
         "startup default": "valeur par défaut au démarrage",
         "restored HA state": "état restauré de Home Assistant",
@@ -859,6 +870,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Synchronisation manuelle de position via les outils de développement"
         ),
         "completed calibration": "calibrage terminé",
+        "fresh calibration result": "résultat récent du calibrage",
         "startup default (no restored HA state)": (
             "valeur par défaut au démarrage (aucun état Home Assistant restauré)"
         ),

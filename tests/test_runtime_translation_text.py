@@ -126,6 +126,33 @@ def test_translate_phrase_falls_back_to_the_original_for_an_unknown_phrase() -> 
     assert translate_phrase(hass, "some future phrase") == "some future phrase"
 
 
+def test_translate_phrase_translates_the_two_previously_missing_phrases() -> None:
+    """Regression: "fresh calibration result" and "measured during pairing /
+    not confirmed since restart" - cover.py's async_added_to_hass() sets
+    both whenever a blind's startup position comes from a calibration that
+    just completed - were present in English but missing from
+    _PHRASE_TRANSLATIONS for de/es/fr entirely, found during an independent
+    audit. Invisible to
+    test_phrase_translation_keys_match_across_all_languages above, which
+    only checks the three non-English languages against each other: all
+    three were missing both keys identically, so they stayed mutually
+    consistent with each other despite the gap. A real installation in any
+    of these three languages saw the plain English phrase mixed into
+    otherwise-translated text instead of a crash, via translate_phrase()'s
+    own silent fallback to the key itself - confirmed unchanged by this
+    fix for a phrase that is still genuinely missing, see the
+    falls-back-to-the-original test above.
+    """
+    for language in ("de", "es", "fr"):
+        hass = _hass_with_language(language)
+        for phrase in (
+            "fresh calibration result",
+            "measured during pairing / not confirmed since restart",
+        ):
+            translated = translate_phrase(hass, phrase)
+            assert translated != phrase, (language, phrase)
+
+
 def test_yes_no_translates_both_values_to_spanish() -> None:
     hass = _hass_with_language("es")
 

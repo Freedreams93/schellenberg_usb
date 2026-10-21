@@ -381,16 +381,24 @@ class SchellenbergUsbApi:
         # without writing, rather than finishing its turn, the moment a
         # stop is waiting for this lock.
         self._move_lock = _PriorityLock()
-        # Which blind's move control_blind_with_retry() is currently
+        # Which blinds' moves control_blind_with_retry() is currently
         # attempting (write, maybe-retry) - read by cancel_pending_move() so
         # a stop for that same blind can end a stale retry loop instead of
         # letting it resend after the stop, the exact collision that made
         # routing moves through the busy-retry cycle get reverted before.
-        self._move_in_progress_device_id: str | None = None
-        # Set by cancel_pending_move() when it matches _move_in_progress_
-        # device_id; control_blind_with_retry() checks this at each retry
-        # boundary and gives up (returns False) rather than writing again.
-        self._move_cancel_device_id: str | None = None
+        # Tracked per device_id (not a single scalar) since this hub can
+        # have several blinds' own calls genuinely in flight at once -
+        # driving several together is this integration's whole point (see
+        # README's own multi-blind example) - a single shared "the" device
+        # id used to let whichever blind's call ran its own first line most
+        # recently silently overwrite an earlier, still-in-flight blind's
+        # own claim to it.
+        self._moves_in_progress: set[str] = set()
+        # Device ids cancel_pending_move() has requested an end to; added
+        # only for a device_id already present in _moves_in_progress.
+        # control_blind_with_retry() checks this at each retry boundary and
+        # gives up (returns False) rather than writing again.
+        self._move_cancel_requested: set[str] = set()
         # True only between a move's write and learning its outcome;
         # _handle_message's t1/tE branches only touch _move_ack_result/
         # _move_ack_event while this is True, so they never fire for a t1/
@@ -1616,14 +1624,17 @@ class SchellenbergUsbApi:
         common case for most stops - never blocks, never raises, safe to
         call unconditionally before every stop.
 
-        Deliberately keyed off _move_in_progress_device_id rather than
-        setting _move_cancel_device_id unconditionally: a stop for a blind
-        with no move in flight must not leave a stale cancellation sitting
-        around for that same blind's next, completely unrelated move to
-        trip over.
+        Deliberately keyed off _moves_in_progress (per device_id) rather
+        than adding to _move_cancel_requested unconditionally: a stop for a
+        blind with no move in flight must not leave a stale cancellation
+        sitting around for that same blind's next, completely unrelated
+        move to trip over. Checking this device_id's own membership, not a
+        single shared "the one in-progress device", also means a second
+        blind's own concurrent call can never make this check see the
+        wrong device - see _moves_in_progress's own comment in __init__.
         """
-        if self._move_in_progress_device_id == device_id:
-            self._move_cancel_device_id = device_id
+        if device_id in self._moves_in_progress:
+            self._move_cancel_requested.add(device_id)
 
     async def control_blind_with_retry(
         self,
@@ -1704,16 +1715,36 @@ class SchellenbergUsbApi:
                 action,
             )
             return False
-        # Set for this call's whole duration, not just once _move_lock is
+        if device_id is None:
+            # Every real caller - async_open_cover()/async_close_cover(),
+            # the only two - always passes its own blind's device_id (see
+            # this method's own docstring: it exists only for them). The
+            # per-device tracking below needs a real device to key it by,
+            # so bail out the same defensive way as the not-a-move check
+            # above rather than letting a hypothetical future caller that
+            # forgot to pass one fall through with no device to track.
+            _LOGGER.error(
+                "control_blind_with_retry blocked reason=no_device_id "
+                "source=%s action=%s",
+                source,
+                action,
+            )
+            return False
+        # Added for this call's whole duration, not just once _move_lock is
         # actually held - cancel_pending_move() can then end this call even
         # while it is still only waiting for idle, before ever reaching the
         # lock, which is strictly more responsive than waiting for that.
-        self._move_in_progress_device_id = device_id
+        # Added to the per-device set rather than assigned to a shared
+        # scalar, so a second blind's own concurrent call (driving several
+        # blinds together is this integration's whole point) can never
+        # clobber this one's own membership here - see this attribute's
+        # own comment in __init__.
+        self._moves_in_progress.add(device_id)
         retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
         try:
             while True:
-                if self._move_cancel_device_id == device_id:
-                    self._move_cancel_device_id = None
+                if device_id in self._move_cancel_requested:
+                    self._move_cancel_requested.discard(device_id)
                     return False
                 if time.monotonic() >= retry_deadline:
                     _LOGGER.warning(
@@ -1789,7 +1820,7 @@ class SchellenbergUsbApi:
                 # brief pause send_command()'s own retry uses.
                 await asyncio.sleep(0.1)
         finally:
-            self._move_in_progress_device_id = None
+            self._moves_in_progress.discard(device_id)
 
     async def control_blind_stop(
         self,
@@ -2232,8 +2263,8 @@ class SchellenbergUsbApi:
         if self._move_awaiting_ack:
             self._move_ack_result = False
             self._move_ack_event.set()
-        self._move_in_progress_device_id = None
-        self._move_cancel_device_id = None
+        self._moves_in_progress.clear()
+        self._move_cancel_requested.clear()
 
         error = ConnectionError(f"serial connection lost: {exc}")
         for future in (
@@ -2400,8 +2431,8 @@ class SchellenbergUsbApi:
         if self._move_awaiting_ack:
             self._move_ack_result = False
             self._move_ack_event.set()
-        self._move_in_progress_device_id = None
-        self._move_cancel_device_id = None
+        self._moves_in_progress.clear()
+        self._move_cancel_requested.clear()
         stop_task = self._stop_pairing_task
         self._stop_pairing_task = None
         if (
