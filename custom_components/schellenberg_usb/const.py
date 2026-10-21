@@ -74,6 +74,27 @@ CMD_DOWN = "02"  # 0x02 - Down
 CMD_ALLOW_PAIRING = "40"  # 0x40 - Allow Pairing (make device listen to new remote)
 CMD_PAIR = "60"  # 0x60 - Pair with device / Change rotation direction
 
+
+def resolve_direction_command(logical_direction: str, invert_direction: bool) -> str:
+    """Return the physical CMD_UP/CMD_DOWN byte for one logical direction.
+
+    "open" normally sends CMD_UP and "close" normally sends CMD_DOWN; a
+    device whose CONF_INVERT_DIRECTION flag is set gets the opposite byte
+    for each, since its motor is wired/oriented so that "up" on the wire
+    drives it closed instead of open. Centralizes a mapping that used to be
+    reimplemented independently at five call sites (cover.py's
+    async_open_cover/async_close_cover, and config_flow.py's test_motor,
+    _async_developer_command, and teach_motor steps) so a future change
+    only has to happen once, instead of risking the sites drifting out of
+    sync with each other.
+    """
+    if logical_direction == "open":
+        return CMD_DOWN if invert_direction else CMD_UP
+    if logical_direction == "close":
+        return CMD_UP if invert_direction else CMD_DOWN
+    raise ValueError(f"Unknown logical direction: {logical_direction!r}")
+
+
 # Motor events from stick (same as some commands)
 EVENT_STARTED_MOVING_UP = "01"
 EVENT_STARTED_MOVING_DOWN = "02"

@@ -1986,22 +1986,6 @@ class SchellenbergUsbApi:
             if bool(last_message["position_tracking"]):
                 self._last_primary_tracking_messages[identity] = dict(last_message)
 
-    def register_existing_devices(self, devices: list[dict[str, Any]]) -> None:
-        """Bulk-register command devices restored from storage at startup.
-
-        Each entry needs only "id" and "enum" (a "name" is accepted for
-        readability in the caller but not required here). Use
-        register_entity() instead when a status identity, entity name, or
-        secondary identities also need registering.
-        """
-        for device in devices:
-            self._registered_devices[device["id"]] = device["enum"]
-        _LOGGER.debug(
-            "Registered %d existing device(s): %s",
-            len(devices),
-            ", ".join(str(device.get("id")) for device in devices),
-        )
-
     def register_entity(
         self,
         status_device_id: str | None,
@@ -2107,15 +2091,16 @@ class SchellenbergUsbApi:
 
     @callback
     def get_last_secondary_frame(self, identities: object) -> dict[str, Any] | None:
-        """Return the newest frame among configured secondary identities."""
-        candidates = [
-            self._last_received_messages[identity]
-            for identity in normalize_status_identities(identities)
-            if identity in self._last_received_messages
-        ]
-        if not candidates:
-            return None
-        return dict(max(candidates, key=lambda message: int(message["sequence"])))
+        """Return the newest frame among configured secondary identities.
+
+        A thin, more specifically-named wrapper around
+        get_last_received_for_identities() - kept as its own method because
+        callers (and the diagnostics dump's own section headings) treat
+        "last matched frame overall" and "last secondary frame" as two
+        distinct, meaningfully different views, even though the lookup
+        itself is identical either way.
+        """
+        return self.get_last_received_for_identities(identities)
 
     @callback
     def record_position_update(

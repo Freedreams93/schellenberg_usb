@@ -26,8 +26,6 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .api import SchellenbergUsbApi
 from .blind_id import normalize_blind_id
 from .const import (
-    CMD_DOWN,
-    CMD_UP,
     CONF_BLIND_ID,
     CONF_CLOSE_TIME,
     CONF_COMMAND_DEVICE_ID,
@@ -55,6 +53,7 @@ from .const import (
     STOP_COMMAND_LATENCY_SECONDS,
     SUBENTRY_TYPE_BLIND,
     SchellenbergConfigEntry,
+    resolve_direction_command,
 )
 from .device_registry_compat import (
     async_device_on_subentry_compat,
@@ -880,11 +879,9 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # position instead of where the blind actually stopped.
             self._update_position()
             if self._attr_current_cover_position is not None:
-                if self._attr_current_cover_position <= 0:
-                    self._attr_current_cover_position = 0
-                elif self._attr_current_cover_position >= 100:
-                    self._attr_current_cover_position = 100
-            if self._attr_current_cover_position is not None:
+                self._attr_current_cover_position = max(
+                    0, min(100, self._attr_current_cover_position)
+                )
                 self._attr_is_closed = self._attr_current_cover_position == 0
             self._attr_is_opening = False
             self._attr_is_closing = False
@@ -1209,7 +1206,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # means "go all the way to 100" - clear any stale target left
             # over from an earlier partial move so this one isn't cut short.
             self._target_position = None
-        action = CMD_DOWN if self._invert_direction else CMD_UP
+        action = resolve_direction_command("open", self._invert_direction)
         _LOGGER.debug(
             "Opening cover %s (command_id=%s enum=%s action=%s)",
             self._device_name,
@@ -1361,7 +1358,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # Same reasoning as async_open_cover: a plain close always
             # targets 0, so drop any stale partial-move target first.
             self._target_position = None
-        action = CMD_UP if self._invert_direction else CMD_DOWN
+        action = resolve_direction_command("close", self._invert_direction)
         _LOGGER.debug(
             "Closing cover %s (command_id=%s enum=%s action=%s)",
             self._device_name,

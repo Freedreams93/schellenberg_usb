@@ -22,7 +22,6 @@ from homeassistant.helpers.service_info.usb import UsbServiceInfo
 from .api import check_serial_port
 from .blind_id import generate_blind_id
 from .const import (
-    CMD_DOWN,
     CMD_STOP,
     CMD_UP,
     CONF_BLIND_ID,
@@ -50,6 +49,7 @@ from .const import (
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
     TEST_COMMAND_DELAY,
+    resolve_direction_command,
 )
 from .identities import (
     format_status_identities,
@@ -513,8 +513,10 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
 
         test_toward_open = test_direction == "open"
         self._pending_test_direction = test_direction
-        open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
-        close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
+        open_action = resolve_direction_command("open", self._pending_invert_direction)
+        close_action = resolve_direction_command(
+            "close", self._pending_invert_direction
+        )
         action = open_action if test_toward_open else close_action
 
         api = self._get_entry().runtime_data
@@ -1053,8 +1055,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
 
         invert_direction = details["invert_direction"]
         action = {
-            "open": CMD_DOWN if invert_direction else CMD_UP,
-            "close": CMD_UP if invert_direction else CMD_DOWN,
+            "open": resolve_direction_command("open", invert_direction),
+            "close": resolve_direction_command("close", invert_direction),
             "stop": CMD_STOP,
         }[command]
         _LOGGER.warning(
@@ -1422,7 +1424,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             opened = False
             stopped = False
             if taught:
-                open_action = CMD_DOWN if details["invert_direction"] else CMD_UP
+                open_action = resolve_direction_command(
+                    "open", details["invert_direction"]
+                )
                 opened = await api.control_blind(
                     details["command_enum"],
                     open_action,
@@ -1820,6 +1824,48 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 for candidate in entry.subentries.values()
             ):
                 errors[CONF_DEVICE_ID] = "already_configured"
+
+            # The command_device_id check above has no equivalent for the
+            # primary status identity: _register_status_identity() in
+            # api.py silently reassigns a status identity from one entity
+            # to another at runtime (only a _LOGGER.warning, no UI error, no
+            # repair issue - this integration never uses HA's issue
+            # registry), so two subentries could otherwise end up listening
+            # for the same device_id/enum with no indication anywhere in
+            # the UI, and whichever registers last steals the other's
+            # position-tracking frames. A candidate whose own status source
+            # is STATUS_IDENTITY_SOURCE_UNKNOWN is skipped: it has no real,
+            # confirmed status identity to collide with (see the matching
+            # STATUS_IDENTITY_SOURCE_UNKNOWN check this function already
+            # does above when pre-filling this same subentry's own display
+            # value) - treating its defaulted-to-command fallback as a real
+            # identity here would produce false-positive collisions against
+            # perfectly normal setups where a *different* blind's status
+            # identity legitimately equals its own command identity. Only
+            # the primary identity is covered here - secondary status
+            # identities are not cross-checked against other subentries.
+            if status_device_id and status_enum:
+                new_status_identity = (status_device_id, status_enum)
+                if any(
+                    candidate.subentry_id != subentry.subentry_id
+                    and candidate.data.get(CONF_STATUS_IDENTITY_SOURCE)
+                    != STATUS_IDENTITY_SOURCE_UNKNOWN
+                    and (
+                        str(
+                            candidate.data.get(CONF_STATUS_DEVICE_ID)
+                            or candidate.data.get(CONF_COMMAND_DEVICE_ID)
+                            or candidate.data.get(CONF_DEVICE_ID, "")
+                        ).upper(),
+                        str(
+                            candidate.data.get(CONF_STATUS_ENUM)
+                            or candidate.data.get(CONF_COMMAND_ENUM)
+                            or candidate.data.get(CONF_DEVICE_ENUM, "")
+                        ).upper(),
+                    )
+                    == new_status_identity
+                    for candidate in entry.subentries.values()
+                ):
+                    errors[CONF_STATUS_DEVICE_ID] = "already_configured"
 
             if not errors:
                 current_data.update(
