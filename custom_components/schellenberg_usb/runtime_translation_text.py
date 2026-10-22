@@ -184,7 +184,9 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "cover_stop_failed": "Failed to stop {name}: {reason}",
         "led_on_failed": "Failed to turn on the LED: {reason}",
         "led_off_failed": "Failed to turn off the LED: {reason}",
-        "service_entry_not_loaded": "No loaded Schellenberg USB entry {entry_id}",
+        "service_entry_not_loaded": (
+            "No loaded Schellenberg USB entry with ID {entry_id}"
+        ),
         "service_need_single_entry": (
             "Exactly one Schellenberg USB hub must be loaded, or "
             "config_entry_id must be supplied"
@@ -345,7 +347,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "led_on_failed": "LED konnte nicht eingeschaltet werden: {reason}",
         "led_off_failed": "LED konnte nicht ausgeschaltet werden: {reason}",
         "service_entry_not_loaded": (
-            "Kein geladener Schellenberg-USB-Eintrag {entry_id}"
+            "Kein geladener Schellenberg-USB-Eintrag mit der ID {entry_id}"
         ),
         "service_need_single_entry": (
             "Es muss genau ein Schellenberg-USB-Hub geladen sein, oder "
@@ -508,7 +510,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "led_on_failed": "No se pudo encender el LED: {reason}",
         "led_off_failed": "No se pudo apagar el LED: {reason}",
         "service_entry_not_loaded": (
-            "No hay ninguna entrada de Schellenberg USB cargada {entry_id}"
+            "No hay ninguna entrada de Schellenberg USB cargada con el ID {entry_id}"
         ),
         "service_need_single_entry": (
             "Debe haber exactamente un hub de Schellenberg USB cargado, o "
@@ -671,7 +673,7 @@ _RUNTIME_TRANSLATION_TEXT: dict[str, dict[str, str]] = {
         "led_on_failed": "Impossible d'allumer la LED : {reason}",
         "led_off_failed": "Impossible d'éteindre la LED : {reason}",
         "service_entry_not_loaded": (
-            "Aucune entrée Schellenberg USB chargée {entry_id}"
+            "Aucune entrée Schellenberg USB chargée avec l'ID {entry_id}"
         ),
         "service_need_single_entry": (
             "Exactement un hub Schellenberg USB doit être chargé, ou "
@@ -717,6 +719,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "geschätzt / seit Neustart nicht bestätigt"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "gemessen während der Kopplung / seit Neustart nicht bestätigt"
+        ),
         "not recorded": "nicht erfasst",
         "startup default": "Startvorgabe",
         "restored HA state": "aus Home-Assistant-Zustand wiederhergestellt",
@@ -731,6 +736,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Manueller Positionsabgleich über die Entwicklerwerkzeuge"
         ),
         "completed calibration": "abgeschlossene Kalibrierung",
+        "fresh calibration result": "frisches Kalibrierungsergebnis",
         "startup default (no restored HA state)": (
             "Startvorgabe (kein wiederhergestellter Home-Assistant-Zustand)"
         ),
@@ -780,6 +786,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "estimada / no confirmada desde el reinicio"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "medida durante el emparejamiento / no confirmada desde el reinicio"
+        ),
         "not recorded": "no registrado",
         "startup default": "valor predeterminado al iniciar",
         "restored HA state": "estado restaurado de Home Assistant",
@@ -794,6 +803,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Sincronización manual de posición desde Herramientas de desarrollo"
         ),
         "completed calibration": "calibración completada",
+        "fresh calibration result": "resultado reciente de la calibración",
         "startup default (no restored HA state)": (
             "valor predeterminado al iniciar (sin estado restaurado de Home Assistant)"
         ),
@@ -843,6 +853,9 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
         "estimated / not confirmed since restart": (
             "estimée / non confirmée depuis le redémarrage"
         ),
+        "measured during pairing / not confirmed since restart": (
+            "mesurée pendant l'appairage / non confirmée depuis le redémarrage"
+        ),
         "not recorded": "non enregistré",
         "startup default": "valeur par défaut au démarrage",
         "restored HA state": "état restauré de Home Assistant",
@@ -857,6 +870,7 @@ _PHRASE_TRANSLATIONS: dict[str, dict[str, str]] = {
             "Synchronisation manuelle de position via les outils de développement"
         ),
         "completed calibration": "calibrage terminé",
+        "fresh calibration result": "résultat récent du calibrage",
         "startup default (no restored HA state)": (
             "valeur par défaut au démarrage (aucun état Home Assistant restauré)"
         ),

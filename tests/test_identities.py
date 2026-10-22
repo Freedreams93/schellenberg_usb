@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import pytest
 
+from custom_components.schellenberg_usb.const import (
+    CONF_COMMAND_DEVICE_ID,
+    CONF_COMMAND_ENUM,
+    CONF_DEVICE_ENUM,
+    CONF_DEVICE_ID,
+    CONF_SECONDARY_STATUS_IDENTITIES,
+    CONF_STATUS_DEVICE_ID,
+    CONF_STATUS_ENUM,
+    CONF_STATUS_IDENTITY_SOURCE,
+    STATUS_IDENTITY_SOURCE_MANUAL,
+    STATUS_IDENTITY_SOURCE_UNKNOWN,
+)
 from custom_components.schellenberg_usb.identities import (
     normalize_status_identities,
     normalize_status_identity,
     parse_status_identities_text,
+    resolve_blind_identities,
     summarize_status_discovery_frames,
 )
 
@@ -18,6 +31,19 @@ def test_normalize_status_identity_accepts_and_rejects() -> None:
     # Too short / not hex -> malformed, must not raise.
     assert normalize_status_identity("5D3E7", "01") is None
     assert normalize_status_identity("5D3E7G", "01") is None
+
+
+def test_normalize_status_identity_rejects_an_empty_enum_instead_of_padding_it() -> (
+    None
+):
+    """Regression: "".zfill(2) is "00", a real enum some other device could use.
+
+    The zfill guard used to run unconditionally, so a device_enum that was
+    empty (rather than merely a short, genuine value like "1") silently
+    became the specific, valid-looking enum "00" instead of being rejected
+    as the malformed input it actually was.
+    """
+    assert normalize_status_identity("5D3E7C", "") is None
 
 
 def test_parse_status_identities_text_accepts_documented_separators() -> None:
@@ -46,6 +72,20 @@ def test_normalize_status_identities_accepts_multiple_input_shapes() -> None:
     assert normalize_status_identities("") == ()
     # A malformed free-text value must degrade to "no identities", not raise.
     assert normalize_status_identities("garbage") == ()
+
+
+def test_normalize_status_identities_keeps_valid_tokens_around_a_bad_one() -> None:
+    """Regression: one malformed token in a comma/newline-separated string
+    used to discard every identity parsed from that string, not just the
+    bad token - inconsistent with this function's own docstring ("ignoring
+    invalid items") and with the list/iterable branch of the same function,
+    which already drops only the bad item and keeps the well-formed ones
+    around it.
+    """
+    assert normalize_status_identities("5D3E7C/01, garbage, ABCDEF/02") == (
+        ("5D3E7C", "01"),
+        ("ABCDEF", "02"),
+    )
 
 
 def test_summarize_status_discovery_frames_prefers_most_recognized_group() -> None:
@@ -346,3 +386,88 @@ def test_summarize_status_discovery_frames_without_a_phase_key_is_unaffected() -
 
     assert result["primary"]["device_id"] == "5D3E7C"
     assert result["primary"]["phase_confirmed_frame_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# resolve_blind_identities(): extracted out of config_flow.py's
+# _developer_details() (which still uses it) so diagnostics.py can share the
+# exact same command/status identity resolution instead of a second,
+# independently-drifting copy of it. Previously only exercised indirectly
+# through _developer_details()'s own, translation-heavy config-flow tests.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_blind_identities_prefers_command_over_legacy_device_fields() -> None:
+    data = {
+        CONF_COMMAND_DEVICE_ID: "abcdef",
+        CONF_COMMAND_ENUM: "1",
+        CONF_DEVICE_ID: "111111",
+        CONF_DEVICE_ENUM: "9",
+        CONF_STATUS_DEVICE_ID: "abcdef",
+        CONF_STATUS_ENUM: "1",
+        CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_MANUAL,
+    }
+
+    result = resolve_blind_identities(data)
+
+    assert result["command_device_id"] == "ABCDEF"
+    # command_enum itself is only ever upper()-cased, never zero-padded -
+    # that only happens inside normalize_status_identity() below, for the
+    # identity tuple specifically. "1" (not "01") is the correct,
+    # pre-existing behavior carried over unchanged from _developer_details().
+    assert result["command_enum"] == "1"
+    assert result["primary_identity"] == ("ABCDEF", "01")
+    assert result["status_identity_source"] == STATUS_IDENTITY_SOURCE_MANUAL
+
+
+def test_resolve_blind_identities_falls_back_to_legacy_device_fields() -> None:
+    """A subentry predating CONF_COMMAND_DEVICE_ID/CONF_COMMAND_ENUM."""
+    data = {CONF_DEVICE_ID: "111111", CONF_DEVICE_ENUM: "9"}
+
+    result = resolve_blind_identities(data)
+
+    assert result["command_device_id"] == "111111"
+    # Unpadded, same reasoning as the test above - only the identity tuple
+    # itself gets zero-padded.
+    assert result["command_enum"] == "9"
+    # No explicit status identity at all -> falls back to the command one,
+    # zero-padded here because it goes through normalize_status_identity().
+    assert result["primary_identity"] == ("111111", "09")
+    assert result["status_identity_source"] == "legacy"
+
+
+def test_resolve_blind_identities_treats_unknown_source_as_no_primary_identity() -> (
+    None
+):
+    """STATUS_IDENTITY_SOURCE_UNKNOWN means "not confirmed yet" even if
+    CONF_STATUS_DEVICE_ID/CONF_STATUS_ENUM still hold a stale value from
+    before the identity became unconfirmed (see async_step_edit's own
+    duplicate-identity check, which relies on exactly this to avoid a false
+    collision against an unconfirmed candidate).
+    """
+    data = {
+        CONF_COMMAND_DEVICE_ID: "ABCDEF",
+        CONF_COMMAND_ENUM: "01",
+        CONF_STATUS_DEVICE_ID: "ABCDEF",
+        CONF_STATUS_ENUM: "01",
+        CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_UNKNOWN,
+    }
+
+    result = resolve_blind_identities(data)
+
+    assert result["primary_identity"] is None
+    assert result["status_identities"] == ()
+
+
+def test_resolve_blind_identities_orders_primary_before_secondary() -> None:
+    data = {
+        CONF_COMMAND_DEVICE_ID: "ABCDEF",
+        CONF_COMMAND_ENUM: "01",
+        CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_MANUAL,
+        CONF_SECONDARY_STATUS_IDENTITIES: [{"device_id": "111111", "enum": "2"}],
+    }
+
+    result = resolve_blind_identities(data)
+
+    assert result["status_identities"] == (("ABCDEF", "01"), ("111111", "02"))
+    assert result["secondary_status_identities"] == (("111111", "02"),)

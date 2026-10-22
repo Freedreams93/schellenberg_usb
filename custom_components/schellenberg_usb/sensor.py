@@ -17,6 +17,9 @@ from .const import (
     SUBENTRY_TYPE_HUB,
     SchellenbergConfigEntry,
 )
+from .runtime_translation_text import (
+    runtime_translation_text as _runtime_translation_text,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,9 +34,9 @@ async def async_setup_entry(
 
     # Create sensor entities for USB stick status
     sensors = [
-        SchellenbergConnectionSensor(api, entry),
-        SchellenbergVersionSensor(api, entry),
-        SchellenbergModeSensor(api, entry),
+        SchellenbergConnectionSensor(api, entry, hass),
+        SchellenbergVersionSensor(api, entry, hass),
+        SchellenbergModeSensor(api, entry, hass),
     ]
 
     # Find hub subentry id to group sensors
@@ -54,14 +57,29 @@ class SchellenbergBaseSensor(SensorEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
-        """Initialize the sensor."""
+    def __init__(
+        self,
+        api: SchellenbergUsbApi,
+        entry: SchellenbergConfigEntry,
+        hass: HomeAssistant | None = None,
+    ) -> None:
+        """Initialize the sensor.
+
+        `hass` is accepted here (optionally - tests build these entities
+        before hass is attached, exactly like async_setup_entry's normal
+        entity lifecycle) only to translate the hub device's "model" string
+        at the language Home Assistant is configured in, matching
+        __init__.py's hub device registry entry and switch.py's
+        SchellenbergLedSwitch for this exact same device identifier;
+        self.hass is not assigned yet at this point in the entity lifecycle
+        either way.
+        """
         self.api = api
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Schellenberg USB Stick",
             manufacturer="Schellenberg",
-            model="USB Stick",
+            model=_runtime_translation_text(hass, "device_model"),
             sw_version=api.device_version,
         )
 
@@ -104,9 +122,14 @@ class SchellenbergConnectionSensor(SchellenbergBaseSensor):
     # pattern, hence the suppression rather than the suggested ClassVar fix.
     _attr_options: list[str] = ["connected", "disconnected"]  # noqa: RUF012
 
-    def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
+    def __init__(
+        self,
+        api: SchellenbergUsbApi,
+        entry: SchellenbergConfigEntry,
+        hass: HomeAssistant | None = None,
+    ) -> None:
         """Initialize the connection sensor."""
-        super().__init__(api, entry)
+        super().__init__(api, entry, hass)
         self._attr_unique_id = f"{entry.entry_id}_connection"
 
     @property
@@ -125,9 +148,14 @@ class SchellenbergVersionSensor(SchellenbergBaseSensor):
 
     _attr_translation_key = "firmware_version"
 
-    def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
+    def __init__(
+        self,
+        api: SchellenbergUsbApi,
+        entry: SchellenbergConfigEntry,
+        hass: HomeAssistant | None = None,
+    ) -> None:
         """Initialize the version sensor."""
-        super().__init__(api, entry)
+        super().__init__(api, entry, hass)
         self._attr_unique_id = f"{entry.entry_id}_version"
 
     @property
@@ -157,9 +185,14 @@ class SchellenbergModeSensor(SchellenbergBaseSensor):
         "unknown",
     ]
 
-    def __init__(self, api: SchellenbergUsbApi, entry: SchellenbergConfigEntry) -> None:
+    def __init__(
+        self,
+        api: SchellenbergUsbApi,
+        entry: SchellenbergConfigEntry,
+        hass: HomeAssistant | None = None,
+    ) -> None:
         """Initialize the mode sensor."""
-        super().__init__(api, entry)
+        super().__init__(api, entry, hass)
         self._attr_unique_id = f"{entry.entry_id}_mode"
 
     @property

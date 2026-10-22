@@ -26,9 +26,6 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .api import SchellenbergUsbApi
 from .blind_id import normalize_blind_id
 from .const import (
-    CMD_DOWN,
-    CMD_STOP,
-    CMD_UP,
     CONF_BLIND_ID,
     CONF_CLOSE_TIME,
     CONF_COMMAND_DEVICE_ID,
@@ -56,6 +53,7 @@ from .const import (
     STOP_COMMAND_LATENCY_SECONDS,
     SUBENTRY_TYPE_BLIND,
     SchellenbergConfigEntry,
+    resolve_direction_command,
 )
 from .device_registry_compat import (
     async_device_on_subentry_compat,
@@ -248,33 +246,55 @@ async def async_setup_entry(
                 device_registry, (DOMAIN, stable_device_id), entry.entry_id
             )
 
+            primary_status_text = (
+                f"{status_device_id}/{status_enum}"
+                if status_device_id
+                else _runtime_translation_text(hass, "unknown_label")
+            )
+            current_model = _runtime_translation_text(
+                hass,
+                "device_model_motor",
+                command_device_id=command_device_id,
+                command_enum=command_enum,
+                primary_status_text=primary_status_text,
+                secondary_count=len(secondary_status_identities),
+            )
             if device is None:
-                primary_status_text = (
-                    f"{status_device_id}/{status_enum}"
-                    if status_device_id
-                    else _runtime_translation_text(hass, "unknown_label")
-                )
                 device = device_registry.async_get_or_create(
                     config_entry_id=entry.entry_id,
                     config_subentry_id=subentry.subentry_id,
                     identifiers={(DOMAIN, stable_device_id)},
                     name=device_name,
                     manufacturer="Schellenberg",
-                    model=_runtime_translation_text(
-                        hass,
-                        "device_model_motor",
-                        command_device_id=command_device_id,
-                        command_enum=command_enum,
-                        primary_status_text=primary_status_text,
-                        secondary_count=len(secondary_status_identities),
-                    ),
+                    model=current_model,
                 )
-            elif not async_device_on_subentry_compat(
-                device, entry.entry_id, subentry.subentry_id
-            ):
-                async_reassign_device_subentry_compat(
-                    device_registry, device, entry.entry_id, subentry.subentry_id
-                )
+            else:
+                if not async_device_on_subentry_compat(
+                    device, entry.entry_id, subentry.subentry_id
+                ):
+                    async_reassign_device_subentry_compat(
+                        device_registry, device, entry.entry_id, subentry.subentry_id
+                    )
+                # The device registry entry above is only ever written at
+                # first creation by HA itself - unlike device_name and
+                # current_model, both freshly recomputed from the
+                # subentry's *current* data on every setup/reload. Without
+                # this sync, editing a blind's name or status-identity
+                # fields through async_step_edit's "edit" form
+                # (config_flow.py) silently reported success while the
+                # device page, dashboards and entity list kept showing
+                # whatever was registered at the very first pairing,
+                # forever - found during the same audit as the entries
+                # above. Guarded by the equality check so a reload with no
+                # real identity/name change (the overwhelmingly common case
+                # - most reloads are plain HA restarts, not edits) never
+                # writes to the device registry or fires its update event.
+                if device.name != device_name or device.model != current_model:
+                    device_registry.async_update_device(
+                        device.id,
+                        name=device_name,
+                        model=current_model,
+                    )
             stable_device_registry_id = device.id
             _LOGGER.debug(
                 "Created/updated device %s for paired device %s",
@@ -881,11 +901,9 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # position instead of where the blind actually stopped.
             self._update_position()
             if self._attr_current_cover_position is not None:
-                if self._attr_current_cover_position <= 0:
-                    self._attr_current_cover_position = 0
-                elif self._attr_current_cover_position >= 100:
-                    self._attr_current_cover_position = 100
-            if self._attr_current_cover_position is not None:
+                self._attr_current_cover_position = max(
+                    0, min(100, self._attr_current_cover_position)
+                )
                 self._attr_is_closed = self._attr_current_cover_position == 0
             self._attr_is_opening = False
             self._attr_is_closing = False
@@ -945,6 +963,43 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             task.cancel(reason)
         if self._position_update_task is task:
             self._position_update_task = None
+
+    def _has_live_tracking_in_direction(self, *, opening: bool) -> bool:
+        """Return whether a move already in progress is tracked in this direction.
+
+        True only when the cover is already reported moving the same way
+        (opening/closing) AND the background tracking loop is actually
+        still running with a valid baseline. async_open_cover()/
+        async_close_cover() use this to recognise a redundant re-send of
+        an already-in-progress move - for instance a script's own
+        intentional double-send of the same open/close command roughly
+        0.3s later, sent purely for RF reliability - as distinct from a
+        genuinely new command.
+
+        Without this distinction, every such re-send used to cancel
+        tracking immediately (at call entry) and only re-establish it
+        once that re-send's own control_blind_with_retry() succeeded,
+        which can take well over a second under contention from another
+        blind sharing the hub-wide transmit lock. The blind keeps moving
+        the whole time under the first, already-accepted command; only
+        the HA-side estimate froze, then resumed from that stale, frozen
+        value - silently losing however far the blind actually travelled
+        during the gap for the rest of that move. A redundant re-send
+        detected this way skips re-freezing/re-basing the estimate
+        entirely (it still reaches the stick again below, unchanged) so
+        the running estimate stays continuous across it instead.
+        """
+        already_same_direction = (
+            self._attr_is_opening if opening else self._attr_is_closing
+        )
+        task = self._position_update_task
+        return bool(
+            already_same_direction
+            and task is not None
+            and not task.done()
+            and self._move_start_time is not None
+            and self._move_start_position is not None
+        )
 
     def _waiting_for_full_travel_resync(self, direction: str) -> bool:
         """Return whether a fresh full-travel confirmation is still pending."""
@@ -1045,29 +1100,56 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                             # earlier, and that retry must not resend the
                             # open/close command after this stop goes out.
                             self._api.cancel_pending_move(self._command_device_id)
-                            # Wait for the open/close command issued when
-                            # this move started to actually finish
-                            # transmitting before sending the stop: sending
-                            # it into an already-busy transmitter is what
-                            # let the stop be silently lost (the stick
-                            # reports busy for the new command and
-                            # control_blind(), deliberately, never retries -
-                            # see its own docstring) rather than merely
-                            # late. Returns immediately once that
-                            # transmission has already finished, which for
-                            # any move longer than roughly one transmit
-                            # cycle - the overwhelming majority - it already
-                            # has by the time this point is reached, so this
-                            # adds no delay in the normal case.
-                            await self._api.wait_for_transmitter_idle(
-                                "finishing the set-position move before "
-                                "stopping it at the target"
-                            )
-                            await self._api.control_blind(
+                            # control_blind_stop() waits for the open/close
+                            # command issued when this move started to
+                            # actually finish transmitting, and is briefly
+                            # serialized against any other blind's own stop
+                            # or move too (see its own docstring) - closes
+                            # the same gap async_stop_cover() closes for a
+                            # manual stop press, for this automatic one.
+                            # Returns immediately once nothing is in flight,
+                            # which for any move longer than roughly one
+                            # transmit cycle - the overwhelming majority -
+                            # it already has by the time this point is
+                            # reached, so this adds no delay in the normal
+                            # case.
+                            await self._api.control_blind_stop(
                                 self._command_enum,
-                                CMD_STOP,
                                 device_id=self._command_device_id,
                             )
+                        else:
+                            # A plain open_cover()/close_cover() reaching 0/100
+                            # confirms this via _confirm_full_travel_resync()
+                            # (see the target_position-is-None branch below) -
+                            # set_cover_position(0)/set_cover_position(100)
+                            # reaching the exact same physical endstop through
+                            # this branch instead never did, leaving
+                            # _position_confirmed_since_restart stuck and the
+                            # diagnostics history missing its "estimated from
+                            # full travel" record for this transit, even
+                            # though the live position reported above is
+                            # identical either way - found during the same
+                            # audit as the entries above.
+                            self._confirm_full_travel_resync(
+                                "closing" if self._attr_is_closing else "opening",
+                                self._target_position,
+                            )
+                        # Reaching a target here is a stop in every sense
+                        # that matters to the entity's own reported state,
+                        # whether a real stop command went out above or the
+                        # motor's own end-stop did the job instead via the
+                        # else branch - and must clear is_opening/is_closing
+                        # exactly like async_stop_cover() and the plain-
+                        # open/close branch below (target_position is None)
+                        # already do. Missing here before this fix, which
+                        # left the entity reporting "closing"/"opening"
+                        # forever after any set_cover_position() call
+                        # finished - confirmed from Home Assistant still
+                        # showing a cover as "Wird geschlossen" several
+                        # minutes after it had actually reached 80% and
+                        # stopped.
+                        self._attr_is_opening = False
+                        self._attr_is_closing = False
                         self._move_start_time = None
                         self._move_start_position = None
                         self._target_position = None
@@ -1179,7 +1261,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # means "go all the way to 100" - clear any stale target left
             # over from an earlier partial move so this one isn't cut short.
             self._target_position = None
-        action = CMD_DOWN if self._invert_direction else CMD_UP
+        action = resolve_direction_command("open", self._invert_direction)
         _LOGGER.debug(
             "Opening cover %s (command_id=%s enum=%s action=%s)",
             self._device_name,
@@ -1187,6 +1269,15 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_enum,
             action,
         )
+        # A redundant re-send of an already-in-progress open (for instance
+        # a script's own intentional double-send, ~0.3s after the first,
+        # purely for RF reliability) must still reach the stick again
+        # below, but must not re-freeze/re-base position tracking the way
+        # a genuinely new open does just below it - the blind never
+        # stopped moving between the two sends, so there is nothing to
+        # re-base from. See _has_live_tracking_in_direction()'s own
+        # docstring for the exact mechanism this avoids.
+        is_redundant_resend = self._has_live_tracking_in_direction(opening=True)
         self._attr_is_opening = True
         self._attr_is_closing = False
         if self._attr_current_cover_position is None:
@@ -1206,7 +1297,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             new_position=self._attr_current_cover_position,
             status="estimated",
         )
-        await self._async_cancel_position_tracking("new open command")
+        if not is_redundant_resend:
+            await self._async_cancel_position_tracking("new open command")
         self.async_write_ha_state()
         # Wait for any other transmission already in flight - another
         # blind's own open/close, a teach/pairing/raw-transmit step, or
@@ -1224,13 +1316,40 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # its own docstring for why a manual stop must stay instant and
         # unretried instead.
         #
-        # Deliberately not started above either: _move_start_time,
-        # _move_start_position and the tracking loop itself only get set up
-        # once this call below actually succeeds (see there) - not here,
-        # before this blind's own command has even reached the stick.
+        # Deliberately not (re)started above either when this is a
+        # genuinely new open: _move_start_time, _move_start_position and
+        # the tracking loop itself only get set up once this call below
+        # actually succeeds (see there) - not here, before this blind's own
+        # command has even reached the stick.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
+            # Re-check rather than trust the snapshot taken before the
+            # await above: a real status frame (for instance the
+            # auto-stop-at-target path, or an external stop) can land
+            # while this call's own write was in flight and already
+            # stop-and-clear the original move's own tracking. When that
+            # happened there is no longer a live original move to leave
+            # alone, so fall through to ordinary failure handling below
+            # instead of silently leaving a stale "opening" state behind.
+            if is_redundant_resend and self._has_live_tracking_in_direction(
+                opening=True
+            ):
+                # The original move (from the first send) is still
+                # genuinely under way and its own tracking is untouched -
+                # only this resend's own extra transmission didn't get
+                # through. Leave the entity and the running move alone
+                # rather than reporting the whole open as failed and
+                # potentially aborting a caller's script mid-sequence over
+                # a redundant resend that was never required for
+                # correctness.
+                _LOGGER.debug(
+                    "Redundant open resend for device %s did not reach "
+                    "the stick; the original move is unaffected",
+                    self._device_name,
+                )
+                self.async_write_ha_state()
+                return
             # The command never reached the stick - undo the optimistic
             # "opening" state set above so the entity doesn't report a
             # movement that never physically happened.
@@ -1262,14 +1381,28 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # moving: for a short enough leg queued behind enough other blinds
         # in the same burst, the elapsed-time estimate could reach the
         # target before this blind's own command had been transmitted even
-        # once. cancel_pending_move() cannot catch that case either - it is
-        # a no-op until this device_id actually holds _move_lock (see its
-        # own docstring), which a call still waiting for the lock has not
-        # yet done - so the real command would go out afterwards with no
-        # tracking left running to stop it at the target.
-        self._move_start_position = self._attr_current_cover_position
-        self._move_start_time = time.monotonic()
-        self._start_position_tracking()
+        # once - so the real command would go out afterwards with no
+        # tracking left running to stop it at the target. Skipped entirely
+        # for a redundant resend: the original move's own tracking has
+        # been running the whole time and already reflects however long
+        # this resend's own wait took.
+        # Re-check here too: this call's own command just reached the
+        # stick, but if the original move it was meant to piggyback on
+        # already got stopped-and-cleared for real while this call's own
+        # write was in flight (see the matching re-check in the failure
+        # branch above), the motor is now moving under this call's own
+        # command alone, with nothing left tracking it. (Re)start tracking
+        # exactly as a fresh move would rather than skip it because of a
+        # now-stale snapshot, and re-assert the optimistic state the real
+        # stop event in between overwrote.
+        if not is_redundant_resend or not self._has_live_tracking_in_direction(
+            opening=True
+        ):
+            self._attr_is_opening = True
+            self._attr_is_closing = False
+            self._move_start_position = self._attr_current_cover_position
+            self._move_start_time = time.monotonic()
+            self._start_position_tracking()
         self.async_write_ha_state()
 
     async def async_close_cover(
@@ -1280,7 +1413,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             # Same reasoning as async_open_cover: a plain close always
             # targets 0, so drop any stale partial-move target first.
             self._target_position = None
-        action = CMD_UP if self._invert_direction else CMD_DOWN
+        action = resolve_direction_command("close", self._invert_direction)
         _LOGGER.debug(
             "Closing cover %s (command_id=%s enum=%s action=%s)",
             self._device_name,
@@ -1288,6 +1421,15 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_enum,
             action,
         )
+        # A redundant re-send of an already-in-progress close (for
+        # instance a script's own intentional double-send, ~0.3s after the
+        # first, purely for RF reliability) must still reach the stick
+        # again below, but must not re-freeze/re-base position tracking
+        # the way a genuinely new close does just below it - the blind
+        # never stopped moving between the two sends, so there is nothing
+        # to re-base from. See _has_live_tracking_in_direction()'s own
+        # docstring for the exact mechanism this avoids.
+        is_redundant_resend = self._has_live_tracking_in_direction(opening=False)
         self._attr_is_opening = False
         self._attr_is_closing = True
         if self._attr_current_cover_position is None:
@@ -1307,16 +1449,44 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             new_position=self._attr_current_cover_position,
             status="estimated",
         )
-        await self._async_cancel_position_tracking("new close command")
+        if not is_redundant_resend:
+            await self._async_cancel_position_tracking("new close command")
         self.async_write_ha_state()
         # Same retry-until-accepted write, same reasoning, as
         # async_open_cover() above - see its comment for why. Also, same as
         # there: _move_start_time/_move_start_position/the tracking loop
-        # are deliberately not started above either - see the comment right
-        # after this call succeeds below for why.
+        # are deliberately not (re)started above either when this is a
+        # genuinely new close - see the comment right after this call
+        # succeeds below for why.
         if not await self._api.control_blind_with_retry(
             self._command_enum, action, device_id=self._command_device_id
         ):
+            # Re-check rather than trust the snapshot taken before the
+            # await above: a real status frame (for instance the
+            # auto-stop-at-target path, or an external stop) can land
+            # while this call's own write was in flight and already
+            # stop-and-clear the original move's own tracking. When that
+            # happened there is no longer a live original move to leave
+            # alone, so fall through to ordinary failure handling below
+            # instead of silently leaving a stale "closing" state behind.
+            if is_redundant_resend and self._has_live_tracking_in_direction(
+                opening=False
+            ):
+                # The original move (from the first send) is still
+                # genuinely under way and its own tracking is untouched -
+                # only this resend's own extra transmission didn't get
+                # through. Leave the entity and the running move alone
+                # rather than reporting the whole close as failed and
+                # potentially aborting a caller's script mid-sequence over
+                # a redundant resend that was never required for
+                # correctness.
+                _LOGGER.debug(
+                    "Redundant close resend for device %s did not reach "
+                    "the stick; the original move is unaffected",
+                    self._device_name,
+                )
+                self.async_write_ha_state()
+                return
             # The command never reached the stick - undo the optimistic
             # "closing" state set above so the entity doesn't report a
             # movement that never physically happened.
@@ -1343,35 +1513,75 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # wait/retry above - otherwise a short set_cover_position() leg
         # queued behind other blinds in control_blind_with_retry()'s
         # hub-wide lock could have its target evaluated as "reached" purely
-        # from time spent waiting in that queue.
-        self._move_start_position = self._attr_current_cover_position
-        self._move_start_time = time.monotonic()
-        self._start_position_tracking()
+        # from time spent waiting in that queue. Skipped entirely for a
+        # redundant resend: the original move's own tracking has been
+        # running the whole time and already reflects however long this
+        # resend's own wait took.
+        # Re-check here too: this call's own command just reached the
+        # stick, but if the original move it was meant to piggyback on
+        # already got stopped-and-cleared for real while this call's own
+        # write was in flight (see the matching re-check in the failure
+        # branch above), the motor is now moving under this call's own
+        # command alone, with nothing left tracking it. (Re)start tracking
+        # exactly as a fresh move would rather than skip it because of a
+        # now-stale snapshot, and re-assert the optimistic state the real
+        # stop event in between overwrote.
+        if not is_redundant_resend or not self._has_live_tracking_in_direction(
+            opening=False
+        ):
+            self._attr_is_opening = False
+            self._attr_is_closing = True
+            self._move_start_position = self._attr_current_cover_position
+            self._move_start_time = time.monotonic()
+            self._start_position_tracking()
         self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the cover immediately and freeze the estimated position.
+        """Stop the cover, freezing the estimated position once it lands.
 
-        Sent via control_blind(), exactly like the two automatic follow-up
-        stop frames that used to exist here (via send_priority_stop) were
-        removed for: one direct write, no transmit lock, no busy-retry of
-        its own. Confirmed real-hardware testing showed a bypassing stop
-        could still collide with an in-flight open/close command's own
-        busy-retry, fighting over the stick's one RF transmitter - a move's
-        retry could still resend its payload seconds after a stop had
-        already gone out. That history is exactly why this method's very
-        first action below is cancel_pending_move(): now that
-        async_open_cover()/async_close_cover() retry on "tE" again (via
-        control_blind_with_retry(), see its own docstring), a stop must
-        actively end any retry loop still running for this same blind
-        instead of merely not starting one of its own.
+        Sent via control_blind_stop(), which is to a manual stop what
+        control_blind_with_retry() is to open/close: briefly serialized
+        (see its own docstring for why that is a short, independent budget
+        rather than open/close's own lock and retry), falling back to a
+        plain control_blind() write - one direct write, no lock, no retry -
+        if that serialization cannot be had quickly. That plain write is
+        also exactly what this used to call directly, before control_
+        blind_stop() existed; this method's very first action below,
+        cancel_pending_move(), predates it too and is still needed just the
+        same: control_blind_stop()'s own serialization only keeps this
+        stop's write from colliding with another write already in flight,
+        it does not stop a move's retry loop for *this* blind from firing
+        again afterwards on its own schedule, which only cancel_pending_
+        move() ends. Now that async_open_cover()/async_close_cover() retry
+        on "tE" again (via control_blind_with_retry(), see its own
+        docstring), a stop must actively end any retry loop still running
+        for this same blind instead of merely not starting one of its own.
 
-        Unlike async_open_cover()/async_close_cover(), this deliberately
-        never calls wait_for_transmitter_idle() either: a manual stop press
-        must always be instant, even if that means it is the one write that
-        can still collide with another still-in-flight transmission (for a
-        *different* blind - this same blind's own move was just cancelled
-        above) and be silently dropped by a busy stick.
+        Position tracking is deliberately left running - and the position
+        is not frozen - until *after* control_blind_stop() actually
+        returns, not up front the way this used to work. Freezing up front
+        made the estimate stop advancing at the instant this method was
+        called, while the real write could still be queued for over a
+        second behind another blind's own transmission under contention
+        (see control_blind_stop()'s and _move_lock's own docstrings in
+        api.py) - confirmed from a real two-blind test where that gap put
+        the frozen estimate several percentage points away from where the
+        blind had actually gotten to by the time the stop really went out,
+        on a blind whose own preceding close/open had gone out instantly
+        with no queueing at all, so the two delays did not cancel out.
+        Letting the existing elapsed-time tracking keep running for
+        however long that wait actually takes, then reading it only once
+        the write has happened, keeps the estimate accurate regardless of
+        how long the stop was queued - exactly why async_open_cover()'s and
+        async_close_cover()'s own _move_start_time is only ever set after
+        their own write succeeds, not before it either.
+
+        _target_position is cleared up front regardless: the background
+        tracking loop's own auto-stop-at-target branch (see
+        _async_position_update_loop) triggers only while a target is set,
+        and must not fire its own, second control_blind_stop() for this
+        same blind while this one is still in flight just because tracking
+        itself was deliberately left running above.
         """
         # First, and before any other statement: if this device has a move
         # retry loop still running (control_blind_with_retry(), in flight
@@ -1387,53 +1597,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
             self._command_device_id,
             self._command_enum,
         )
-        previous_position = self._attr_current_cover_position
-        previous_is_opening = self._attr_is_opening
-        previous_is_closing = self._attr_is_closing
-        previous_move_start_time = self._move_start_time
-        previous_move_start_position = self._move_start_position
         previous_target_position = self._target_position
-        self._position_source_kind = "HA command"
-        self._full_travel_resync_direction = None
-        self._position_update_source = "Home Assistant stop command"
-        await self._async_cancel_position_tracking("Home Assistant stop command")
-        self._update_position()
-        self._attr_is_opening = False
-        self._attr_is_closing = False
-        self._move_start_time = None
-        self._move_start_position = None
         self._target_position = None
-        self._record_position_update(
-            source=self._position_update_source,
-            direction="stop",
-            previous_position=previous_position,
-            new_position=self._attr_current_cover_position,
-            status="estimated",
-        )
-        self.async_write_ha_state()
-        if not await self._api.control_blind(
-            self._command_enum, CMD_STOP, device_id=self._command_device_id
+        if not await self._api.control_blind_stop(
+            self._command_enum, device_id=self._command_device_id
         ):
-            # The stop never reached the stick. If the blind was moving, it
-            # likely still is - restore the pre-stop moving state instead of
-            # leaving it frozen at this instant, so the ongoing elapsed-time
-            # estimate (based on the original move start) keeps working
-            # instead of a prematurely frozen position. Restoring the state
-            # alone is not enough: the position-tracking task that would
-            # actually advance that estimate and clear these flags at the
-            # target/0/100 was already cancelled above, and restoring
-            # _move_start_time etc. does not resurrect it - it must be
-            # restarted explicitly, or the entity is left reporting
-            # is_opening/is_closing forever with a frozen position until an
-            # unrelated later command happens to start tracking again.
-            self._attr_is_opening = previous_is_opening
-            self._attr_is_closing = previous_is_closing
-            self._move_start_time = previous_move_start_time
-            self._move_start_position = previous_move_start_position
+            # The stop never reached the stick. Nothing else has been
+            # touched yet - position tracking, if it was running, still is,
+            # and is_opening/is_closing/_move_start_time/_move_start_position
+            # are exactly as they were, so there is nothing to restore and
+            # nothing to restart - only the target this method itself
+            # cleared above needs putting back.
             self._target_position = previous_target_position
-            if previous_is_opening or previous_is_closing:
-                self._start_position_tracking()
-            self.async_write_ha_state()
             reason = _translate_block_reason(
                 self.hass, self._api.transmit_block_reason
             ) or _runtime_translation_text(self.hass, "command_not_sent")
@@ -1445,6 +1620,29 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                     reason=reason,
                 )
             )
+
+        # Only now, with the write actually done, is it safe to stop the
+        # background tracking loop and read its estimate - see this
+        # method's own docstring for why reading it any earlier would risk
+        # a stale, prematurely frozen position under contention.
+        previous_position = self._attr_current_cover_position
+        self._position_source_kind = "HA command"
+        self._full_travel_resync_direction = None
+        self._position_update_source = "Home Assistant stop command"
+        await self._async_cancel_position_tracking("Home Assistant stop command")
+        self._update_position()
+        self._attr_is_opening = False
+        self._attr_is_closing = False
+        self._move_start_time = None
+        self._move_start_position = None
+        self._record_position_update(
+            source=self._position_update_source,
+            direction="stop",
+            previous_position=previous_position,
+            new_position=self._attr_current_cover_position,
+            status="estimated",
+        )
+        self.async_write_ha_state()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position by chaining open/close."""

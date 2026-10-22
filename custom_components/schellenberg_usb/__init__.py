@@ -274,7 +274,7 @@ async def async_setup_entry(
 
     entry.runtime_data = api
 
-    hass.async_create_task(api.connect(), name="schellenberg-initial-connect")
+    api.start_connecting()
 
     hub_subentry = next(
         (s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_HUB),
