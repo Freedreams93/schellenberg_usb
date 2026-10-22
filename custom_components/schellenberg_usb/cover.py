@@ -1134,6 +1134,22 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                                 "closing" if self._attr_is_closing else "opening",
                                 self._target_position,
                             )
+                        # Reaching a target here is a stop in every sense
+                        # that matters to the entity's own reported state,
+                        # whether a real stop command went out above or the
+                        # motor's own end-stop did the job instead via the
+                        # else branch - and must clear is_opening/is_closing
+                        # exactly like async_stop_cover() and the plain-
+                        # open/close branch below (target_position is None)
+                        # already do. Missing here before this fix, which
+                        # left the entity reporting "closing"/"opening"
+                        # forever after any set_cover_position() call
+                        # finished - confirmed from Home Assistant still
+                        # showing a cover as "Wird geschlossen" several
+                        # minutes after it had actually reached 80% and
+                        # stopped.
+                        self._attr_is_opening = False
+                        self._attr_is_closing = False
                         self._move_start_time = None
                         self._move_start_position = None
                         self._target_position = None

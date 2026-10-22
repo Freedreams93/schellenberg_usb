@@ -860,6 +860,10 @@ async def test_position_loop_stops_at_a_partial_target(
         cover._command_enum, device_id=cover._command_device_id
     )
     assert cover._target_position is None
+    # Regression guard: before this fix, the loop never cleared this,
+    # leaving the entity reporting "closing" forever after a partial-target
+    # move finished - see the matching comment in cover.py at this point.
+    assert cover._attr_is_closing is False
 
 
 async def test_position_loop_stops_early_to_compensate_stop_latency(
@@ -905,6 +909,7 @@ async def test_position_loop_stops_early_to_compensate_stop_latency(
     # about when the stop command goes out, not what position is recorded.
     assert cover._attr_current_cover_position == 20
     assert cover._target_position is None
+    assert cover._attr_is_closing is False
 
 
 class _LoopKeptRunning(Exception):
@@ -1020,6 +1025,10 @@ async def test_position_loop_endstop_target_skips_the_transmitter_wait_too(
     api.wait_for_transmitter_idle.assert_not_awaited()
     api.control_blind_stop.assert_not_awaited()
     api.cancel_pending_move.assert_not_called()
+    # Regression guard: the needs_stop_command=False branch (an explicit
+    # 0/100 target) is gated by the same missing reset as the partial-
+    # target branch above - see the matching comment in cover.py.
+    assert cover._attr_is_closing is False
 
 
 async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
@@ -1055,6 +1064,7 @@ async def test_position_loop_reaching_an_endstop_target_sends_no_active_stop(
     # for this device is in progress would be harmless but is still never
     # called here, since needs_stop_command gates both.
     api.cancel_pending_move.assert_not_called()
+    assert cover._attr_is_closing is False
 
 
 async def test_position_loop_set_position_endstop_also_confirms_full_travel(
@@ -1106,6 +1116,7 @@ async def test_position_loop_set_position_endstop_also_confirms_full_travel(
         confirmed_since_restart=True,
         status="estimated from full travel",
     )
+    assert cover._attr_is_closing is False
 
 
 # ---------------------------------------------------------------------------
