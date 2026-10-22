@@ -555,14 +555,17 @@ interne_rollladenlogik_fuer_home_assistant:
             - action: cover.stop_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.stop_cover
-              target:
-                entity_id: "{{ entity }}"
+            - wait_template: "{{ not is_state(entity, 'closing') and not is_state(entity, 'opening') }}"
+              timeout:
+                seconds: 3
+              continue_on_timeout: true
+            - if:
+                - condition: template
+                  value_template: "{{ wait.completed == false }}"
+              then:
+                - action: cover.stop_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ soll | int == 0 or soll | int == 100 }}"
@@ -680,14 +683,17 @@ rollladenlogik_fuer_alexasprachsteuerungen_fuer_rollladen:
             - action: cover.stop_cover
               target:
                 entity_id: "{{ entity }}"
-            - delay:
-                hours: 0
-                minutes: 0
-                seconds: 1
-                milliseconds: 0
-            - action: cover.stop_cover
-              target:
-                entity_id: "{{ entity }}"
+            - wait_template: "{{ not is_state(entity, 'closing') and not is_state(entity, 'opening') }}"
+              timeout:
+                seconds: 3
+              continue_on_timeout: true
+            - if:
+                - condition: template
+                  value_template: "{{ wait.completed == false }}"
+              then:
+                - action: cover.stop_cover
+                  target:
+                    entity_id: "{{ entity }}"
         - conditions:
             - condition: template
               value_template: "{{ (soll | int == 0 or soll | int == 100) or (soll == ist) }}"
