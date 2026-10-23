@@ -1,12 +1,25 @@
 [project]
 name = "schellenberg_usb"
-version = "v1.1.3"
+version = "v1.2.0"
 readme = "README.md"
 # Floor for the dev/CI toolchain below (uv, mypy, pytest-homeassistant-
 # custom-component) - unrelated to the *integration's* own minimum
 # supported Home Assistant version, which stays governed by hacs.json's
 # "homeassistant" key (2025.3.0) so users on older Core installs are not
 # dropped by this bump.
+#
+# No upper bound, deliberately, even though that is what currently makes
+# Dependabot's own "uv" group update fail (see CHANGELOG.md's v1.2.0
+# entry on this) - uv.lock's own requires-python has to move together
+# with this value, and this sandbox has no PyPI access to regenerate it
+# (confirmed: `uv lock` here fails outright on DNS resolution for
+# pypi.org). A first attempt here added `,<3.15` without updating
+# uv.lock to match, which `uv sync --locked` - CI's own install step -
+# correctly rejected as a lockfile/pyproject.toml mismatch, turning a
+# Dependabot-only inconvenience into every CI run failing before pytest
+# ever starts. Reverted for that reason. Fixing this for real needs a
+# `uv lock` run somewhere with actual network access - a maintainer's
+# own machine, not this one.
 requires-python = ">=3.14.2"
 dependencies = [
     # A minimum instead of an exact pin: Home Assistant Core's own serialx
@@ -44,9 +57,9 @@ test = [
 
 lint = [
     "mypy~=2.4.0",
-    "pre-commit~=4.5.0",
-    "ruff~=0.16.10",
-    "types-PyYAML~=6.0.12.20250915",
+    "pre-commit~=4.7.0",
+    "ruff~=0.17.1",
+    "types-PyYAML~=6.0.12.20260906",
 ]
 
 

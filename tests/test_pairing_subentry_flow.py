@@ -75,7 +75,16 @@ def make_flow(hass: HomeAssistant) -> Any:
     directly - _get_entry() is mocked to hand back an object whose
     runtime_data is this same api, matching how _async_developer_command()
     and async_step_reset_stick() actually fetch it
-    (self._get_entry().runtime_data).
+    (self._get_entry().runtime_data). subentries is an empty dict for the
+    same reason: a real ConfigEntry always carries that attribute (every
+    other module reads entry.subentries unconditionally - cover.py,
+    sensor.py, switch.py, __init__.py, diagnostics.py - none of them
+    guard against it being absent), and async_step_calibrate()'s
+    recalibration path now reads it too, via
+    _foreign_capture_device_ids(self._get_entry(), ...), to learn which
+    device ids belong to this hub's *other* paired blinds. None of this
+    module's tests exercise more than one blind, so the empty default -
+    "no other blinds" - is correct for all of them.
     """
     flow: Any = SchellenbergPairingSubentryFlow()
     flow.hass = hass
@@ -110,7 +119,9 @@ def make_flow(hass: HomeAssistant) -> Any:
     api.busy_latched = False
     api.transmit_block_reason = None
     flow._api = api
-    flow._get_entry = MagicMock(return_value=SimpleNamespace(runtime_data=api))
+    flow._get_entry = MagicMock(
+        return_value=SimpleNamespace(runtime_data=api, subentries={})
+    )
     return flow
 
 
@@ -223,6 +234,44 @@ async def test_reset_stick_not_ready_reports_status(hass: HomeAssistant) -> None
     assert "did not become ready" in flow._developer_notice
     assert "connected=No" in flow._developer_notice
     assert "mode=unknown" in flow._developer_notice
+
+
+# --- Entering calibration from the reconfigure menu (async_step_calibrate) -
+
+
+async def test_calibrate_aborts_when_subentry_has_no_enum(hass: HomeAssistant) -> None:
+    """Regression: the guard used to only check the two device_id halves,
+    so a subentry with valid device_ids but no enum data anywhere (neither
+    CONF_COMMAND_ENUM/CONF_DEVICE_ENUM nor CONF_STATUS_ENUM) sailed straight
+    through it. status_enum ended up None and reached
+    handler.set_selected_device() with "enum": None, from there into the
+    serial payload itself unchecked, instead of aborting here with a clear
+    reason. See the matching comment on async_step_calibrate()'s guard in
+    config_flow.py.
+    """
+    flow = make_flow(hass)
+    flow._get_reconfigure_subentry = MagicMock(
+        return_value=make_subentry(**{CONF_COMMAND_ENUM: "", CONF_STATUS_ENUM: ""})
+    )
+
+    result = await flow.async_step_calibrate()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "device_not_found"
+
+
+async def test_calibrate_proceeds_when_subentry_is_well_formed(
+    hass: HomeAssistant,
+) -> None:
+    """Sanity check for the guard above: a subentry with every device_id
+    and enum field present must not be rejected by it.
+    """
+    flow = make_flow(hass)
+    flow._get_reconfigure_subentry = MagicMock(return_value=make_subentry())
+
+    result = await flow.async_step_calibrate()
+
+    assert result["type"] != FlowResultType.ABORT
 
 
 # --- Manual position sync (set_position_open/closed/manual) ---------------

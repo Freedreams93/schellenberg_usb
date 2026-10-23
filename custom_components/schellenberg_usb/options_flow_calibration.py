@@ -65,8 +65,12 @@ class CalibrationFlowHandler:
         self.flow = flow
         self._selected_device: dict[str, Any] | None = None
         self._calibration_start_time: float | None = None
-        self._start_event: asyncio.Event | None = None
-        self._stop_event: asyncio.Event | None = None
+        # Shared by _wait_for_movement_start() for whichever event it is
+        # currently waiting for (a movement-start event, or - via
+        # _wait_for_stop_event()'s delegation to it with EVENT_STOPPED - the
+        # stop event); the two waits never overlap, so one attribute is
+        # enough.
+        self._wait_event: asyncio.Event | None = None
         self._event_listener_unsubs: list[Any] = []
         self._open_time: float | None = None
         self._close_time: float | None = None
@@ -545,20 +549,54 @@ class CalibrationFlowHandler:
         )
 
     async def _wait_for_movement_start(self, event_type: str) -> bool:
+        """Wait for one specific device-event command, or time out.
+
+        Despite the name, also used (via _wait_for_stop_event()'s
+        delegation below, with event_type=EVENT_STOPPED) to wait for the
+        stop event ending a leg - the two waits never overlap within one
+        calibration run, so sharing this one implementation and its
+        _wait_event attribute is safe.
+        """
         if self._selected_device is None:
             return False
         device_id = self._selected_device["id"]
-        self._start_event = asyncio.Event()
+        # Device ids positively confirmed to belong to some *other*,
+        # already-paired blind on this hub - never this one's own
+        # not-yet-confirmed identity, see _foreign_capture_device_ids()'s
+        # own docstring in config_flow.py (both set_selected_device() call
+        # sites always provide this key; the empty-frozenset default below
+        # only guards a handler used directly in a test without going
+        # through either of them).
+        foreign_device_ids: frozenset[str] = (
+            self._selected_device.get("foreign_capture_device_ids") or frozenset()
+        )
+        self._wait_event = asyncio.Event()
 
         @callback
         def handle_device_event(command: str) -> None:
-            if command == event_type and self._start_event:
-                self.flow.hass.loop.call_soon_threadsafe(self._start_event.set)
+            if command == event_type and self._wait_event:
+                self.flow.hass.loop.call_soon_threadsafe(self._wait_event.set)
 
         @callback
         def handle_capture_event(_captured_device_id: str, command: str) -> None:
-            if command == event_type and self._start_event:
-                self.flow.hass.loop.call_soon_threadsafe(self._start_event.set)
+            # Unlike handle_device_event above (whose signal name already
+            # encodes device_id), this hub-wide fallback fires for every
+            # device's frames while a capture window is open (see
+            # SIGNAL_DEVICE_EVENT_CAPTURE's own comment in api.py) - without
+            # this check it accepted a *different*, unrelated blind moving
+            # on the same hub at the same moment as a false positive for
+            # this one, corrupting the open/close time being measured here -
+            # found during the same audit as the entries above. Only ever
+            # rejects a frame positively attributed to one of those other
+            # blinds; anything not yet claimed by anyone - including this
+            # same blind's own not-yet-confirmed real identity, exactly the
+            # case this fallback exists for - is still accepted, same as
+            # before this fix.
+            if command != event_type or not self._wait_event:
+                return
+            if _captured_device_id.strip().upper() in foreign_device_ids:
+                return
+            self.flow.hass.loop.call_soon_threadsafe(self._wait_event.set)
 
         self._event_listener_unsubs = [
             async_dispatcher_connect(
@@ -574,9 +612,7 @@ class CalibrationFlowHandler:
         ]
 
         try:
-            await asyncio.wait_for(
-                self._start_event.wait(), timeout=CALIBRATION_TIMEOUT
-            )
+            await asyncio.wait_for(self._wait_event.wait(), timeout=CALIBRATION_TIMEOUT)
         except TimeoutError:
             return False
         else:
@@ -585,48 +621,11 @@ class CalibrationFlowHandler:
             for unsub in self._event_listener_unsubs:
                 unsub()
             self._event_listener_unsubs = []
-            self._start_event = None
+            self._wait_event = None
 
     async def _wait_for_stop_event(self) -> bool:
-        if self._selected_device is None:
-            return False
-        device_id = self._selected_device["id"]
-        self._stop_event = asyncio.Event()
-
-        @callback
-        def handle_device_event(command: str) -> None:
-            if command == EVENT_STOPPED and self._stop_event:
-                self.flow.hass.loop.call_soon_threadsafe(self._stop_event.set)
-
-        @callback
-        def handle_capture_event(_captured_device_id: str, command: str) -> None:
-            if command == EVENT_STOPPED and self._stop_event:
-                self.flow.hass.loop.call_soon_threadsafe(self._stop_event.set)
-
-        self._event_listener_unsubs = [
-            async_dispatcher_connect(
-                self.flow.hass,
-                f"{SIGNAL_DEVICE_EVENT}_{device_id}",
-                handle_device_event,
-            ),
-            async_dispatcher_connect(
-                self.flow.hass,
-                SIGNAL_DEVICE_EVENT_CAPTURE,
-                handle_capture_event,
-            ),
-        ]
-
-        try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=CALIBRATION_TIMEOUT)
-        except TimeoutError:
-            return False
-        else:
-            return True
-        finally:
-            for unsub in self._event_listener_unsubs:
-                unsub()
-            self._event_listener_unsubs = []
-            self._stop_event = None
+        """Wait for the stop event ending the current leg, or time out."""
+        return await self._wait_for_movement_start(EVENT_STOPPED)
 
     async def _notify_calibration_completed(
         self, open_time: float, close_time: float, ending_position: int

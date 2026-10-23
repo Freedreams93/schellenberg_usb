@@ -22,7 +22,6 @@ from homeassistant.helpers.service_info.usb import UsbServiceInfo
 from .api import check_serial_port
 from .blind_id import generate_blind_id
 from .const import (
-    CMD_DOWN,
     CMD_STOP,
     CMD_UP,
     CONF_BLIND_ID,
@@ -50,12 +49,13 @@ from .const import (
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
     TEST_COMMAND_DELAY,
+    resolve_direction_command,
 )
 from .identities import (
     format_status_identities,
     normalize_status_identities,
-    normalize_status_identity,
     parse_status_identities_text,
+    resolve_blind_identities,
     serialize_status_identities,
 )
 from .options_flow import SchellenbergOptionsFlowHandler
@@ -255,6 +255,47 @@ class SchellenbergUsbConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+
+def _foreign_capture_device_ids(
+    entry: Any, *, exclude_subentry_id: str | None = None
+) -> frozenset[str]:
+    """Collect every *other* blind's own confirmed device identities.
+
+    Used to scope CalibrationFlowHandler's capture-wide fallback listener
+    (options_flow_calibration.py's handle_capture_event) to frames that
+    cannot be positively attributed to a different, already-paired blind
+    on this same hub - without this, a second blind's RF traffic arriving
+    while this one is being paired or recalibrated could silently satisfy
+    this one's movement-start/stop wait instead, corrupting the open/close
+    time being measured - found during the independent audit alongside
+    the CHANGELOG entries above this one.
+
+    Deliberately permissive otherwise: an id belonging to *nobody* yet -
+    including this same blind's own not-yet-discovered or not-yet-
+    persisted real status identity - is never excluded by this, since
+    that is exactly the ambiguity the capture-wide fallback exists to
+    tolerate for a brand-new pairing or a first recalibration (see
+    test_differing_status_identity_still_completes_via_capture_signal in
+    tests/test_options_flow_calibration.py). Only a device id positively
+    claimed by some *other* blind subentry is ever excluded.
+    """
+    foreign_ids: set[str] = set()
+    for other_subentry in entry.subentries.values():
+        if other_subentry.subentry_id == exclude_subentry_id:
+            continue
+        if other_subentry.subentry_type != SUBENTRY_TYPE_BLIND:
+            continue
+        data = other_subentry.data
+        for key in (CONF_COMMAND_DEVICE_ID, CONF_DEVICE_ID, CONF_STATUS_DEVICE_ID):
+            value = data.get(key)
+            if value:
+                foreign_ids.add(str(value).strip().upper())
+        for identity in normalize_status_identities(
+            data.get(CONF_SECONDARY_STATUS_IDENTITIES)
+        ):
+            foreign_ids.add(identity[0])
+    return frozenset(foreign_ids)
 
 
 class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
@@ -513,8 +554,10 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
 
         test_toward_open = test_direction == "open"
         self._pending_test_direction = test_direction
-        open_action = CMD_DOWN if self._pending_invert_direction else CMD_UP
-        close_action = CMD_UP if self._pending_invert_direction else CMD_DOWN
+        open_action = resolve_direction_command("open", self._pending_invert_direction)
+        close_action = resolve_direction_command(
+            "close", self._pending_invert_direction
+        )
         action = open_action if test_toward_open else close_action
 
         api = self._get_entry().runtime_data
@@ -715,6 +758,14 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 "entity_id": device_id,
                 "name": device_name,
                 "enum": device_enum,
+                # This is a brand-new pairing, so there is no subentry of its
+                # own yet to exclude - every *other* blind already on this
+                # hub is a candidate to exclude from the capture-wide
+                # fallback below (see _foreign_capture_device_ids()'s own
+                # docstring).
+                "foreign_capture_device_ids": _foreign_capture_device_ids(
+                    self._get_entry()
+                ),
             }
         )
         handler.enable_subentry_creation(
@@ -753,20 +804,13 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         """Return normalized protocol details for the selected blind."""
         subentry = self._get_reconfigure_subentry()
         data = subentry.data
-        command_device_id = str(
-            data.get(CONF_COMMAND_DEVICE_ID) or data.get(CONF_DEVICE_ID, "")
-        ).upper()
-        command_enum = str(
-            data.get(CONF_COMMAND_ENUM) or data.get(CONF_DEVICE_ENUM, "")
-        ).upper()
-        configured_source = str(data.get(CONF_STATUS_IDENTITY_SOURCE) or "legacy")
-        if configured_source == STATUS_IDENTITY_SOURCE_UNKNOWN:
-            primary_identity = None
-        else:
-            primary_identity = normalize_status_identity(
-                data.get(CONF_STATUS_DEVICE_ID) or command_device_id,
-                data.get(CONF_STATUS_ENUM) or command_enum,
-            )
+        resolved = resolve_blind_identities(data)
+        command_device_id = resolved["command_device_id"]
+        command_enum = resolved["command_enum"]
+        configured_source = resolved["status_identity_source"]
+        primary_identity = resolved["primary_identity"]
+        secondary_status_identities = resolved["secondary_status_identities"]
+        status_identities = resolved["status_identities"]
         primary_status_device_id = (
             primary_identity[0]
             if primary_identity is not None
@@ -774,13 +818,6 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         )
         primary_status_enum = (
             primary_identity[1] if primary_identity is not None else "--"
-        )
-        secondary_status_identities = normalize_status_identities(
-            data.get(CONF_SECONDARY_STATUS_IDENTITIES)
-        )
-        status_identities = (
-            *((primary_identity,) if primary_identity is not None else ()),
-            *secondary_status_identities,
         )
         source_label = {
             STATUS_IDENTITY_SOURCE_MANUAL: _runtime_translation_text(
@@ -1053,8 +1090,8 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
 
         invert_direction = details["invert_direction"]
         action = {
-            "open": CMD_DOWN if invert_direction else CMD_UP,
-            "close": CMD_UP if invert_direction else CMD_DOWN,
+            "open": resolve_direction_command("open", invert_direction),
+            "close": resolve_direction_command("close", invert_direction),
             "stop": CMD_STOP,
         }[command]
         _LOGGER.warning(
@@ -1422,7 +1459,9 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             opened = False
             stopped = False
             if taught:
-                open_action = CMD_DOWN if details["invert_direction"] else CMD_UP
+                open_action = resolve_direction_command(
+                    "open", details["invert_direction"]
+                )
                 opened = await api.control_blind(
                     details["command_enum"],
                     open_action,
@@ -1821,6 +1860,48 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             ):
                 errors[CONF_DEVICE_ID] = "already_configured"
 
+            # The command_device_id check above has no equivalent for the
+            # primary status identity: _register_status_identity() in
+            # api.py silently reassigns a status identity from one entity
+            # to another at runtime (only a _LOGGER.warning, no UI error, no
+            # repair issue - this integration never uses HA's issue
+            # registry), so two subentries could otherwise end up listening
+            # for the same device_id/enum with no indication anywhere in
+            # the UI, and whichever registers last steals the other's
+            # position-tracking frames. A candidate whose own status source
+            # is STATUS_IDENTITY_SOURCE_UNKNOWN is skipped: it has no real,
+            # confirmed status identity to collide with (see the matching
+            # STATUS_IDENTITY_SOURCE_UNKNOWN check this function already
+            # does above when pre-filling this same subentry's own display
+            # value) - treating its defaulted-to-command fallback as a real
+            # identity here would produce false-positive collisions against
+            # perfectly normal setups where a *different* blind's status
+            # identity legitimately equals its own command identity. Only
+            # the primary identity is covered here - secondary status
+            # identities are not cross-checked against other subentries.
+            if status_device_id and status_enum:
+                new_status_identity = (status_device_id, status_enum)
+                if any(
+                    candidate.subentry_id != subentry.subentry_id
+                    and candidate.data.get(CONF_STATUS_IDENTITY_SOURCE)
+                    != STATUS_IDENTITY_SOURCE_UNKNOWN
+                    and (
+                        str(
+                            candidate.data.get(CONF_STATUS_DEVICE_ID)
+                            or candidate.data.get(CONF_COMMAND_DEVICE_ID)
+                            or candidate.data.get(CONF_DEVICE_ID, "")
+                        ).upper(),
+                        str(
+                            candidate.data.get(CONF_STATUS_ENUM)
+                            or candidate.data.get(CONF_COMMAND_ENUM)
+                            or candidate.data.get(CONF_DEVICE_ENUM, "")
+                        ).upper(),
+                    )
+                    == new_status_identity
+                    for candidate in entry.subentries.values()
+                ):
+                    errors[CONF_STATUS_DEVICE_ID] = "already_configured"
+
             if not errors:
                 current_data.update(
                     {
@@ -1937,7 +2018,17 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         )
         status_device_id = subentry.data.get(CONF_STATUS_DEVICE_ID, command_device_id)
         status_enum = subentry.data.get(CONF_STATUS_ENUM, command_enum)
-        if not command_device_id or not status_device_id:
+        # The enum halves need the same guard as the device_id halves just
+        # above: a subentry missing both CONF_COMMAND_ENUM/CONF_DEVICE_ENUM
+        # (or their status equivalents) leaves command_enum/status_enum
+        # None, which would otherwise reach handler.set_selected_device()
+        # and from there the serial payload itself unchecked.
+        if (
+            not command_device_id
+            or not status_device_id
+            or not command_enum
+            or not status_enum
+        ):
             return self.async_abort(reason="device_not_found")
 
         stable_id = (
@@ -1957,6 +2048,12 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
                 CONF_CLOSE_TIME: subentry.data.get(CONF_CLOSE_TIME),
                 CONF_INVERT_DIRECTION: subentry.data.get(CONF_INVERT_DIRECTION, False),
                 "enum": status_enum,
+                # Excludes only this same subentry - its own not-yet-
+                # reconfirmed identity must never be treated as "foreign"
+                # (see _foreign_capture_device_ids()'s own docstring).
+                "foreign_capture_device_ids": _foreign_capture_device_ids(
+                    self._get_entry(), exclude_subentry_id=subentry.subentry_id
+                ),
             }
         )
 

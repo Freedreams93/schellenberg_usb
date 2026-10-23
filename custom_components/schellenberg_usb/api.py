@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -86,6 +87,126 @@ MOVE_ACK_TIMEOUT = 1.0
 # existing "busy_latched" block reason explains it in the UI without a new
 # translation string.
 MOVE_RETRY_OVERALL_TIMEOUT = 15.0
+
+# Total time control_blind_stop() spends, combined, waiting for the
+# transmitter to go idle, acquiring _move_lock (with priority - see
+# _PriorityLock), and retrying on "tE" once it holds it, before giving up
+# and falling back to a plain control_blind() write - see that method's
+# own docstring for why it shares _move_lock rather than a second,
+# independent one, and why priority is what keeps this bounded by one
+# transmit cycle rather than however many other blinds' moves happen to be
+# queued. A manual stop must never queue behind a move's full
+# MOVE_RETRY_OVERALL_TIMEOUT budget, so this is deliberately much shorter:
+# comfortably more than one full transmit cycle (~1.1-1.2s per real logs,
+# the same figure MOVE_ACK_TIMEOUT's own comment cites) so the realistic
+# contention case - another stop, or this blind's own just-fired move,
+# still finishing its single in-flight transmission - resolves cleanly
+# inside this budget, while a stick stuck retrying for seconds on end
+# still leaves stop falling back quickly instead of hanging.
+STOP_RETRY_BUDGET = 2.0
+
+
+class _PriorityLock:
+    """An exclusive async lock where a "priority" acquire jumps the queue.
+
+    Behaves exactly like asyncio.Lock for ordinary (priority=False)
+    acquires: free lock with nobody already queued is taken immediately,
+    otherwise the caller queues and release() wakes the oldest waiter,
+    first-come-first-served. The one addition is a second queue for
+    priority=True acquires, which release() always drains before the
+    ordinary one - so a priority caller is served ahead of any ordinary
+    caller that is still *waiting*, though never ahead of whoever
+    *currently holds* the lock, and never ahead of another, earlier
+    priority waiter.
+
+    Exists only so control_blind_stop() can share exclusion with
+    control_blind_with_retry() (see _move_lock's own comment in __init__
+    for why a second, independent lock does not work here) without
+    queueing behind some *other* blind's own already-queued move the way
+    sharing a plain asyncio.Lock would - confirmed from a real log where a
+    manual stop, requested before a second blind's own close even reached
+    the lock, still waited out that unrelated close's entire ~1.1-1.2s
+    transmit cycle, because the lock gave it no way to go first.
+    has_priority_waiter() is the other half of that fix: both callers hold
+    this lock across their own wait-for-the-transmitter-to-go-idle step
+    (not only the write - see both their own docstrings for why), and an
+    ordinary holder checks it, both before starting that wait and again
+    the instant it resolves, to voluntarily step back - release without
+    writing, then loop around to request the lock again - the moment a
+    stop is waiting its turn, rather than finishing its own turn first.
+
+    The implementation mirrors CPython's own asyncio.Lock fairness
+    mechanics (see its acquire()/release()/_wake_up_first()): release()
+    does not remove the woken waiter from its queue - the waiter removes
+    itself, once it actually resumes, in a finally block - so a brand-new
+    acquire() arriving in the gap between release() and that resumption
+    cannot see an (incorrectly) empty queue and cut in line ahead of a
+    waiter that has already been woken but not yet run.
+    """
+
+    def __init__(self) -> None:
+        self._locked = False
+        self._priority_waiters: deque[asyncio.Future[None]] = deque()
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    def locked(self) -> bool:
+        """Return True while some caller currently holds the lock."""
+        return self._locked
+
+    async def acquire(self, *, priority: bool = False) -> None:
+        """Wait for and take the lock, optionally ahead of ordinary waiters."""
+        if not self._locked and not self._has_live_waiters():
+            self._locked = True
+            return
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        queue = self._priority_waiters if priority else self._waiters
+        queue.append(fut)
+        try:
+            try:
+                await fut
+            finally:
+                queue.remove(fut)
+        except asyncio.CancelledError:
+            if not self._locked:
+                self._wake_up_first()
+            raise
+        self._locked = True
+
+    def release(self) -> None:
+        """Release the lock, waking the next waiter (priority queue first)."""
+        if not self._locked:
+            raise RuntimeError("Lock is not acquired.")
+        self._locked = False
+        self._wake_up_first()
+
+    def has_priority_waiter(self) -> bool:
+        """Return True while any priority=True acquire is currently queued.
+
+        Lets an ordinary holder voluntarily yield the lock to a higher-
+        priority caller instead of finishing its own turn first - see
+        control_blind_with_retry()'s own use of this.
+        """
+        return any(not fut.cancelled() for fut in self._priority_waiters)
+
+    def _has_live_waiters(self) -> bool:
+        return any(
+            not fut.cancelled() for fut in (*self._priority_waiters, *self._waiters)
+        )
+
+    def _wake_up_first(self) -> None:
+        for queue in (self._priority_waiters, self._waiters):
+            if queue:
+                fut = queue[0]
+                if not fut.done():
+                    fut.set_result(None)
+                return
+
+    async def __aenter__(self) -> _PriorityLock:
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.release()
 
 
 def check_serial_port(port: str) -> None:
@@ -175,6 +296,7 @@ class SchellenbergUsbApi:
         self._status_discovery_phase = "idle"
         self._status_discovery_started_at: str | None = None
         self._is_connecting = False
+        self._connect_task: asyncio.Task[bool] | None = None
         self._pairing_future: asyncio.Future[str] | None = None
         self._pairing_active = False
         self._stop_pairing_task: asyncio.Task[None] | None = (
@@ -199,28 +321,6 @@ class SchellenbergUsbApi:
         self._retry_task: asyncio.Task[None] | None = None
         self._retry_count = 0
         self._last_transmit_source = "internal"
-
-        # control_blind() (open/close/stop) deliberately writes straight to
-        # the transport with no lock and no retry - see its own docstring -
-        # so it never touches _pending_retry_command either. That leaves one
-        # real ambiguity: the stick's tE/t1/t0 replies carry no id saying
-        # which write they are about, so if a control_blind() write lands
-        # while a send_command()-tracked transmission (teach, pairing,
-        # raw-transmit, verify) is still waiting on its own t0, a tE that
-        # arrives next could be about either one - not necessarily the
-        # pending command _handle_message would otherwise assume it is.
-        # Blindly retrying the pending command in that situation risks
-        # resending it for no reason; for teach specifically, its own
-        # docstring already warns that repeating command 60 outside the
-        # motor programming sequence can change the motor's rotation
-        # direction. This flag lets _handle_message tell the ambiguous case
-        # apart from the ordinary one instead of guessing: control_blind()
-        # sets it when it writes while a command is pending, send_command()
-        # clears it when a fresh pending command's own window opens, and
-        # _handle_message clears it again after acting on one ambiguous tE,
-        # so only that one reply is affected - a later, unambiguous tE for
-        # the same still-pending command is retried normally.
-        self._control_blind_write_pending_conflict = False
 
         # Set on a "t1" transmitter-on ACK and cleared on "t0" (see
         # _handle_message); reflects the stick's own report of its
@@ -252,26 +352,53 @@ class SchellenbergUsbApi:
         # slot was tried before (git history) and a second contending move
         # silently clobbered the first's retry tracking, undetected because
         # it was never exercised by more than two commands close together.
-        # _move_lock is held for a whole write-then-maybe-retry-until-
-        # accepted cycle, not just the write, so a second blind commanded
-        # moments later genuinely queues behind it instead of racing it -
-        # several entities independently waiting on one shared "idle" event
-        # can all observe idle between the same two ACKs and all write in
-        # the same instant, confirmed from a real log showing six writes
-        # within 15ms of each other and five of them answered "tE". A lock
-        # held across the full cycle makes that race structurally
-        # impossible instead of merely unlikely.
-        self._move_lock = asyncio.Lock()
-        # Which blind's move control_blind_with_retry() is currently
+        # _move_lock is held for a whole wait-for-idle-then-write-then-
+        # await-ack cycle, not just the write - several entities
+        # independently waiting on one shared "idle" event can all observe
+        # idle between the same two ACKs and all write in the same instant,
+        # confirmed from a real log showing six writes within 15ms of each
+        # other and five of them answered "tE". A lock held across the full
+        # cycle makes that race structurally impossible instead of merely
+        # unlikely.
+        #
+        # control_blind_stop() shares this same lock, requesting priority
+        # (see _PriorityLock above), rather than getting a second,
+        # independent one of its own: two separate locks would not exclude
+        # each other, so a stop-task and a move-task could still each
+        # observe the shared idle event go true and race to write at the
+        # same instant - exactly the race this lock exists to make
+        # impossible for two moves, reopened for move-vs-stop if stop did
+        # not share it. Priority alone is not enough, though: it only lets
+        # a stop jump an ordinary *waiter*, never whoever already holds the
+        # lock, so an ordinary holder that merely got here first could
+        # still occupy the lock for an entire transmit cycle doing nothing
+        # but wait, with a later-arriving stop unable to do anything but
+        # wait behind it - confirmed from a real log where exactly this
+        # cost a manual stop over a second, long enough to visibly
+        # overshoot the target. has_priority_waiter() closes that: an
+        # ordinary holder checks it - both right after acquiring and again
+        # the instant its own idle-wait resolves - and voluntarily releases
+        # without writing, rather than finishing its turn, the moment a
+        # stop is waiting for this lock.
+        self._move_lock = _PriorityLock()
+        # Which blinds' moves control_blind_with_retry() is currently
         # attempting (write, maybe-retry) - read by cancel_pending_move() so
         # a stop for that same blind can end a stale retry loop instead of
         # letting it resend after the stop, the exact collision that made
         # routing moves through the busy-retry cycle get reverted before.
-        self._move_in_progress_device_id: str | None = None
-        # Set by cancel_pending_move() when it matches _move_in_progress_
-        # device_id; control_blind_with_retry() checks this at each retry
-        # boundary and gives up (returns False) rather than writing again.
-        self._move_cancel_device_id: str | None = None
+        # Tracked per device_id (not a single scalar) since this hub can
+        # have several blinds' own calls genuinely in flight at once -
+        # driving several together is this integration's whole point (see
+        # README's own multi-blind example) - a single shared "the" device
+        # id used to let whichever blind's call ran its own first line most
+        # recently silently overwrite an earlier, still-in-flight blind's
+        # own claim to it.
+        self._moves_in_progress: set[str] = set()
+        # Device ids cancel_pending_move() has requested an end to; added
+        # only for a device_id already present in _moves_in_progress.
+        # control_blind_with_retry() checks this at each retry boundary and
+        # gives up (returns False) rather than writing again.
+        self._move_cancel_requested: set[str] = set()
         # True only between a move's write and learning its outcome;
         # _handle_message's t1/tE branches only touch _move_ack_result/
         # _move_ack_event while this is True, so they never fire for a t1/
@@ -348,6 +475,28 @@ class SchellenbergUsbApi:
             else:
                 _LOGGER.warning("Failed to retrieve hub device ID")
             return True
+        except asyncio.CancelledError:
+            # Reached when start_connecting()/disconnect() cancel this
+            # call's own task while it is still awaiting real I/O above -
+            # most commonly an unload/reload racing the very first connect
+            # a fresh config entry starts in the background. Without this,
+            # a transport opened just before the cancellation landed (set
+            # above, but never reaching this method's own explicit
+            # close()-on-failure branches, since cancellation skips
+            # straight past them) stayed open and connected after the rest
+            # of the integration had already been torn down - on a single
+            # USB stick, blocking the device file from being reopened
+            # until Home Assistant restarts. Close whatever got opened so
+            # a cancelled connect leaves exactly the same disconnected
+            # state a failed one already does, then let the cancellation
+            # continue propagating as normal.
+            if self._transport is not None:
+                self._transport.close()
+            self._transport = None
+            self._protocol = None
+            self._is_connected = False
+            self._device_mode = None
+            raise
         except (OSError, TimeoutError) as err:
             _LOGGER.error(
                 "Failed to connect to %s: %s. Retrying in %.0f seconds",
@@ -364,6 +513,28 @@ class SchellenbergUsbApi:
             return False
         finally:
             self._is_connecting = False
+
+    def start_connecting(self) -> asyncio.Task[bool]:
+        """Start connect() as a tracked background task.
+
+        Used instead of a bare hass.async_create_task(self.connect(), ...)
+        wherever a connect is kicked off without being awaited directly -
+        a fresh config entry's own initial connect, and each scheduled
+        auto-reconnect. Storing the task is what lets disconnect() below
+        reliably cancel a connect() that is still in flight rather than
+        letting it run to completion and open a transport after the rest
+        of the integration already considers itself disconnected - see
+        connect()'s own CancelledError handling for the other half of
+        that fix. Also cancels any previous attempt still running, so at
+        most one connect() is ever in flight regardless of how many times
+        this is called in a row.
+        """
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+        self._connect_task = self.hass.async_create_task(
+            self.connect(), name="schellenberg-connect"
+        )
+        return self._connect_task
 
     async def _enter_listening_mode(self) -> bool:
         """Put a connected stick into B:2 listening mode when needed."""
@@ -405,7 +576,7 @@ class SchellenbergUsbApi:
         """Start the reconnect task from its timer callback."""
         self._reconnect_handle = None
         if not self._disconnect_requested:
-            self.hass.async_create_task(self.connect(), name="schellenberg-reconnect")
+            self.start_connecting()
 
     @callback
     def _handle_message(self, message: str) -> None:
@@ -544,30 +715,6 @@ class SchellenbergUsbApi:
                 # in-flight retryable command to resend.
                 _LOGGER.log(
                     level, "Transmit error - stick busy, no pending command to retry"
-                )
-                return
-            if self._control_blind_write_pending_conflict:
-                # A control_blind() write went out while this command was
-                # still waiting on its own t0 (see
-                # _control_blind_write_pending_conflict's comment in
-                # __init__), so this busy reply could be about either
-                # transmission - the protocol gives no way to tell which.
-                # Retrying here risks resending the pending command for no
-                # reason (harmful for teach specifically, whose own
-                # docstring warns that repeating it can change the motor's
-                # rotation direction), so this one ambiguous reply is
-                # skipped instead of guessed at. Only this reply is
-                # affected: the flag is cleared here, so a later,
-                # unambiguous tE for the same still-pending command is
-                # retried normally.
-                self._control_blind_write_pending_conflict = False
-                _LOGGER.log(
-                    level,
-                    "Transmit error - stick busy, but a blind command was also "
-                    "sent while source=%s payload=%s was still pending; "
-                    "ambiguous which one this is about, not retrying",
-                    self._last_transmit_source,
-                    self._pending_retry_command,
                 )
                 return
             # Always logged at DEBUG, never escalated to WARNING like the
@@ -835,10 +982,6 @@ class SchellenbergUsbApi:
                     # would ever clear it, and it would replace the
                     # payload of a transmission that is still in flight.
                     self._pending_retry_command = command
-                    # Fresh window for this pending command: any conflict
-                    # flagged by control_blind() belonged to a previous
-                    # pending command, if any, and does not apply here.
-                    self._control_blind_write_pending_conflict = False
 
                 full_command = f"{command}\r\n".encode("ascii")
                 _LOGGER.log(
@@ -1205,35 +1348,30 @@ class SchellenbergUsbApi:
             finish_payload,
         )
 
-        for phase, payload in (
-            ("teach_60", teach_payload),
-            ("finish_40", finish_payload),
-        ):
-            _LOGGER.warning(
-                "Motor teach phase write source=%s device_id=%s enum=%s "
-                "phase=%s payload=%s",
-                source,
-                device_id or "unknown",
-                normalized_enum,
-                phase,
-                payload,
-            )
-            if not await self.send_command(payload, source=source):
-                _LOGGER.error(
-                    "Motor teach write failed source=%s device_id=%s enum=%s "
-                    "phase=%s payload=%s",
-                    source,
-                    device_id or "unknown",
-                    normalized_enum,
-                    phase,
-                    payload,
-                )
-                return False
-            if not await self._wait_for_transmitter_idle(
-                f"finishing motor teach phase {phase}"
+        # Claim the same single-writer signal real pairing uses so
+        # control_blind()/control_blind_with_retry() refuse every blind's
+        # open/close/stop for as long as this two-phase 60-then-40 write is
+        # in flight. Without this, _transmit_capability_block_reason() has
+        # no way to tell a teach sequence is running: unlike
+        # pair_device_and_wait(), teach_motor() deliberately never touches
+        # _device_mode, since the stick's own hardware mode genuinely stays
+        # "listening" throughout here - only the physical remote enters
+        # programming mode, not the stick - so "pairing_active" is the only
+        # signal available, and leaving it unset let a concurrent move race
+        # this sequence's own send_command() writes for the stick's one RF
+        # transmitter, the same class of bug _move_lock exists to close for
+        # move-vs-move. Cleared in the finally below on every exit path,
+        # including a failed write or ACK timeout, so a teach failure can
+        # never leave every blind permanently blocked.
+        self._pairing_active = True
+        self._update_status()
+        try:
+            for phase, payload in (
+                ("teach_60", teach_payload),
+                ("finish_40", finish_payload),
             ):
-                _LOGGER.error(
-                    "Motor teach phase ACK timeout source=%s device_id=%s enum=%s "
+                _LOGGER.warning(
+                    "Motor teach phase write source=%s device_id=%s enum=%s "
                     "phase=%s payload=%s",
                     source,
                     device_id or "unknown",
@@ -1241,27 +1379,53 @@ class SchellenbergUsbApi:
                     phase,
                     payload,
                 )
-                self._busy_latched = True
-                return False
+                if not await self.send_command(payload, source=source):
+                    _LOGGER.error(
+                        "Motor teach write failed source=%s device_id=%s enum=%s "
+                        "phase=%s payload=%s",
+                        source,
+                        device_id or "unknown",
+                        normalized_enum,
+                        phase,
+                        payload,
+                    )
+                    return False
+                if not await self._wait_for_transmitter_idle(
+                    f"finishing motor teach phase {phase}"
+                ):
+                    _LOGGER.error(
+                        "Motor teach phase ACK timeout source=%s device_id=%s enum=%s "
+                        "phase=%s payload=%s",
+                        source,
+                        device_id or "unknown",
+                        normalized_enum,
+                        phase,
+                        payload,
+                    )
+                    self._busy_latched = True
+                    return False
+                _LOGGER.warning(
+                    "Motor teach phase stick ACK completed source=%s device_id=%s "
+                    "enum=%s phase=%s payload=%s stick_ack_only=True",
+                    source,
+                    device_id or "unknown",
+                    normalized_enum,
+                    phase,
+                    payload,
+                )
+
             _LOGGER.warning(
-                "Motor teach phase stick ACK completed source=%s device_id=%s "
-                "enum=%s phase=%s payload=%s stick_ack_only=True",
+                "Motor teach sequence stick ACK completed source=%s device_id=%s "
+                "enum=%s phases=60_then_40 stick_ack_only=True "
+                "motor_authorization=unverified",
                 source,
                 device_id or "unknown",
                 normalized_enum,
-                phase,
-                payload,
             )
-
-        _LOGGER.warning(
-            "Motor teach sequence stick ACK completed source=%s device_id=%s "
-            "enum=%s phases=60_then_40 stick_ack_only=True "
-            "motor_authorization=unverified",
-            source,
-            device_id or "unknown",
-            normalized_enum,
-        )
-        return True
+            return True
+        finally:
+            self._pairing_active = False
+            self._update_status()
 
     async def send_raw_transmit(
         self, payload: str, *, source: str = "developer_tools"
@@ -1292,34 +1456,56 @@ class SchellenbergUsbApi:
             normalized,
             len(normalized),
         )
-        sent = await self.send_command(normalized, source=source)
-        if not sent:
-            _LOGGER.error(
-                "Raw RF transmit result source=%s payload=%s result=write_failed "
+        # Claim the same single-writer signal teach_motor()/
+        # pair_device_and_wait() use so control_blind()/
+        # control_blind_with_retry() refuse every blind's open/close/stop
+        # for as long as this transmit-then-wait-for-idle cycle is in
+        # flight. Without this, a raw payload sent from here could
+        # physically collide on the wire with an unrelated blind's own move
+        # or stop - the same class of bug _pairing_active's teach_motor()
+        # fix closed for teach, left open here until now because a raw
+        # payload is not teach/pairing and _device_mode genuinely does not
+        # change for it either, so "pairing_active" is the only signal
+        # available, same reasoning as teach_motor()'s own. Cleared in the
+        # finally below on every exit path, including a failed write or
+        # idle timeout, so a failed raw send can never leave every blind
+        # permanently blocked.
+        self._pairing_active = True
+        self._update_status()
+        try:
+            sent = await self.send_command(normalized, source=source)
+            if not sent:
+                _LOGGER.error(
+                    "Raw RF transmit result source=%s payload=%s "
+                    "result=write_failed stick_ack_only=True motor_result=unknown",
+                    source,
+                    normalized,
+                )
+                return False
+
+            if not await self._wait_for_transmitter_idle("finishing raw RF transmit"):
+                _LOGGER.error(
+                    "Raw RF transmit result source=%s payload=%s "
+                    "result=ack_timeout stick_ack_only=True motor_result=unknown",
+                    source,
+                    normalized,
+                )
+                self._busy_latched = True
+                return False
+
+            _LOGGER.log(
+                logging.WARNING
+                if source in DIAGNOSTIC_TRANSMIT_SOURCES
+                else logging.DEBUG,
+                "Raw RF transmit result source=%s payload=%s result=written "
                 "stick_ack_only=True motor_result=unknown",
                 source,
                 normalized,
             )
-            return False
-
-        if not await self._wait_for_transmitter_idle("finishing raw RF transmit"):
-            _LOGGER.error(
-                "Raw RF transmit result source=%s payload=%s result=ack_timeout "
-                "stick_ack_only=True motor_result=unknown",
-                source,
-                normalized,
-            )
-            self._busy_latched = True
-            return False
-
-        _LOGGER.log(
-            logging.WARNING if source in DIAGNOSTIC_TRANSMIT_SOURCES else logging.DEBUG,
-            "Raw RF transmit result source=%s payload=%s result=written "
-            "stick_ack_only=True motor_result=unknown",
-            source,
-            normalized,
-        )
-        return True
+            return True
+        finally:
+            self._pairing_active = False
+            self._update_status()
 
     async def control_blind(
         self,
@@ -1421,13 +1607,6 @@ class SchellenbergUsbApi:
             action_name,
             raw_payload,
         )
-        if self._pending_retry_command is not None:
-            # A send_command()-tracked transmission (teach, pairing,
-            # raw-transmit, verify) is still waiting on its own t0 - see
-            # _control_blind_write_pending_conflict's own comment in
-            # __init__ for why that makes the *next* tE ambiguous rather
-            # than clearly about that pending command.
-            self._control_blind_write_pending_conflict = True
         return True
 
     @callback
@@ -1445,14 +1624,17 @@ class SchellenbergUsbApi:
         common case for most stops - never blocks, never raises, safe to
         call unconditionally before every stop.
 
-        Deliberately keyed off _move_in_progress_device_id rather than
-        setting _move_cancel_device_id unconditionally: a stop for a blind
-        with no move in flight must not leave a stale cancellation sitting
-        around for that same blind's next, completely unrelated move to
-        trip over.
+        Deliberately keyed off _moves_in_progress (per device_id) rather
+        than adding to _move_cancel_requested unconditionally: a stop for a
+        blind with no move in flight must not leave a stale cancellation
+        sitting around for that same blind's next, completely unrelated
+        move to trip over. Checking this device_id's own membership, not a
+        single shared "the one in-progress device", also means a second
+        blind's own concurrent call can never make this check see the
+        wrong device - see _moves_in_progress's own comment in __init__.
         """
-        if self._move_in_progress_device_id == device_id:
-            self._move_cancel_device_id = device_id
+        if device_id in self._moves_in_progress:
+            self._move_cancel_requested.add(device_id)
 
     async def control_blind_with_retry(
         self,
@@ -1464,23 +1646,40 @@ class SchellenbergUsbApi:
     ) -> bool:
         """Open or close a blind, retrying "stick busy" until accepted.
 
-        Never call this for CMD_STOP - stop must stay exactly as instant
-        and unretried as control_blind() itself already is; see that
-        method's and async_stop_cover()'s own docstrings for why. This
-        exists only for async_open_cover()/async_close_cover().
+        Never call this for CMD_STOP - a stop has its own, much shorter
+        serialization (control_blind_stop()) rather than this method's
+        open-ended retry budget, so it can never queue behind a move for
+        anywhere near as long. This exists only for async_open_cover()/
+        async_close_cover().
 
-        Serializes hub-wide through _move_lock, held for this whole
-        write-then-maybe-retry-until-accepted cycle rather than just the
-        write - see _move_lock's own comment in __init__ for the race this
-        closes that a shared "wait for idle, then write" pattern does not:
-        confirmed from a real log, several blinds commanded together can
-        all observe the transmitter idle between the same two ACKs and all
-        write within the same ~15ms window, of which the stick then accepts
-        exactly one and answers "tE" to the rest - which control_blind()
-        neither waits for nor retries on its own, so those commands used to
-        vanish rather than merely arrive late. Holding this lock across the
-        full cycle means a second blind's call genuinely waits in line
-        instead of racing the first for the one write that matters.
+        Serializes hub-wide through _move_lock, held across this whole
+        wait-for-idle-then-write-then-await-ack cycle, same as before this
+        fix's own rework - see _move_lock's own comment in __init__ for the
+        race this closes that a shared "wait for idle, then write" pattern
+        does not: several blinds commanded together can all observe the
+        transmitter idle between the same two ACKs and all write within the
+        same ~15ms window, of which the stick then accepts exactly one and
+        answers "tE" to the rest - which control_blind() neither waits for
+        nor retries on its own, so those commands used to vanish rather
+        than merely arrive late.
+
+        The one addition is has_priority_waiter(): checked both right
+        after acquiring the lock and again the instant the idle-wait
+        resolves, and either time, a waiting control_blind_stop() call
+        makes this attempt release the lock without writing and loop
+        around to request it again, rather than finishing its own turn
+        first. Without this, a move that merely got to the lock first
+        could hold it for an entire transmit cycle doing nothing but
+        wait - exactly what let a stop end up queueing behind a completely
+        unrelated blind's own pending move for that whole cycle, confirmed
+        from a real log where this cost a stop over a second, long enough
+        for the blind being stopped to visibly overshoot its target.
+        Checking twice (not only once, before the wait) matters because
+        the realistic case is a stop arriving *while* this attempt is
+        already parked waiting for idle - by the time that wait resolves,
+        the stop has had the whole rest of that same wait to register
+        itself as a priority waiter, and the second check catches it right
+        before the write that would otherwise go out first.
 
         Retried on "tE" with no limit on the number of attempts, like
         send_command()'s own busy-retry cycle - same policy, independent
@@ -1490,9 +1689,9 @@ class SchellenbergUsbApi:
         some fixed count, since in practice "busy" here almost always
         just means another blind's own ~1.1-1.2s transmission is still in
         flight, not a genuinely stuck stick. Elapsed time is bounded,
-        though, by MOVE_RETRY_OVERALL_TIMEOUT - see its own comment for
-        why unlimited attempts must not also mean unlimited time spent
-        holding the hub-wide lock.
+        though, by MOVE_RETRY_OVERALL_TIMEOUT, measured from this call's
+        very first attempt - see its own comment for why unlimited attempts
+        must not also mean unlimited elapsed time.
 
         Cancellation (cancel_pending_move()) and the overall timeout are
         both checked once per loop iteration, before that iteration's
@@ -1516,30 +1715,80 @@ class SchellenbergUsbApi:
                 action,
             )
             return False
-        async with self._move_lock:
-            self._move_in_progress_device_id = device_id
-            # Starts now, once the lock is actually held - not when this
-            # call was first made. Time spent waiting to acquire _move_
-            # lock behind other blinds is ordinary queueing, not part of
-            # this device_id's own retry budget.
-            retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
-            try:
-                while True:
-                    if self._move_cancel_device_id == device_id:
-                        self._move_cancel_device_id = None
-                        return False
-                    if time.monotonic() >= retry_deadline:
-                        _LOGGER.warning(
-                            "Giving up on move after retrying for %.0fs with "
-                            "no accept source=%s device_id=%s action=%s",
-                            MOVE_RETRY_OVERALL_TIMEOUT,
-                            source,
-                            device_id or "unknown",
-                            action,
-                        )
-                        self._busy_latched = True
-                        return False
-                    await self._wait_for_transmitter_idle("sending a move command")
+        if device_id is None:
+            # Every real caller - async_open_cover()/async_close_cover(),
+            # the only two - always passes its own blind's device_id (see
+            # this method's own docstring: it exists only for them). The
+            # per-device tracking below needs a real device to key it by,
+            # so bail out the same defensive way as the not-a-move check
+            # above rather than letting a hypothetical future caller that
+            # forgot to pass one fall through with no device to track.
+            _LOGGER.error(
+                "control_blind_with_retry blocked reason=no_device_id "
+                "source=%s action=%s",
+                source,
+                action,
+            )
+            return False
+        # Added for this call's whole duration, not just once _move_lock is
+        # actually held - cancel_pending_move() can then end this call even
+        # while it is still only waiting for idle, before ever reaching the
+        # lock, which is strictly more responsive than waiting for that.
+        # Added to the per-device set rather than assigned to a shared
+        # scalar, so a second blind's own concurrent call (driving several
+        # blinds together is this integration's whole point) can never
+        # clobber this one's own membership here - see this attribute's
+        # own comment in __init__.
+        self._moves_in_progress.add(device_id)
+        retry_deadline = time.monotonic() + MOVE_RETRY_OVERALL_TIMEOUT
+        try:
+            while True:
+                if device_id in self._move_cancel_requested:
+                    self._move_cancel_requested.discard(device_id)
+                    return False
+                if time.monotonic() >= retry_deadline:
+                    _LOGGER.warning(
+                        "Giving up on move after retrying for %.0fs with "
+                        "no accept source=%s device_id=%s action=%s",
+                        MOVE_RETRY_OVERALL_TIMEOUT,
+                        source,
+                        device_id or "unknown",
+                        action,
+                    )
+                    self._busy_latched = True
+                    return False
+                # Bounded by retry_deadline too, not just the wait-for-
+                # idle/write/ack cycle after acquiring: acquire() itself
+                # used to be unbounded, so a move stuck behind a
+                # sufficiently long queue of other moves/stops could run
+                # well past MOVE_RETRY_OVERALL_TIMEOUT before this loop
+                # ever got back to checking it. On timeout, loop back to
+                # the top rather than giving up here directly - by the
+                # time wait_for's own timeout has elapsed, the check above
+                # is guaranteed to be true, so it gives up there with its
+                # usual warning/return instead of this duplicating it.
+                try:
+                    await asyncio.wait_for(
+                        self._move_lock.acquire(),
+                        timeout=retry_deadline - time.monotonic(),
+                    )
+                except TimeoutError:
+                    continue
+                try:
+                    if self._move_lock.has_priority_waiter():
+                        # A stop is waiting its turn - step back now
+                        # instead of starting a potentially long wait on
+                        # idle while holding the lock in front of it.
+                        continue
+                    if not await self._wait_for_transmitter_idle(
+                        "sending a move command"
+                    ):
+                        continue
+                    if self._move_lock.has_priority_waiter():
+                        # A stop started waiting its turn while this call
+                        # was parked above - still time to yield, one
+                        # write away from going out ahead of it.
+                        continue
                     self._move_ack_event.clear()
                     self._move_ack_result = None
                     self._move_awaiting_ack = True
@@ -1562,14 +1811,135 @@ class SchellenbergUsbApi:
                             device_id or "unknown",
                         )
                     self._move_awaiting_ack = False
-                    if self._move_ack_result is True:
-                        return True
-                    # False (busy) or None (no reply at all, treated the
-                    # same way - see the docstring) - retry, after the same
-                    # brief pause send_command()'s own retry uses.
-                    await asyncio.sleep(0.1)
+                finally:
+                    self._move_lock.release()
+                if self._move_ack_result is True:
+                    return True
+                # False (busy) or None (no reply at all, treated the
+                # same way - see the docstring) - retry, after the same
+                # brief pause send_command()'s own retry uses.
+                await asyncio.sleep(0.1)
+        finally:
+            self._moves_in_progress.discard(device_id)
+
+    async def control_blind_stop(
+        self,
+        device_enum: str,
+        *,
+        device_id: str | None = None,
+        source: str = "cover",
+    ) -> bool:
+        """Stop a blind, served ahead of any blind's own pending move.
+
+        async_stop_cover() used to call control_blind() directly for this -
+        one immediate, unlocked write, same as open/close used to be before
+        control_blind_with_retry() existed for them. That is still exactly
+        what happens here once STOP_RETRY_BUDGET runs out (see below), so
+        this is never worse than the old behavior; it only adds latency in
+        the case the old behavior always silently lost.
+
+        That old, lock-free write could still physically collide with
+        another write already in flight: another blind's stop sent in the
+        same instant, or - despite async_stop_cover() calling cancel_
+        pending_move() right before this - this same blind's own move,
+        whose first write can still be transmitting when the stop for it
+        arrives, since cancel_pending_move() only ends a *retry* that has
+        not happened yet; it cannot un-send a write already on the wire.
+        A second, independent lock would not close that gap either: two
+        unrelated locks still let a stop-task and a move-task each wait on
+        the same shared idle event and then race each other to write, the
+        exact failure mode _move_lock's own comment in __init__ describes
+        for two moves sharing only a wait instead of a lock.
+
+        So this shares _move_lock itself, requesting priority (see
+        _PriorityLock above) so it is served ahead of any *other* blind's
+        own pending move still only waiting for its turn - critical,
+        because this method acquires the lock *before* waiting for the
+        transmitter to go idle, same as control_blind_with_retry() does
+        (both hold it across the whole wait, not only the write - see that
+        method's own docstring for why a plain, unlocked wait does not
+        work and why has_priority_waiter() is still needed on top of
+        that). Acquiring with priority means this never queues behind an
+        ordinary move that is merely *waiting* for the lock, only ever
+        behind whoever actually holds it right now - and that in turn is
+        normally for nothing more than whatever is on the wire right now
+        (this blind's own just-fired move, in the collision this fix
+        exists for, or someone else's single transmit cycle), not an
+        unrelated blind's whole queued-up move, since has_priority_
+        waiter() makes an ordinary holder step back for this call rather
+        than finish its own wait-then-write first. STOP_RETRY_BUDGET
+        bounds the combined time spent acquiring the lock, waiting for
+        idle, and any "tE" retries once writing - comfortably more than
+        one full transmit cycle (~1.1-1.2s per real logs), but nowhere
+        near a move's own, much longer MOVE_RETRY_OVERALL_TIMEOUT, so a
+        manual stop can still never queue behind a move's full retry
+        budget. Exhausted - the lock or the wire stayed busy throughout,
+        or "tE" kept coming back - this falls back to the plain, unlocked
+        control_blind() write described above, logged as a warning rather
+        than the stop simply vanishing the way it used to before this
+        whole fix existed.
+
+        Once writing, reuses the same _move_awaiting_ack/_move_ack_event/
+        _move_ack_result bookkeeping a move does - safe here specifically
+        because holding _move_lock guarantees no move can be in its own
+        write-and-await-ack phase at the same time.
+        """
+        deadline = time.monotonic() + STOP_RETRY_BUDGET
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    self._move_lock.acquire(priority=True), timeout=remaining
+                )
+            except TimeoutError:
+                break
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if not await self._wait_for_transmitter_idle(
+                    "sending a stop command", timeout=remaining
+                ):
+                    continue
+                self._move_ack_event.clear()
+                self._move_ack_result = None
+                self._move_awaiting_ack = True
+                sent = await self.control_blind(
+                    device_enum, CMD_STOP, device_id=device_id, source=source
+                )
+                if not sent:
+                    self._move_awaiting_ack = False
+                    return False
+                try:
+                    await asyncio.wait_for(
+                        self._move_ack_event.wait(), timeout=MOVE_ACK_TIMEOUT
+                    )
+                except TimeoutError:
+                    _LOGGER.warning(
+                        "No t1/tE reply to stop write within %.1fs "
+                        "source=%s device_id=%s - retrying",
+                        MOVE_ACK_TIMEOUT,
+                        source,
+                        device_id or "unknown",
+                    )
+                self._move_awaiting_ack = False
             finally:
-                self._move_in_progress_device_id = None
+                self._move_lock.release()
+            if self._move_ack_result is True:
+                return True
+            await asyncio.sleep(0.1)
+        _LOGGER.warning(
+            "Giving up on stop after %.1fs with no accept, falling back to "
+            "a plain write source=%s device_id=%s",
+            STOP_RETRY_BUDGET,
+            source,
+            device_id or "unknown",
+        )
+        return await self.control_blind(
+            device_enum, CMD_STOP, device_id=device_id, source=source
+        )
 
     def initialize_next_device_enum(self) -> str:
         """Get the next available device enum based on registered devices.
@@ -1647,22 +2017,6 @@ class SchellenbergUsbApi:
             if bool(last_message["position_tracking"]):
                 self._last_primary_tracking_messages[identity] = dict(last_message)
 
-    def register_existing_devices(self, devices: list[dict[str, Any]]) -> None:
-        """Bulk-register command devices restored from storage at startup.
-
-        Each entry needs only "id" and "enum" (a "name" is accepted for
-        readability in the caller but not required here). Use
-        register_entity() instead when a status identity, entity name, or
-        secondary identities also need registering.
-        """
-        for device in devices:
-            self._registered_devices[device["id"]] = device["enum"]
-        _LOGGER.debug(
-            "Registered %d existing device(s): %s",
-            len(devices),
-            ", ".join(str(device.get("id")) for device in devices),
-        )
-
     def register_entity(
         self,
         status_device_id: str | None,
@@ -1733,15 +2087,6 @@ class SchellenbergUsbApi:
         return self._fresh_calibration_positions.pop(blind_id, None)
 
     @callback
-    def get_last_received(
-        self, status_device_id: str, status_enum: str
-    ) -> dict[str, Any] | None:
-        """Return a copy of the latest frame for an exact status identity."""
-        identity = normalize_status_identity(status_device_id, status_enum)
-        message = self._last_received_messages.get(identity) if identity else None
-        return dict(message) if message is not None else None
-
-    @callback
     def get_last_received_for_identities(
         self, identities: object
     ) -> dict[str, Any] | None:
@@ -1768,15 +2113,16 @@ class SchellenbergUsbApi:
 
     @callback
     def get_last_secondary_frame(self, identities: object) -> dict[str, Any] | None:
-        """Return the newest frame among configured secondary identities."""
-        candidates = [
-            self._last_received_messages[identity]
-            for identity in normalize_status_identities(identities)
-            if identity in self._last_received_messages
-        ]
-        if not candidates:
-            return None
-        return dict(max(candidates, key=lambda message: int(message["sequence"])))
+        """Return the newest frame among configured secondary identities.
+
+        A thin, more specifically-named wrapper around
+        get_last_received_for_identities() - kept as its own method because
+        callers (and the diagnostics dump's own section headings) treat
+        "last matched frame overall" and "last secondary frame" as two
+        distinct, meaningfully different views, even though the lookup
+        itself is identical either way.
+        """
+        return self.get_last_received_for_identities(identities)
 
     @callback
     def record_position_update(
@@ -1899,7 +2245,6 @@ class SchellenbergUsbApi:
         self._device_mode = None
         self._pairing_active = False
         self._pending_retry_command = None
-        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False
@@ -1918,8 +2263,8 @@ class SchellenbergUsbApi:
         if self._move_awaiting_ack:
             self._move_ack_result = False
             self._move_ack_event.set()
-        self._move_in_progress_device_id = None
-        self._move_cancel_device_id = None
+        self._moves_in_progress.clear()
+        self._move_cancel_requested.clear()
 
         error = ConnectionError(f"serial connection lost: {exc}")
         for future in (
@@ -2067,9 +2412,11 @@ class SchellenbergUsbApi:
         """Disconnect intentionally and cancel all pending serial work."""
         self._disconnect_requested = True
         self._cancel_scheduled_reconnect()
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+        self._connect_task = None
 
         self._pending_retry_command = None
-        self._control_blind_write_pending_conflict = False
         self._transmitter_active = False
         self._transmitter_idle.set()
         self._transmit_busy = False
@@ -2084,8 +2431,8 @@ class SchellenbergUsbApi:
         if self._move_awaiting_ack:
             self._move_ack_result = False
             self._move_ack_event.set()
-        self._move_in_progress_device_id = None
-        self._move_cancel_device_id = None
+        self._moves_in_progress.clear()
+        self._move_cancel_requested.clear()
         stop_task = self._stop_pairing_task
         self._stop_pairing_task = None
         if (

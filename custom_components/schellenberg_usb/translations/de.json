@@ -34,10 +34,10 @@
       "step": {
         "user": {
           "title": "Gerät hinzufügen",
-          "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten.",
+          "description": "Wählen Sie, wie Sie dieses Gerät einrichten möchten. Geeignet für Rollläden, elektronische Gurt-/Bandwickler, Markisenmotoren und andere Schellenberg-kompatible Motoren.",
           "menu_options": {
             "pair_device": "Gerät koppeln und kalibrieren",
-            "add_shutter_from_remote": "Gerät von Fernbedienung hinzufügen"
+            "add_shutter_from_remote": "Gerät von Fernbedienung hinzufügen (empfohlen)"
           }
         },
         "pair_device": {
@@ -47,7 +47,7 @@
         },
         "add_shutter_from_remote": {
           "title": "Gerät von Fernbedienung hinzufügen",
-          "description": "Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Kanal des Geräts aus. Drücken Sie die Programmiertaste Ihrer Fernbedienung, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass das Gerät den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf. Danach bestätigen Sie, ob sich der Rollladen tatsächlich bewegt hat.",
+          "description": "Diese Kopplungsmethode wird für jedes kompatible Schellenberg-Funkgerät empfohlen, egal ob es sich um einen Rollladenmotor, einen elektronischen Gurt-/Bandwickler oder einen Markisenmotor handelt. Verwenden Sie nach dem Drücken auf Koppeln innerhalb von 2 Minuten eine bereits gekoppelte Original-Fernbedienung und wählen Sie den Kanal des Geräts aus. Drücken Sie die Programmiertaste Ihrer Fernbedienung, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant erkennt das Telegramm und sendet den Anlernbefehl 60, gefolgt vom Abschlussbefehl 40 auf demselben Enum-Wert. Eine ACK-Bestätigung des USB-Sticks belegt nicht, dass das Gerät den Sender gelernt hat. Anschließend folgt ein kurzer Testlauf. Danach bestätigen Sie, ob sich der Rollladen tatsächlich bewegt hat.",
           "submit": "Koppeln"
         },
         "name_device": {
@@ -59,9 +59,9 @@
         },
         "calibration_close": {
           "title": "Bevor Sie beginnen",
-          "description": "Um {device_name} genau zu kalibrieren, muss Home Assistant wissen, welche Rollladenfahrtrichtung bei dem Rollladen zuerst kalibriert werden soll.",
+          "description": "Um {device_name} genau zu kalibrieren, muss Home Assistant wissen, welche Fahrtrichtung des Rollladens zuerst kalibriert werden soll.",
           "data": {
-            "initial_state": "Wie ist der Rollladen aktuell?"
+            "initial_state": "Wie ist der aktuelle Zustand des Rollladens?"
           },
           "submit": "Weiter"
         },
@@ -72,7 +72,7 @@
         },
         "calibration_close_instruction": {
           "title": "Rollladen schließen",
-          "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu schließen. Drücken Sie Start **und dann** die Schließen-Taste an der Steuerung, um die Kalibrierung zu starten. Der Kalibrierung startet erst, wenn eine Abwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
+          "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu schließen. Drücken Sie Start **und dann** die Schließen-Taste an der Steuerung, um die Kalibrierung zu starten. Die Kalibrierung startet erst, wenn eine Abwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
           "submit": "Start"
         },
         "calibration_complete": {
@@ -92,7 +92,7 @@
           "title": "Hat sich der Rollladen bewegt?",
           "description": "Befehlsidentität {device_id}/{device_enum} getestet: kurz {test_action}, dann gestoppt.",
           "data": {
-            "motor_moved": "Der Rolladen hat sich bewegt"
+            "motor_moved": "Der Rollladen hat sich bewegt"
           },
           "submit": "Weiter"
         },
@@ -100,7 +100,7 @@
           "title": "Befehlstest erfolgreich",
           "menu_options": {
             "calibration_close": "Weiter zur Kalibrierung",
-            "manual_times": "Gerätedaten manuell eintragen in das nächste Menü"
+            "manual_times": "Gerätedaten im nächsten Menü manuell eintragen"
           }
         },
         "manual_times": {
@@ -116,7 +116,7 @@
           "title": "Gerät konfigurieren",
           "menu_options": {
             "edit": "Identitäten und Laufzeiten bearbeiten",
-            "test_existing": "Gerätbefehl testen",
+            "test_existing": "Gerätebefehl testen",
             "developer_tools": "Entwicklerwerkzeuge",
             "calibrate": "Kalibrieren"
           }
@@ -128,10 +128,10 @@
             "test_open": "Test: den Rollladen öffnen",
             "test_close": "Test: den Rollladen schließen",
             "test_stop": "Test: den Rollladen stoppen",
-            "discover_status": "Die Rollladenfunkbefehle von diesem Rollladen auf der Fernbedienung trainieren für besseres erkennen der Rollladenbefehlsübermittlung beim drücken der Fernbedienung",
+            "discover_status": "Die Rollladenfunkbefehle von diesem Rollladen auf der Fernbedienung trainieren für besseres Erkennen der Rollladenbefehlsübermittlung beim Drücken der Fernbedienung",
             "set_position_open": "Die Rollladenposition vollständig geöffnet setzen",
             "set_position_closed": "Die Rollladenposition vollständig geschlossen setzen",
-            "set_position_manual": " Die Rollladenposition manuell setzen",
+            "set_position_manual": "Die Rollladenposition manuell setzen",
             "reset_stick": "Den USB-Stick zurücksetzen / serielle Schnittstelle neu verbinden von dem USB-Stick",
             "copy_diagnostics": "Die obige Diagnose kopieren",
             "teach_motor": "Ein anderes Gerät anlernen im selben Sektor (Achtung die bestehenden Motordaten werden überschrieben nach diesem Vorgang) / Den USB-Sender aktivieren",
@@ -139,8 +139,8 @@
           }
         },
         "discover_status": {
-          "title": " Die Rollladenfunkbefehle von diesem Rollladen von einer Fernbedienung trainieren für besseres erkennen der Rollladenbefehlsübermittlung beim drücken der Fernbedienung",
-          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\n verwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Kanal des Geräts: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
+          "title": "Die Rollladenfunkbefehle von diesem Rollladen von einer Fernbedienung trainieren für besseres Erkennen der Rollladenbefehlsübermittlung beim Drücken der Fernbedienung",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Kanal des Geräts: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
           "submit": "Empfang starten"
         },
         "confirm_status_discovery": {
@@ -149,7 +149,7 @@
           "submit": "Die erkannten Identitäten speichern"
         },
         "set_position_manual": {
-          "title": " Die Rollladenposition manuell setzen",
+          "title": "Die Rollladenposition manuell setzen",
           "description": "Die aktuelle Position für {selected_blind} festlegen, ohne den Rollladen zu bewegen. Aktuell erfasste Position: {current_position}.",
           "data": {
             "position": "Position"
@@ -160,7 +160,7 @@
           "title": "Den USB-Stick zurücksetzen / serielle Schnittstelle neu verbinden von dem USB-Stick"
         },
         "copy_diagnostics": {
-          "title": "die obige Diagnose kopieren",
+          "title": "Die obige Diagnose kopieren",
           "description": "Wählen und kopieren Sie den folgenden Diagnosetext. Drücken Sie danach auf Zurück.",
           "data": {
             "diagnostics": "Diagnose"
@@ -168,7 +168,7 @@
           "submit": "Zurück"
         },
         "edit": {
-          "title": "die Geräteeinstellungen bearbeiten",
+          "title": "Die Geräteeinstellungen bearbeiten",
           "description": "Das Ändern der Protokollidentitäten ändert nicht die eindeutige Entity-ID in Home Assistant. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie zusätzliche Identitäten als Geräte-ID/Enum ein, die jeweils durch eine Zeile oder mehrere Zeilen oder durch ein Komma oder durch mehrere Kommas getrennt werden. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
           "data": {
             "device_name": "Name",
@@ -185,7 +185,7 @@
         },
         "teach_motor": {
           "title": "Ein anderes Gerät anlernen im selben Sektor (Achtung die bestehenden Motordaten werden überschrieben nach diesem Vorgang) / Den USB-Sender aktivieren",
-          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_enum}\n\n: Wählen Sie vor dem Senden den Kanal des Geräts an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test an dem Gerät durch. Die ACK-Bestätigungen des Sticks belegen nicht, dass das Gerät den Anlerncode Enum 60 gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motorprogrammiersequenz; er kann auch die Drehrichtung ändern.",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_device_id}/{command_enum}\n\nOptional: Wählen Sie vor dem Senden den Kanal des Geräts an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test an dem Gerät durch. Die ACK-Bestätigungen des Sticks belegen nicht, dass das Gerät den Anlerncode Enum 60 gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motorprogrammiersequenz; er kann auch die Drehrichtung ändern.",
           "submit": "Anlernbefehl an das Gerät senden und testen"
         },
         "send_raw_command": {
@@ -205,7 +205,7 @@
         "already_configured": "Dieses Gerät ist bereits konfiguriert.",
         "initial_state_required": "Bitte wählen Sie aus, ob der Rollladen aktuell vollständig geöffnet oder vollständig geschlossen ist, bevor Sie fortfahren.",
         "test_direction_required": "Bitte wählen Sie aus, welche Rolladenfahrtrichtung getestet werden soll, bevor Sie fortfahren.",
-        "calibration_timeout": " Der Kalibrierungstimer ist abgelaufen. Der Rollladen hat mehr als 5 Minuten für die Bewegung benötigt. Bitte überprüfen Sie das Gerät und versuchen Sie es erneut.",
+        "calibration_timeout": "Der Kalibrierungstimer ist abgelaufen. Der Rollladen hat mehr als 5 Minuten für die Bewegung benötigt. Bitte überprüfen Sie das Gerät und versuchen Sie es erneut.",
         "calibration_start_timeout": "Zeitüberschreitung beim Warten auf die Bewegung des Rollladens. Bitte stellen Sie sicher, dass das Gerät ordnungsgemäß angeschlossen ist, und versuchen Sie es erneut.",
         "unknown": "Ein unerwarteter Fehler ist während der Kalibrierung aufgetreten. Bitte versuchen Sie es erneut.",
         "command_failed": "Der serielle Befehl konnte nicht eingereiht werden. Prüfen Sie die USB-Verbindung und die Protokolle.",

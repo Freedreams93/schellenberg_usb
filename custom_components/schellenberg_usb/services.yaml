@@ -25,6 +25,7 @@ test_command:
         text:
     command:
       name: Command
+      description: Which action to send to the device.
       required: true
       selector:
         select:

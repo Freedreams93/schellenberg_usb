@@ -6,6 +6,18 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .const import (
+    CONF_COMMAND_DEVICE_ID,
+    CONF_COMMAND_ENUM,
+    CONF_DEVICE_ENUM,
+    CONF_DEVICE_ID,
+    CONF_SECONDARY_STATUS_IDENTITIES,
+    CONF_STATUS_DEVICE_ID,
+    CONF_STATUS_ENUM,
+    CONF_STATUS_IDENTITY_SOURCE,
+    STATUS_IDENTITY_SOURCE_UNKNOWN,
+)
+
 type StatusIdentity = tuple[str, str]
 
 _STATUS_IDENTITY_PATTERN = re.compile(
@@ -19,7 +31,11 @@ def normalize_status_identity(
     """Normalize one status identity, returning None when it is malformed."""
     normalized_id = str(device_id).strip().upper()
     normalized_enum = str(device_enum).strip().upper()
-    if len(normalized_enum) <= 2:
+    # Guarded on non-empty first: "".zfill(2) is "00", a real, specific
+    # enum some other device could legitimately use - padding a genuinely
+    # missing enum into it would silently accept malformed input as that
+    # enum instead of correctly falling through to the rejection below.
+    if normalized_enum and len(normalized_enum) <= 2:
         normalized_enum = normalized_enum.zfill(2)
     if (
         len(normalized_id) != 6
@@ -31,15 +47,46 @@ def normalize_status_identity(
     return normalized_id, normalized_enum
 
 
+def _split_status_identity_tokens(text: str) -> list[str]:
+    """Split comma/semicolon/newline-separated text into stripped, non-empty tokens.
+
+    Shared by parse_status_identities_text() (strict - raises on the first
+    malformed token) and normalize_status_identities()'s own string-input
+    branch (lenient - skips a malformed token instead), so the two only
+    ever differ in how they react to a bad token, never in how the text is
+    split into tokens to begin with.
+    """
+    return [token for raw in re.split(r"[,;\n]+", text) if (token := raw.strip())]
+
+
 def normalize_status_identities(value: object) -> tuple[StatusIdentity, ...]:
-    """Normalize persisted list or text representations, ignoring invalid items."""
+    """Normalize persisted list or text representations, ignoring invalid items.
+
+    A string is tokenized the same way parse_status_identities_text() does,
+    but a malformed token is skipped here rather than discarding every
+    other, well-formed token found in the same string - matching this
+    function's own docstring and the list/iterable branch below, which
+    already tolerates one bad item without losing the valid ones around it.
+    """
     if value is None or value == "":
         return ()
     if isinstance(value, str):
-        try:
-            return parse_status_identities_text(value)
-        except ValueError:
-            return ()
+        token_identities: list[StatusIdentity] = []
+        for token in _split_status_identity_tokens(value):
+            match = _STATUS_IDENTITY_PATTERN.fullmatch(token)
+            if match is None:
+                continue
+            # Named distinctly from the iterable branch's own `identity`
+            # below - both live in this same function's scope, and mypy
+            # treats a second *annotated* declaration of one name in one
+            # scope as a redefinition even across mutually-exclusive
+            # branches (this one is unannotated, so it would not itself
+            # trigger that check, but naming it `identity` too would still
+            # read as the same variable reused for two different things).
+            token_identity = normalize_status_identity(match.group(1), match.group(2))
+            if token_identity is not None and token_identity not in token_identities:
+                token_identities.append(token_identity)
+        return tuple(token_identities)
     if not isinstance(value, Iterable) or isinstance(value, (bytes, Mapping)):
         return ()
 
@@ -59,15 +106,18 @@ def normalize_status_identities(value: object) -> tuple[StatusIdentity, ...]:
 
 
 def parse_status_identities_text(value: object) -> tuple[StatusIdentity, ...]:
-    """Parse comma/newline-separated DEVICE_ID/ENUM identities strictly."""
+    """Parse comma/newline-separated DEVICE_ID/ENUM identities strictly.
+
+    Unlike normalize_status_identities()'s own string-input handling above,
+    this raises ValueError on the first malformed token instead of skipping
+    it - relied on directly by config_flow.py's manual-edit text field so a
+    typo is rejected with a visible form error instead of silently dropped.
+    """
     text = str(value or "").strip()
     if not text:
         return ()
     identities: list[StatusIdentity] = []
-    for raw_token in re.split(r"[,;\n]+", text):
-        token = raw_token.strip()
-        if not token:
-            continue
+    for token in _split_status_identity_tokens(text):
         match = _STATUS_IDENTITY_PATTERN.fullmatch(token)
         if match is None:
             raise ValueError(f"invalid status identity: {token}")
@@ -95,6 +145,50 @@ def format_status_identities(value: object) -> str:
         f"{device_id}/{device_enum}"
         for device_id, device_enum in normalize_status_identities(value)
     )
+
+
+def resolve_blind_identities(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve one blind subentry's command/status identities from its data.
+
+    Shared by config_flow.py's developer-tools diagnostics step and
+    diagnostics.py's structured diagnostics dump, so the fallback priority
+    below only has to be right in one place instead of two drifting copies
+    of it: CONF_COMMAND_DEVICE_ID/CONF_COMMAND_ENUM take priority over the
+    legacy CONF_DEVICE_ID/CONF_DEVICE_ENUM, and
+    CONF_STATUS_IDENTITY_SOURCE == STATUS_IDENTITY_SOURCE_UNKNOWN means "no
+    confirmed primary status identity yet" regardless of whatever
+    CONF_STATUS_DEVICE_ID/CONF_STATUS_ENUM values happen to still be sitting
+    in the subentry's data from before it became unconfirmed.
+    """
+    command_device_id = str(
+        data.get(CONF_COMMAND_DEVICE_ID) or data.get(CONF_DEVICE_ID, "")
+    ).upper()
+    command_enum = str(
+        data.get(CONF_COMMAND_ENUM) or data.get(CONF_DEVICE_ENUM, "")
+    ).upper()
+    configured_source = str(data.get(CONF_STATUS_IDENTITY_SOURCE) or "legacy")
+    if configured_source == STATUS_IDENTITY_SOURCE_UNKNOWN:
+        primary_identity = None
+    else:
+        primary_identity = normalize_status_identity(
+            data.get(CONF_STATUS_DEVICE_ID) or command_device_id,
+            data.get(CONF_STATUS_ENUM) or command_enum,
+        )
+    secondary_status_identities = normalize_status_identities(
+        data.get(CONF_SECONDARY_STATUS_IDENTITIES)
+    )
+    status_identities = (
+        *((primary_identity,) if primary_identity is not None else ()),
+        *secondary_status_identities,
+    )
+    return {
+        "command_device_id": command_device_id,
+        "command_enum": command_enum,
+        "status_identity_source": configured_source,
+        "primary_identity": primary_identity,
+        "secondary_status_identities": secondary_status_identities,
+        "status_identities": status_identities,
+    }
 
 
 #: Commands api.py's frame handler accepts as confirming the direction *it

@@ -385,6 +385,79 @@ async def test_differing_status_identity_still_completes_via_capture_signal(
     assert float(result["description_placeholders"]["close_time"]) >= 0.1
 
 
+async def test_capture_signal_from_a_different_blind_does_not_satisfy_the_wait(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second, already-paired blind moving on the same hub while this one
+    is being recalibrated must not falsely satisfy this one's movement-
+    start wait - found during the independent audit alongside the
+    CHANGELOG entries above this one. Before this fix, handle_capture_
+    event() (options_flow_calibration.py) matched on command alone, so
+    *any* device's frame on the hub-wide SIGNAL_DEVICE_EVENT_CAPTURE
+    channel would satisfy it, silently corrupting the open/close time
+    being measured for the wrong blind. Contrast with
+    test_differing_status_identity_still_completes_via_capture_signal
+    above, which proves this fix does not reject a frame from nobody
+    else's known identity - only one positively claimed by the *other*
+    blind added here.
+    """
+    entry, blind = _build_hub_with_blind(hass, connected_api)
+    other_blind = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                CONF_DEVICE_ID: "112233",
+                CONF_DEVICE_ENUM: "05",
+                CONF_STATUS_DEVICE_ID: "112233",
+                CONF_STATUS_ENUM: "05",
+                CONF_OPEN_TIME: 15.0,
+                CONF_CLOSE_TIME: 14.0,
+                CONF_INVERT_DIRECTION: False,
+            }
+        ),
+        subentry_type=SUBENTRY_TYPE_BLIND,
+        title="Kitchen Blind",
+        unique_id="112233",
+    )
+    hass.config_entries.async_add_subentry(entry, other_blind)
+
+    result = await _start_calibrate_flow(hass, entry, blind)
+    wait_for_registration = _spy_on_dispatcher_connect(monkeypatch)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"initial_state": "closed"}
+    )
+    assert result["step_id"] == "calibration_open_instruction"
+
+    task = asyncio.ensure_future(
+        hass.config_entries.subentries.async_configure(result["flow_id"], user_input={})
+    )
+    await wait_for_registration()  # _wait_for_movement_start is now listening
+
+    # The *other*, already-paired blind moves - must be ignored.
+    async_dispatcher_send(
+        hass, SIGNAL_DEVICE_EVENT_CAPTURE, "112233", EVENT_STARTED_MOVING_UP
+    )
+    await asyncio.sleep(0.2)
+    assert not task.done(), (
+        "a different, already-paired blind's capture-signal frame "
+        "incorrectly satisfied this blind's movement-start wait"
+    )
+
+    # This blind's own frame, on the very same hub-wide channel, still
+    # works exactly as before.
+    async_dispatcher_send(
+        hass, SIGNAL_DEVICE_EVENT_CAPTURE, DEVICE_ID, EVENT_STARTED_MOVING_UP
+    )
+    await wait_for_registration()  # _wait_for_stop_event is now listening
+    async_dispatcher_send(hass, SIGNAL_DEVICE_EVENT_CAPTURE, DEVICE_ID, EVENT_STOPPED)
+    result = await task
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "calibration_close_instruction"
+
+
 async def test_recalibrating_persists_new_times_and_notifies_the_live_entity(
     hass: HomeAssistant,
     connected_api: SchellenbergUsbApi,

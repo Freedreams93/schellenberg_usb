@@ -46,11 +46,14 @@ from custom_components.schellenberg_usb.const import (
     CONF_SERIAL_PORT,
     CONF_STATUS_DEVICE_ID,
     CONF_STATUS_ENUM,
+    CONF_STATUS_IDENTITY_SOURCE,
     DOMAIN,
     EVENT_STARTED_MOVING_DOWN,
     EVENT_STARTED_MOVING_UP,
     EVENT_STOPPED,
     SIGNAL_DEVICE_EVENT,
+    STATUS_IDENTITY_SOURCE_MANUAL,
+    STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
 )
 from tests.conftest import written
@@ -1128,6 +1131,102 @@ async def test_edit_rejects_a_device_id_already_used_by_another_blind(
     assert result["errors"] == {CONF_DEVICE_ID: "already_configured"}
 
 
+async def test_edit_rejects_a_status_identity_already_used_by_another_blind(
+    hass: HomeAssistant, connected_api: SchellenbergUsbApi
+) -> None:
+    """A manually-entered primary status identity must not silently collide
+    with another subentry's - see the comment above this check in
+    async_step_edit(). Unlike test_edit_rejects_a_device_id_already_used_by_
+    another_blind above, the two blinds here have different *command*
+    device IDs, so only the new status-identity check (not the pre-existing
+    command_device_id one) can be responsible for the rejection.
+    """
+    entry = _build_hub_entry(hass, connected_api)
+    blind = _add_existing_blind(hass, entry)
+    other = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                CONF_DEVICE_ID: "445566",
+                CONF_DEVICE_ENUM: "30",
+                CONF_STATUS_DEVICE_ID: "998877",
+                CONF_STATUS_ENUM: "40",
+                CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_MANUAL,
+            }
+        ),
+        subentry_type=SUBENTRY_TYPE_BLIND,
+        title="Other Blind",
+        unique_id="445566",
+    )
+    hass.config_entries.async_add_subentry(entry, other)
+    result = await _start_reconfigure_flow(hass, entry, blind)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "edit"}
+    )
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_DEVICE_NAME: "Living Room Blind",
+            CONF_DEVICE_ID: DEVICE_ID,
+            CONF_DEVICE_ENUM: DEVICE_ENUM,
+            CONF_OPEN_TIME_SECONDS: 20.0,
+            CONF_CLOSE_TIME_SECONDS: 18.0,
+            CONF_STATUS_DEVICE_ID: "998877",
+            CONF_STATUS_ENUM: "40",
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_STATUS_DEVICE_ID: "already_configured"}
+
+
+async def test_edit_allows_a_status_identity_matching_an_unconfirmed_candidate(
+    hass: HomeAssistant, connected_api: SchellenbergUsbApi
+) -> None:
+    """The new duplicate-status-identity check above must not fire against a
+    candidate whose own status source is STATUS_IDENTITY_SOURCE_UNKNOWN:
+    that candidate has no real, confirmed status identity of its own, so its
+    command identity showing up as a fallback display value elsewhere is
+    not a genuine collision with a blind that legitimately uses the same
+    value as its own, separately confirmed, status identity.
+    """
+    entry = _build_hub_entry(hass, connected_api)
+    blind = _add_existing_blind(hass, entry)
+    other = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                CONF_DEVICE_ID: "998877",
+                CONF_DEVICE_ENUM: "40",
+                CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_UNKNOWN,
+            }
+        ),
+        subentry_type=SUBENTRY_TYPE_BLIND,
+        title="Other Blind",
+        unique_id="998877",
+    )
+    hass.config_entries.async_add_subentry(entry, other)
+    result = await _start_reconfigure_flow(hass, entry, blind)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "edit"}
+    )
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_DEVICE_NAME: "Living Room Blind",
+            CONF_DEVICE_ID: DEVICE_ID,
+            CONF_DEVICE_ENUM: DEVICE_ENUM,
+            CONF_OPEN_TIME_SECONDS: 20.0,
+            CONF_CLOSE_TIME_SECONDS: 18.0,
+            CONF_STATUS_DEVICE_ID: "998877",
+            CONF_STATUS_ENUM: "40",
+        },
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+
+
 async def test_edit_rejects_an_invalid_device_enum(
     hass: HomeAssistant, connected_api: SchellenbergUsbApi
 ) -> None:
@@ -1520,8 +1619,12 @@ async def test_developer_tools_set_position_open_and_closed_sync_without_sending
     # manual_sync_position() only succeeds for a "live" cover, i.e. a device
     # id the cover platform has registered on the api; these tests drive the
     # subentry flow directly without setting up that platform, so register
-    # it by hand the way cover.py's async_added_to_hass() normally would.
-    connected_api.register_existing_devices([{"id": DEVICE_ID, "enum": DEVICE_ENUM}])
+    # it by hand the way cover.py's async_added_to_hass() normally would
+    # (register_entity() with no status identity - this fixture only needs
+    # the command identity "live").
+    connected_api.register_entity(
+        None, None, command_device_id=DEVICE_ID, command_enum=DEVICE_ENUM
+    )
 
     for action, expected_position in (
         ("set_position_open", 100),
@@ -1553,7 +1656,9 @@ async def test_developer_tools_set_position_manual_accepts_an_exact_value(
     # sending_rf: manual_sync_position() requires the device to be
     # registered as a "live" cover, which this direct flow-driven test
     # never does on its own.
-    connected_api.register_existing_devices([{"id": DEVICE_ID, "enum": DEVICE_ENUM}])
+    connected_api.register_entity(
+        None, None, command_device_id=DEVICE_ID, command_enum=DEVICE_ENUM
+    )
     result = await _start_reconfigure_flow(hass, entry, blind)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input={"next_step_id": "developer_tools"}
