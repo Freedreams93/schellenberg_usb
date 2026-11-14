@@ -3295,46 +3295,147 @@ def test_calibration_initial_state_forces_an_explicit_choice() -> None:
     }
 
 
-def test_calibration_method_choice_menu_options_are_intentionally_lowercase() -> None:
-    """The person asked for both menu_options labels on this one German
-    step to start lowercase, including "laufzeiten" - a plural noun,
-    normally capitalised in German regardless of sentence position -
-    and confirmed it anyway once told so. Guards against a future
-    "spelling fix" reverting this on sight, and against a blanket
-    find-and-replace ever spreading it to this step's unrelated sibling
-    calibration_timeout_choice, whose own "manual_times" option reuses
-    the same German string but was never asked to change.
+def test_calibration_method_choice_menu_options_capitalization() -> None:
+    """ "test_motor" keeps this step's own original, deliberate
+    lowercase-initial convention - confirmed in an earlier session as
+    unconventional but intentional (a plural noun is normally
+    capitalised in German regardless of sentence position). Guards
+    against a future "spelling fix" reverting it on sight, and against a
+    blanket find-and-replace ever spreading it to this step's unrelated
+    sibling calibration_timeout_choice, whose own "manual_times" option
+    reuses a similar but distinct German string and was never asked to
+    change.
+
+    "manual_times" no longer follows that same lowercase convention,
+    though: reworded (2026-11-14, see test_calibration_method_choice_
+    title_names_the_menu_not_just_manual_entry below for the wording
+    itself), then, the same day, explicitly asked to be capitalised
+    again at its first letter in every language - overriding its own
+    earlier lowercase treatment for this one option specifically. The
+    two options on this same step are therefore now deliberately cased
+    differently from each other, not a lapse to "fix": that asymmetry
+    is exactly what was asked for, the second time around.
     """
     menu_options = _load_step("de", "calibration_method_choice")["menu_options"]
     assert menu_options == {
         "test_motor": "durch Bewegen des Rollladens kalibrieren",
-        "manual_times": "laufzeiten manuell eingeben",
+        "manual_times": "Rollladenmotorzeiten manuell festlegen",
     }
 
     sibling_options = _load_step("de", "calibration_timeout_choice")["menu_options"]
     assert sibling_options["manual_times"] == "Laufzeiten manuell eingeben"
 
 
-def test_teach_motor_step_title_is_shorter_than_its_own_menu_label() -> None:
-    """The menu_options label under developer_tools is deliberately long
-    - it has to explain two things at once (teaching a new motor AND
-    activating the USB transmitter, plus the data-loss caution) before
-    the person commits to clicking it. That same long sentence used to
-    be reused verbatim as this step's own title too, so the person read
-    it twice in a row: once to choose the menu entry, then again as the
-    heading of the page they land on. The step's own description already
-    covers the mechanism and the ACK caveat in full, so the title itself
-    only needs to name what the page is.
+def test_calibration_method_choice_title_names_the_menu_not_just_manual_entry() -> None:
+    """Companion to test_calibration_method_choice_menu_options_
+    capitalization above. A same-day first pass at this rename
+    (2026-11-14) made the title and the manual_times option share one
+    wording - wrong, because this step's own page *is* the two-option
+    menu (confirmed against a screenshot of it): it offers a choice
+    between calibrating by moving the shutter (test_motor) and entering
+    times by hand (manual_times), so a title that already says
+    "manually"/"manuell" would misdescribe the test_motor path too.
+
+    Corrected the same day: the title now names only what both options
+    are *for* - the shutter motor's travel times - with no "manually"
+    anywhere in it, while the manual_times option alone keeps that
+    word, since it is the one path it actually describes. The two must
+    therefore differ in every language, not match. German additionally
+    drops "lauf" from the option but not the title - "Rollladenmotorzeiten
+    manuell festlegen" vs. the title's "Rollladenmotorlaufzeiten
+    festlegen" - the person's own exact dictated wording, kept verbatim
+    rather than "corrected" to match the title's stem.
+    """
+    expected = {
+        "strings": (
+            "Set the shutter motor's travel times",
+            "Manually set the shutter motor's travel times",
+        ),
+        "en": (
+            "Set the shutter motor's travel times",
+            "Manually set the shutter motor's travel times",
+        ),
+        "de": (
+            "Rollladenmotorlaufzeiten festlegen",
+            "Rollladenmotorzeiten manuell festlegen",
+        ),
+        "es": (
+            "Establecer los tiempos de recorrido del motor de la persiana",
+            "Establecer manualmente los tiempos de recorrido del motor de la persiana",
+        ),
+        "fr": (
+            "Définir les durées de course du moteur du volet",
+            "Définir manuellement les durées de course du moteur du volet",
+        ),
+    }
+    for language, (title, manual_times) in expected.items():
+        step = _load_step(language, "calibration_method_choice")
+        assert step["title"] == title, language
+        assert step["menu_options"]["manual_times"] == manual_times, language
+        # The two must differ now - see this test's own docstring for why
+        # a shared wording was wrong in the first place.
+        assert step["title"] != step["menu_options"]["manual_times"], language
+
+
+def test_teach_motor_step_title_matches_its_own_menu_label() -> None:
+    """An earlier fix (see this same test's own prior history) split the
+    menu_options label under developer_tools from this step's own title,
+    because the label used to carry a long, two-part explanation
+    (teaching a new motor AND activating the USB transmitter, plus a
+    data-loss caution) that the person would otherwise read twice in a
+    row - once to choose the menu entry, then again as the page heading.
+
+    2026-11-14: the person asked for the two to match again, this time
+    the other way around - both now share this short, more specific
+    phrase naming what the step actually does (pairing a *different*
+    shutter at this same RF identity, overwriting the one currently
+    taught) - and for the caution that used to live in the long menu
+    label to move into the step's own description instead, as a
+    standalone sentence, rather than staying a parenthetical bolted onto
+    the menu entry. That caution must still reach the person before they
+    commit to clicking the menu entry, and a short title/label alone
+    cannot fit it - so the step's own description, which the menu entry
+    cannot show in advance, needs to carry it instead; this test also
+    guards that it is still present somewhere in the step, not quietly
+    dropped in the handoff.
     """
     for language in ("strings", "en", "de", "es", "fr"):
         step = _load_step(language, "teach_motor")
         menu_label = _load_step(language, "developer_tools")["menu_options"][
             "teach_motor"
         ]
-        assert step["title"] != menu_label, language
-        assert len(step["title"]) < len(menu_label), language
+        assert step["title"] == menu_label, language
 
-    assert _load_step("de", "teach_motor")["title"] == "Weiteres Gerät anlernen"
+    assert _load_step("de", "teach_motor")["title"] == (
+        "Einen neuen Rollladen anlernen, um ihn mit diesem Rollladen zu überschreiben"
+    )
+
+
+def test_teach_motor_description_still_carries_the_overwrite_caution() -> None:
+    """Companion to test_teach_motor_step_title_matches_its_own_menu_label
+    above: the caution moved out of the long developer_tools menu label
+    and into this step's own description (2026-11-14) must actually have
+    landed there, in every language, rather than having been dropped
+    while the menu label was shortened.
+    """
+    caution_substring = {
+        "strings": "Caution: existing motor data will be overwritten",
+        "en": "Caution: existing motor data will be overwritten",
+        "de": "Achtung: Die bestehenden Motordaten werden",
+        "es": "Atención: los datos de motor existentes se sobrescribirán",
+        "fr": "Attention : les données moteur existantes seront écrasées",
+    }
+    for language, substring in caution_substring.items():
+        description = _load_step(language, "teach_motor")["description"]
+        assert substring in description, language
+
+        # The caution now lives solely in the description - the menu
+        # label (now identical to the step's own short title) must not
+        # carry a second copy of it.
+        menu_label = _load_step(language, "developer_tools")["menu_options"][
+            "teach_motor"
+        ]
+        assert substring not in menu_label, language
 
 
 def test_status_discovery_choice_matches_discover_status_capture_wording() -> None:

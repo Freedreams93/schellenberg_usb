@@ -413,6 +413,24 @@ class SchellenbergUsbApi:
         # reinstated at their own later, explicit request once real-world
         # use showed that concern did not actually hold up in practice.
         self._stop_confirmed_at: dict[str, float] = {}
+        # (command_device_id, command) -> time.monotonic() of the most
+        # recent real STARTED_MOVING status frame seen for that exact
+        # device/direction pair, regardless of which status identity
+        # actually reported it - same resolution path as _stop_confirmed_
+        # at just above. Keyed additionally by command (CMD_UP/CMD_DOWN),
+        # unlike the stop side, because a move has two directions and a
+        # Down echo must never be read as confirming an Up resend (or vice
+        # versa). _send_move_resends_and_cleanup()'s own resend loop
+        # checks this to skip its remaining best-effort resends once this
+        # exact move is independently confirmed, mirroring how control_
+        # blind_stop()'s own resend loop uses _stop_confirmed_at - see
+        # that method's own comment for the full reasoning, which applies
+        # here unchanged. Requested directly (2026-11-14, project owner's
+        # own request, mirroring the stop side's precedent) once resend-
+        # loop-vs-genuine-echo was pointed out as the same category of
+        # needless-resend-after-independent-confirmation the stop side
+        # already handles.
+        self._move_echo_confirmed_at: dict[tuple[str, str], float] = {}
         # One-shot handoff from a "Pair and calibrate" flow that just
         # finished to the brand-new cover entity it is about to create.
         # That entity doesn't exist yet when calibration completes, so it
@@ -1090,6 +1108,29 @@ class SchellenbergUsbApi:
                     self._stop_confirmed_at[registration.command_device_id] = (
                         time.monotonic()
                     )
+                elif registration is not None and interpretation in ("open", "close"):
+                    # Same idea as the stop branch just above, but for a
+                    # move: real-world evidence this blind's motor has
+                    # actually started moving in this exact direction,
+                    # independent of the stick's own one-hop accept for
+                    # whichever write this is a response to - see
+                    # _move_echo_confirmed_at's own comment in __init__
+                    # for how _send_move_resends_and_cleanup() uses this.
+                    # Keyed by (command_device_id, command), not status
+                    # device_id/enum, for the same reason the stop branch
+                    # is keyed by command_device_id alone - a resend is
+                    # sent (and so must be matched here) by command
+                    # identity, regardless of which status identity
+                    # actually reported it - and additionally by the raw
+                    # command value itself (normalized_command, i.e.
+                    # CMD_UP/CMD_DOWN's own "01"/"02"), not just the
+                    # interpretation string, so this dict's key can be
+                    # compared directly against the same action value the
+                    # resend loop already carries, with no reverse lookup
+                    # back from "open"/"close" to a command needed.
+                    self._move_echo_confirmed_at[
+                        (registration.command_device_id, normalized_command)
+                    ] = time.monotonic()
                 identity_role = (
                     "primary"
                     if registration is not None and registration.primary
@@ -2250,6 +2291,7 @@ class SchellenbergUsbApi:
                             device_enum,
                             action,
                             source,
+                            requested_at,
                         ),
                         name="schellenberg-move-resend",
                     )
@@ -2303,6 +2345,7 @@ class SchellenbergUsbApi:
         device_enum: str,
         action: str,
         source: str,
+        requested_at: float,
     ) -> None:
         """Fire a just-accepted move's MOVE_COMMAND_EXTRA_RESENDS, detached
         from control_blind_with_retry()'s own return, and retire that
@@ -2312,6 +2355,30 @@ class SchellenbergUsbApi:
         stop is accepted - see MOVE_COMMAND_EXTRA_RESENDS's own comment in
         const.py for why this exists at all: best-effort RF reliability,
         nothing more.
+
+        Also mirrors control_blind_stop()'s own echo-based early exit
+        (_stop_confirmed_at, see that method's own comment for the full
+        reasoning): once a real STARTED_MOVING status frame for this
+        exact device_id *and* this exact action (CMD_UP/CMD_DOWN) has
+        arrived since requested_at, every remaining resend below is
+        skipped instead of always firing all of them unconditionally -
+        _move_echo_confirmed_at, checked below, is this method's own
+        equivalent of that dict, see its own comment in __init__.
+        requested_at itself is this call's own original request time,
+        passed through from control_blind_with_retry() rather than a
+        fresh time.monotonic() read taken here, for the same reason
+        control_blind_stop() uses its own requested_at rather than a
+        later one: a frame that arrived while that original call was
+        still waiting on the lock or retrying a busy stick must still
+        count, not be wrongly treated as stale just because this
+        detached task started later. Requested directly (2026-11-14,
+        project owner's own request, mirroring the stop side's existing
+        precedent) to close the same needless-resend-after-independent-
+        confirmation gap on the move side. If no such echo ever arrives,
+        both configured resends still fire regardless, exactly as before
+        this change - this only ever skips resends once there is real,
+        independent evidence they are no longer needed, never on a mere
+        guess.
 
         Spawned with hass.async_create_task() from
         control_blind_with_retry() right when its own primary write is
@@ -2397,6 +2464,11 @@ class SchellenbergUsbApi:
             for _ in range(MOVE_COMMAND_EXTRA_RESENDS):
                 await asyncio.sleep(MOVE_COMMAND_RESEND_DELAY_SECONDS)
                 if move_call_token in self._move_cancel_requested.get(device_id, ()):
+                    break
+                if (
+                    self._move_echo_confirmed_at.get((device_id, action), 0.0)
+                    >= requested_at
+                ):
                     break
                 await self.control_blind(
                     device_enum, action, device_id=device_id, source=source

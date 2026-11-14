@@ -785,6 +785,94 @@ async def test_control_blind_with_retry_sends_two_extra_resends_after_being_acce
     assert len(written(connected_api)) == 3
 
 
+async def test_control_blind_with_retry_skips_the_resend_once_a_real_move_echo_arrives(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A confirmed motor-move echo makes the remaining resends unnecessary.
+
+    Companion to test_control_blind_with_retry_sends_two_extra_resends_
+    after_being_accepted above, mirroring control_blind_stop()'s own
+    _stop_confirmed_at precedent (test_control_blind_stop_skips_resends_
+    once_a_real_stop_frame_arrives) on the move side: those two resends
+    exist only to cover for a *lost* primary move frame; once this
+    blind's own real "ss" STARTED_MOVING status frame for this exact
+    direction has actually arrived, the motor is independently known to
+    have received it already, so firing the remaining resends anyway
+    would just be redundant RF traffic on an already-busy shared
+    transmitter. register_entity() below gives this device_id a status
+    identity to receive that frame on - a plain device_id with none
+    registered is exactly the scenario the test above exercises, which
+    still passes unchanged (asserts all three writes), so this is
+    additive, not a replacement.
+
+    Project owner's own direct request (2026-11-14), mirroring the stop
+    side's existing precedent, explicitly also asking that - absent such
+    an echo - both resends still fire regardless; that unchanged path is
+    exactly what the sibling test above already covers.
+    """
+    connected_api.register_entity("ABCDEF", "10", "Test Blind")
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        # See the matching comment on the sibling test above for why a
+        # bare `return None` would never let this task actually run.
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    connected_api._handle_message("t1")  # the primary move write is accepted
+    # The motor's own real echo, independent of and after that stick
+    # accept - see _move_echo_confirmed_at's own comment in api.py.
+    connected_api._handle_message("ss" + "10" + "ABCDEF" + CMD_UP + "00000000")
+
+    assert await asyncio.wait_for(task, timeout=1) is True
+    await connected_api.hass.async_block_till_done()
+    # Neither best-effort resend fired - just the one, already-confirmed
+    # primary write.
+    assert len(written(connected_api)) == 1
+
+
+async def test_control_blind_with_retry_resend_ignores_echo_for_opposite_direction(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Down echo must never be read as confirming an Up resend loop (or
+    vice versa) - see _move_echo_confirmed_at's own comment in api.py for
+    why it is keyed by (device_id, command), not just device_id. Without
+    that direction check, a Down echo arriving for an unrelated, later
+    command on the same device could silently cancel an in-flight Up
+    resend that still needs to go out, the mirror-image mistake of the
+    skip the sibling test above exists to prove actually works.
+    """
+    connected_api.register_entity("ABCDEF", "10", "Test Blind")
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_with_retry("10", CMD_UP, device_id="ABCDEF")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    connected_api._handle_message("t1")  # the primary move write is accepted
+    # A genuine echo, but for the *other* direction - must not be read as
+    # confirming this Up resend loop.
+    connected_api._handle_message("ss" + "10" + "ABCDEF" + CMD_DOWN + "00000000")
+
+    assert await asyncio.wait_for(task, timeout=1) is True
+    await connected_api.hass.async_block_till_done()
+    # Both best-effort resends still fired - the Down echo above does not
+    # count as confirmation for this Up move.
+    assert len(written(connected_api)) == 3
+
+
 async def test_control_blind_with_retry_returns_before_its_own_resends_finish(
     connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:

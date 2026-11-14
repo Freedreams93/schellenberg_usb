@@ -45,10 +45,10 @@
           }
         },
         "calibration_method_choice": {
-          "title": "Définir les durées de course",
+          "title": "Définir les durées de course du moteur du volet",
           "menu_options": {
             "test_motor": "Calibrer en déplaçant le volet",
-            "manual_times": "Saisir les durées de course manuellement"
+            "manual_times": "Définir manuellement les durées de course du moteur du volet"
           }
         },
         "calibration_initial_state": {
@@ -62,12 +62,18 @@
         "calibration_open_instruction": {
           "title": "Ouvrir le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour ouvrir {device_name}. Appuyez sur Démarrer **puis** sur le bouton d'ouverture de la commande pour lancer la mesure. La calibration ne démarre que lorsqu'un message de mouvement vers le haut du volet a été transmis à Home Assistant et ensuite traité par Home Assistant.",
-          "submit": "Démarrer"
+          "submit": "Démarrer",
+          "error": {
+            "unknown": "Aucune confirmation de transmission du volet n'a été détectée.\nVeuillez réessayer."
+          }
         },
         "calibration_close_instruction": {
           "title": "Fermer le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour fermer {device_name}. Appuyez sur Démarrer **puis** sur le bouton de fermeture de la commande pour lancer la calibration. La calibration ne démarre que lorsqu'un message de mouvement vers le bas du volet a été transmis à Home Assistant et ensuite traité par Home Assistant.",
-          "submit": "Démarrer"
+          "submit": "Démarrer",
+          "error": {
+            "unknown": "Aucune confirmation de transmission du volet n'a été détectée.\nVeuillez réessayer."
+          }
         },
         "calibration_timeout_choice": {
           "title": "Aucune réponse du volet",
@@ -141,7 +147,7 @@
             "set_position_manual": "Définir la position du volet manuellement",
             "reset_stick": "Réinitialiser la clé USB / reconnecter son port série",
             "copy_diagnostics": "Copier le diagnostic ci-dessus",
-            "teach_motor": "Apprendre un autre appareil dans le même secteur (Attention : les données moteur existantes seront écrasées après cette opération) / Activer l'émetteur USB",
+            "teach_motor": "Coupler un volet différent et écraser celui-ci avec lui",
             "send_raw_command": "Envoyer une trame radio brute à l'appareil"
           }
         },
@@ -198,8 +204,8 @@
           "submit": "Enregistrer"
         },
         "teach_motor": {
-          "title": "Apprendre un autre appareil",
-          "description": "Appareil sélectionné : {selected_blind}\nIdentité de commande/transmission : {command_device_id}/{command_enum}\n\nFacultatif : Avant d'envoyer, sélectionnez le canal de l'appareil sur une télécommande d'origine déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant envoie la commande d'apprentissage 60, attend l'accusé de réception ACK de la clé, envoie la commande de fin 40 sur la même valeur d'énumération et effectue ensuite un court test Haut/Stop sur l'appareil. Les accusés de réception ACK de la clé ne prouvent pas que l'appareil a appris le code d'apprentissage énumération 60 ou qu'il a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut également modifier le sens de rotation.",
+          "title": "Coupler un volet différent et écraser celui-ci avec lui",
+          "description": "Appareil sélectionné : {selected_blind}\nIdentité de commande/transmission : {command_device_id}/{command_enum}\n\nAttention : les données moteur existantes seront écrasées après cette opération.\n\nFacultatif : Avant d'envoyer, sélectionnez le canal de l'appareil sur une télécommande d'origine déjà appairée, appuyez sur son bouton de programmation jusqu'à ce que la LED du canal clignote, puis appuyez sur Stop. Home Assistant envoie la commande d'apprentissage 60, attend l'accusé de réception ACK de la clé, envoie la commande de fin 40 sur la même valeur d'énumération et effectue ensuite un court test Haut/Stop sur l'appareil. Les accusés de réception ACK de la clé ne prouvent pas que l'appareil a appris le code d'apprentissage énumération 60 ou qu'il a bougé. Ne répétez pas la commande 60 en dehors de la séquence de programmation du moteur ; elle peut également modifier le sens de rotation.",
           "submit": "Envoyer la commande d'apprentissage à l'appareil et tester"
         },
         "send_raw_command": {

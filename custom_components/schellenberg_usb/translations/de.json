@@ -45,10 +45,10 @@
           }
         },
         "calibration_method_choice": {
-          "title": "Laufzeiten festlegen",
+          "title": "Rollladenmotorlaufzeiten festlegen",
           "menu_options": {
             "test_motor": "durch Bewegen des Rollladens kalibrieren",
-            "manual_times": "laufzeiten manuell eingeben"
+            "manual_times": "Rollladenmotorzeiten manuell festlegen"
           }
         },
         "calibration_initial_state": {
@@ -62,12 +62,18 @@
         "calibration_open_instruction": {
           "title": "Rollladen öffnen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu öffnen. Drücken Sie Start **und dann** die Öffnen-Taste an der Steuerung, um die Messung zu starten. Die Kalibrierung startet erst, wenn eine Aufwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
-          "submit": "Start"
+          "submit": "Start",
+          "error": {
+            "unknown": "Es wurde keine Sendebestätigung des Rollladens erkannt.\nBitte versuchen Sie es erneut."
+          }
         },
         "calibration_close_instruction": {
           "title": "Rollladen schließen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu schließen. Drücken Sie Start **und dann** die Schließen-Taste an der Steuerung, um die Kalibrierung zu starten. Die Kalibrierung startet erst, wenn eine Abwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
-          "submit": "Start"
+          "submit": "Start",
+          "error": {
+            "unknown": "Es wurde keine Sendebestätigung des Rollladens erkannt.\nBitte versuchen Sie es erneut."
+          }
         },
         "calibration_timeout_choice": {
           "title": "Keine Rückmeldung vom Rollladen",
@@ -141,7 +147,7 @@
             "set_position_manual": "Die Rollladenposition manuell setzen",
             "reset_stick": "Den USB-Stick zurücksetzen / dessen serielle Schnittstelle neu verbinden",
             "copy_diagnostics": "Die obige Diagnose kopieren",
-            "teach_motor": "Ein anderes Gerät anlernen im selben Sektor (Achtung die bestehenden Motordaten werden überschrieben nach diesem Vorgang) / Den USB-Sender aktivieren",
+            "teach_motor": "Einen neuen Rollladen anlernen, um ihn mit diesem Rollladen zu überschreiben",
             "send_raw_command": "Rohes Funktelegramm an das Gerät senden"
           }
         },
@@ -198,8 +204,8 @@
           "submit": "Speichern"
         },
         "teach_motor": {
-          "title": "Weiteres Gerät anlernen",
-          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_device_id}/{command_enum}\n\nOptional: Wählen Sie vor dem Senden den Kanal des Geräts an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test an dem Gerät durch. Die ACK-Bestätigungen des Sticks belegen nicht, dass das Gerät den Anlerncode Enum 60 gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motorprogrammiersequenz; er kann auch die Drehrichtung ändern.",
+          "title": "Einen neuen Rollladen anlernen, um ihn mit diesem Rollladen zu überschreiben",
+          "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_device_id}/{command_enum}\n\nAchtung: Die bestehenden Motordaten werden nach diesem Vorgang überschrieben.\n\nOptional: Wählen Sie vor dem Senden den Kanal des Geräts an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test an dem Gerät durch. Die ACK-Bestätigungen des Sticks belegen nicht, dass das Gerät den Anlerncode Enum 60 gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motorprogrammiersequenz; er kann auch die Drehrichtung ändern.",
           "submit": "Anlernbefehl an das Gerät senden und testen"
         },
         "send_raw_command": {

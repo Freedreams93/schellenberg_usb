@@ -45,10 +45,10 @@
           }
         },
         "calibration_method_choice": {
-          "title": "Establecer tiempos de recorrido",
+          "title": "Establecer los tiempos de recorrido del motor de la persiana",
           "menu_options": {
             "test_motor": "Calibrar moviendo la persiana",
-            "manual_times": "Introducir los tiempos de recorrido manualmente"
+            "manual_times": "Establecer manualmente los tiempos de recorrido del motor de la persiana"
           }
         },
         "calibration_initial_state": {
@@ -62,12 +62,18 @@
         "calibration_open_instruction": {
           "title": "Abrir la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en abrirse {device_name}. Pulse Iniciar **y luego** el botón de apertura en el control para iniciar la medición. La calibración solo comienza cuando Home Assistant recibe un mensaje de movimiento ascendente de la persiana y este es procesado por Home Assistant.",
-          "submit": "Iniciar"
+          "submit": "Iniciar",
+          "error": {
+            "unknown": "No se detectó ninguna confirmación de transmisión de la persiana.\nPor favor, inténtelo de nuevo."
+          }
         },
         "calibration_close_instruction": {
           "title": "Cerrar la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en cerrarse {device_name}. Pulse Iniciar **y luego** el botón de cierre en el control para iniciar la calibración. La calibración solo comienza cuando Home Assistant recibe un mensaje de movimiento descendente de la persiana y este es procesado por Home Assistant.",
-          "submit": "Iniciar"
+          "submit": "Iniciar",
+          "error": {
+            "unknown": "No se detectó ninguna confirmación de transmisión de la persiana.\nPor favor, inténtelo de nuevo."
+          }
         },
         "calibration_timeout_choice": {
           "title": "Sin respuesta de la persiana",
@@ -141,7 +147,7 @@
             "set_position_manual": "Establecer posición de la persiana manualmente",
             "reset_stick": "Reiniciar la memoria USB / reconectar su interfaz serie",
             "copy_diagnostics": "Copiar el diagnóstico anterior",
-            "teach_motor": "Programar otro dispositivo en el mismo sector (Atención: los datos de motor existentes se sobrescribirán tras este proceso) / Activar el transmisor USB",
+            "teach_motor": "Emparejar una persiana diferente y sobrescribir esta con ella",
             "send_raw_command": "Enviar trama RF sin procesar al dispositivo"
           }
         },
@@ -198,8 +204,8 @@
           "submit": "Guardar"
         },
         "teach_motor": {
-          "title": "Programar otro dispositivo",
-          "description": "Dispositivo seleccionado: {selected_blind}\nEnum de comando: {command_device_id}/{command_enum}\n\nOpcional: Seleccione antes de enviar el canal del dispositivo en un mando a distancia original ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant envía el comando de aprendizaje 60, espera la confirmación ACK de la memoria, envía el comando de finalización 40 en el mismo valor enum y realiza una breve prueba de Arriba/Stop en el dispositivo. Las confirmaciones ACK de la memoria no demuestran que el dispositivo haya aprendido el código de aprendizaje enum 60 ni que se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar la dirección de giro.",
+          "title": "Emparejar una persiana diferente y sobrescribir esta con ella",
+          "description": "Dispositivo seleccionado: {selected_blind}\nEnum de comando: {command_device_id}/{command_enum}\n\nAtención: los datos de motor existentes se sobrescribirán tras este proceso.\n\nOpcional: Seleccione antes de enviar el canal del dispositivo en un mando a distancia original ya emparejado, pulse su botón de programación hasta que el LED del canal parpadee y, a continuación, pulse Stop. Home Assistant envía el comando de aprendizaje 60, espera la confirmación ACK de la memoria, envía el comando de finalización 40 en el mismo valor enum y realiza una breve prueba de Arriba/Stop en el dispositivo. Las confirmaciones ACK de la memoria no demuestran que el dispositivo haya aprendido el código de aprendizaje enum 60 ni que se haya movido. No repita el comando 60 fuera de la secuencia de programación del motor; también puede cambiar la dirección de giro.",
           "submit": "Enviar comando de aprendizaje al dispositivo y probar"
         },
         "send_raw_command": {
