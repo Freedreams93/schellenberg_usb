@@ -3403,12 +3403,7 @@ def test_calibration_method_choice_menu_options_capitalization() -> None:
     """ "test_motor" keeps this step's own original, deliberate
     lowercase-initial convention - confirmed in an earlier session as
     unconventional but intentional (a plural noun is normally
-    capitalised in German regardless of sentence position). Guards
-    against a future "spelling fix" reverting it on sight, and against a
-    blanket find-and-replace ever spreading it to this step's unrelated
-    sibling calibration_timeout_choice, whose own "manual_times" option
-    reuses a similar but distinct German string and was never asked to
-    change.
+    capitalised in German regardless of sentence position).
 
     "manual_times" no longer follows that same lowercase convention,
     though: reworded (2026-11-14, see test_calibration_method_choice_
@@ -3426,8 +3421,33 @@ def test_calibration_method_choice_menu_options_capitalization() -> None:
         "manual_times": "Rollladenmotorzeiten manuell festlegen",
     }
 
-    sibling_options = _load_step("de", "calibration_timeout_choice")["menu_options"]
-    assert sibling_options["manual_times"] == "Laufzeiten manuell eingeben"
+
+def test_calibration_timeout_choice_manual_times_matches_the_other_two() -> None:
+    """calibration_timeout_choice's own "manual_times" option used to
+    read "Laufzeiten manuell eingeben" - deliberately kept distinct from
+    calibration_method_choice's sibling option (a test guarded against
+    an accidental blanket find-and-replace ever touching it, since
+    nobody had actually asked for it to change).
+
+    2026-11-14, same day, explicitly asked to change after all: both
+    menu options AND the manual_times step's own title (previously a
+    fourth, generic wording, "Laufzeiten eingeben"/"Enter travel
+    times") now read identically, in every language - the person's own
+    follow-up once this leftover three-way mismatch was pointed out
+    while renaming the step's title to match calibration_method_
+    choice's option. This supersedes the old guard above: that one
+    protected against an *unintentional* propagation, not against a
+    deliberate, explicit request to unify all three.
+    """
+    for language in ("strings", "en", "de", "es", "fr"):
+        choice_option = _load_step(language, "calibration_method_choice")[
+            "menu_options"
+        ]["manual_times"]
+        timeout_option = _load_step(language, "calibration_timeout_choice")[
+            "menu_options"
+        ]["manual_times"]
+        step_title = _load_step(language, "manual_times")["title"]
+        assert timeout_option == choice_option == step_title, language
 
 
 def test_calibration_method_choice_title_names_the_menu_not_just_manual_entry() -> None:

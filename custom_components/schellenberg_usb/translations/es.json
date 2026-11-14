@@ -74,7 +74,7 @@
           "description": "Home Assistant no detectó el movimiento esperado a tiempo. Vuelva a intentarlo o introduzca los tiempos de recorrido manualmente.",
           "menu_options": {
             "calibration_retry": "Volver a intentarlo",
-            "manual_times": "Introducir los tiempos de recorrido manualmente"
+            "manual_times": "Establecer manualmente los tiempos de recorrido del motor de la persiana"
           }
         },
         "calibration_complete": {
@@ -109,7 +109,7 @@
           "submit": "Continuar"
         },
         "manual_times": {
-          "title": "Introducir tiempos de recorrido",
+          "title": "Establecer manualmente los tiempos de recorrido del motor de la persiana",
           "description": "Introduzca los tiempos completos de apertura y cierre medidos.",
           "data": {
             "open_time_seconds": "Tiempo de apertura",

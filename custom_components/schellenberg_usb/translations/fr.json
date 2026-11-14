@@ -74,7 +74,7 @@
           "description": "Home Assistant n'a pas détecté le mouvement attendu à temps. Réessayez, ou saisissez les durées de course manuellement.",
           "menu_options": {
             "calibration_retry": "Réessayer",
-            "manual_times": "Saisir les durées de course manuellement"
+            "manual_times": "Définir manuellement les durées de course du moteur du volet"
           }
         },
         "calibration_complete": {
@@ -109,7 +109,7 @@
           "submit": "Continuer"
         },
         "manual_times": {
-          "title": "Saisir les durées de course",
+          "title": "Définir manuellement les durées de course du moteur du volet",
           "description": "Saisissez les durées complètes d'ouverture et de fermeture mesurées.",
           "data": {
             "open_time_seconds": "Durée d'ouverture",

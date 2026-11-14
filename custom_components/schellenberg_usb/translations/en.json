@@ -74,7 +74,7 @@
           "description": "Home Assistant did not detect the expected movement in time. Try again, or enter the travel times manually instead.",
           "menu_options": {
             "calibration_retry": "Try again",
-            "manual_times": "Enter travel times manually"
+            "manual_times": "Manually set the shutter motor's travel times"
           }
         },
         "calibration_complete": {
@@ -109,7 +109,7 @@
           "submit": "Continue"
         },
         "manual_times": {
-          "title": "Enter travel times",
+          "title": "Manually set the shutter motor's travel times",
           "description": "Enter the measured full opening and closing times.",
           "data": {
             "open_time_seconds": "Open time",
