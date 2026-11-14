@@ -51,9 +51,9 @@
             "manual_times": "Enter travel times manually"
           }
         },
-        "calibration_close": {
+        "calibration_initial_state": {
           "title": "Before you start",
-          "description": "To calibrate {device_name} accurately, Home Assistant needs to know which shutter movement direction should be calibrated first.",
+          "description": "To calibrate {device_name} accurately, Home Assistant needs to know which shutter movement direction should be calibrated first.{recalibration_notice}",
           "data": {
             "initial_state": "What is the shutter's current state?"
           },
@@ -94,8 +94,14 @@
           "title": "Did the shutter move?",
           "description": "Command identity {device_id}/{device_enum} tested: briefly {test_action}, then stopped.",
           "data": {
-            "motor_moved": "The shutter moved"
+            "motor_moved": "The shutter moved",
+            "motor_moved_result": "What happened during the test?"
           },
+          "submit": "Continue"
+        },
+        "wrong_motor_reset_notice": {
+          "title": "Reset the other motor first",
+          "description": "Note: The other motor that just reacted by mistake remains receptive, even after the address for this new shutter has been increased. So reset it physically **right away** (for example, via its own remote control) before starting pairing again - otherwise the same error can happen again.",
           "submit": "Continue"
         },
         "test_success": {
@@ -119,7 +125,7 @@
             "edit": "Edit identities and travel times",
             "test_existing": "Test device command",
             "developer_tools": "Developer tools",
-            "calibrate": "Calibrate"
+            "calibrate": "Calibrate device"
           }
         },
         "developer_tools": {
@@ -129,25 +135,25 @@
             "test_open": "Test: Open the shutter",
             "test_close": "Test: Close the shutter",
             "test_stop": "Test: Stop the shutter",
-            "discover_status": "Train the shutter radio commands from this shutter on the remote control for better recognition of shutter command transmission when pressing the remote",
+            "discover_status": "Capture the remote control's radio signals for the shutter",
             "set_position_open": "Set shutter position fully open",
             "set_position_closed": "Set shutter position fully closed",
             "set_position_manual": "Set shutter position manually",
-            "reset_stick": "Reset the USB stick / reconnect serial interface of the USB stick",
+            "reset_stick": "Reset the USB stick / reconnect its serial interface",
             "copy_diagnostics": "Copy the diagnostics above",
             "teach_motor": "Teach another device in the same sector (Caution: existing motor data will be overwritten after this process) / Activate the USB transmitter",
             "send_raw_command": "Send raw RF telegram to the device"
           }
         },
         "status_discovery_choice": {
-          "title": "Train radio commands from a remote control?",
+          "title": "Capture radio commands from a remote control?",
           "menu_options": {
-            "discover_status": "Train from the original remote control (recommended)",
+            "discover_status": "Capture from the original remote control (recommended)",
             "skip_status_discovery": "Skip - finish pairing without this"
           }
         },
         "discover_status": {
-          "title": "Train the shutter radio commands for this shutter from a remote control for better recognition of shutter command transmission when pressing the remote",
+          "title": "Capture remote-control signals",
           "description": "Selected device: {selected_blind}\nCommand/transmit identity: {command_identity}\n\nAfter pressing Start listening, use the original Schellenberg remote control for this device channel: Press UP, STOP, DOWN, STOP. Home Assistant listens for 45 seconds and groups every received device ID, enum value, command, and timestamp.",
           "submit": "Start listening"
         },
@@ -165,7 +171,7 @@
           "submit": "Confirm position"
         },
         "reset_stick": {
-          "title": "Reset the USB stick / reconnect serial interface of the USB stick"
+          "title": "Reset the USB stick / reconnect its serial interface"
         },
         "copy_diagnostics": {
           "title": "Copy the diagnostics above",
@@ -177,7 +183,7 @@
         },
         "edit": {
           "title": "Edit device settings",
-          "description": "Changing the protocol identities does not change the unique entity ID in Home Assistant. The primary status identity controls position tracking. Enter additional identities as device ID/enum, separated by one or more lines, or by one or more commas. Secondary identities are matched for diagnostics purposes, but do not change position. Leave both primary status fields blank if they are unknown; the transmit identity will not be used as status unless it was actually observed or you enter it manually.",
+          "description": "Changing the protocol identities does not change the unique entity ID in Home Assistant. The primary status identity controls position tracking. If needed, enter additional identities as device ID/enum, separated by one or more lines, or by one or more commas. Secondary identities are matched for diagnostics purposes, but do not change position. Leave both primary status fields blank if they are unknown; the transmit identity will not be used as status unless it was actually observed or you enter it manually.",
           "data": {
             "device_name": "Name",
             "device_id": "Command device ID",
@@ -192,7 +198,7 @@
           "submit": "Save"
         },
         "teach_motor": {
-          "title": "Teach another device in the same sector (Caution: existing motor data will be overwritten after this process) / Activate the USB transmitter",
+          "title": "Teach-in another device",
           "description": "Selected device: {selected_blind}\nCommand/transmit identity: {command_device_id}/{command_enum}\n\nOptional: before sending, select the device's channel on an already paired original remote control, press its programming button until the channel LED blinks, and then press Stop. Home Assistant sends the teach-in command 60, waits for the stick's ACK confirmation, sends the finish command 40 on the same enum value, and then performs a short Up/Stop test on the device. The stick's ACK confirmations do not prove that the device has learned the teach-in code enum 60 or has moved. Do not repeat command 60 outside the motor programming sequence; it can also change the direction of rotation.",
           "submit": "Send teach-in command to device and test"
         },
@@ -205,6 +211,9 @@
           "submit": "Send raw data"
         }
       },
+      "create_entry": {
+        "default": "The configuration has been created"
+      },
       "error": {
         "required": "This field is required.",
         "invalid_device_id": "Device ID must contain exactly 6 hexadecimal characters.",
@@ -213,6 +222,7 @@
         "already_configured": "This device is already configured.",
         "initial_state_required": "Please select whether the shutter is currently fully open or fully closed before proceeding.",
         "test_direction_required": "Please select which shutter movement direction should be tested before proceeding.",
+        "motor_moved_result_required": "Please select what happened during the test before proceeding.",
         "calibration_timeout": "The calibration timer has expired. The shutter took more than 2 minutes for the movement. Please check the device and try again.",
         "calibration_start_timeout": "Timeout waiting for the shutter to move. Please ensure the device is properly connected and try again.",
         "unknown": "An unexpected error occurred during calibration. Please try again.",
@@ -262,6 +272,14 @@
         "unselected": "Please select",
         "open": "Open",
         "close": "Close"
+      }
+    },
+    "motor_moved_result": {
+      "options": {
+        "unselected": "Please select",
+        "yes": "Yes, the shutter moved",
+        "no": "No, the shutter did not move",
+        "wrong_motor": "No shutter moved, or two shutters moved"
       }
     }
   },

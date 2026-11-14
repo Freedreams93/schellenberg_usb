@@ -27,6 +27,7 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
+from custom_components.schellenberg_usb.api import SchellenbergUsbApi
 from custom_components.schellenberg_usb.config_flow import (
     SchellenbergPairingSubentryFlow,
 )
@@ -40,8 +41,13 @@ from custom_components.schellenberg_usb.const import (
     CONF_INITIAL_POSITION,
     CONF_INVERT_DIRECTION,
     CONF_OPEN_TIME,
+    CONF_SECONDARY_STATUS_IDENTITIES,
     CONF_STATUS_DEVICE_ID,
     CONF_STATUS_ENUM,
+    CONF_STATUS_IDENTITY_SOURCE,
+    STATUS_IDENTITY_SOURCE_CALIBRATION,
+    STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY,
+    STATUS_IDENTITY_SOURCE_UNKNOWN,
     SUBENTRY_TYPE_BLIND,
 )
 
@@ -625,6 +631,107 @@ async def test_confirm_status_discovery_updates_existing_subentry(
     assert result["reason"] == "reconfigure_successful"
 
 
+async def test_confirm_status_discovery_preserves_calibration_identity_when_skipped(
+    hass: HomeAssistant,
+) -> None:
+    """A fresh pairing's own live-calibration drive already found a usable
+    status identity; skipping (or never running) remote discovery must not
+    erase it.
+
+    This is the _pending_finish_data branch's counterpart to
+    test_confirm_status_discovery_updates_existing_subentry above - the
+    "brand-new-pairing... calls async_create_entry()" branch that test's
+    own docstring pointed at, left untested until now. Before this fix,
+    self._pending_status_* (this *flow's* own copies, blank unless
+    async_step_discover_status() ran) unconditionally overwrote whatever
+    data CalibrationFlowHandler.async_step_calibration_complete() had
+    already stashed in _pending_finish_data - so the common case (skip
+    discovery entirely, see async_step_skip_status_discovery()) silently
+    wiped out whatever the calibration drive itself found.
+    self._status_discovery_result is None here because no discovery
+    attempt ever ran this round - the actual signal the fix keys off.
+    """
+    flow = make_flow(hass)
+    flow._pending_device_id = DEVICE_ID
+    flow._pending_device_name = "Kitchen Blind"
+    flow._pending_finish_data = {
+        CONF_OPEN_TIME: 20.0,
+        CONF_CLOSE_TIME: 18.0,
+        CONF_INITIAL_POSITION: 0,
+        CONF_STATUS_DEVICE_ID: "112233",
+        CONF_STATUS_ENUM: "02",
+        CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_CALIBRATION,
+        CONF_SECONDARY_STATUS_IDENTITIES: [{"device_id": "445566", "enum": "03"}],
+    }
+    # The parent flow's own copies were never updated this round (no
+    # guided discovery ran) - still at their post-reset defaults.
+    flow._status_discovery_result = None
+    flow._pending_status_device_id = None
+    flow._pending_status_enum = None
+    flow._pending_status_identity_source = STATUS_IDENTITY_SOURCE_UNKNOWN
+    flow._pending_secondary_status_identities = []
+    flow.async_create_entry = MagicMock(
+        return_value={"type": FlowResultType.CREATE_ENTRY}
+    )
+
+    result = await flow.async_step_confirm_status_discovery(user_input={})
+
+    flow.async_create_entry.assert_called_once()
+    data = flow.async_create_entry.call_args.kwargs["data"]
+    assert data[CONF_STATUS_DEVICE_ID] == "112233"
+    assert data[CONF_STATUS_ENUM] == "02"
+    assert data[CONF_STATUS_IDENTITY_SOURCE] == STATUS_IDENTITY_SOURCE_CALIBRATION
+    assert data[CONF_SECONDARY_STATUS_IDENTITIES] == [
+        {"device_id": "445566", "enum": "03"}
+    ]
+    # Untouched fields from the calibration drive's own data pass through.
+    assert data[CONF_INITIAL_POSITION] == 0
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert flow._pending_finish_data is None
+
+
+async def test_confirm_status_discovery_overrides_with_a_real_new_primary(
+    hass: HomeAssistant,
+) -> None:
+    """A guided remote-discovery attempt that *did* find a primary identity
+    this round must still take over from whatever the calibration drive
+    stashed - the fix only protects data when nothing new was actually
+    found, mirroring the "found nothing usable" vs "clean result" split
+    the _status_discovery_updates_existing branch above already has.
+    """
+    flow = make_flow(hass)
+    flow._pending_device_id = DEVICE_ID
+    flow._pending_device_name = "Kitchen Blind"
+    flow._pending_finish_data = {
+        CONF_OPEN_TIME: 20.0,
+        CONF_CLOSE_TIME: 18.0,
+        CONF_STATUS_DEVICE_ID: "112233",
+        CONF_STATUS_ENUM: "02",
+        CONF_STATUS_IDENTITY_SOURCE: STATUS_IDENTITY_SOURCE_CALIBRATION,
+        CONF_SECONDARY_STATUS_IDENTITIES: [],
+    }
+    flow._apply_remote_status_discovery(
+        {
+            "primary": {"device_id": DEVICE_ID, "enum": DEVICE_ENUM},
+            "secondary": [{"device_id": "778899", "enum": "05"}],
+        }
+    )
+    flow.async_create_entry = MagicMock(
+        return_value={"type": FlowResultType.CREATE_ENTRY}
+    )
+
+    result = await flow.async_step_confirm_status_discovery(user_input={})
+
+    data = flow.async_create_entry.call_args.kwargs["data"]
+    assert data[CONF_STATUS_DEVICE_ID] == DEVICE_ID
+    assert data[CONF_STATUS_ENUM] == DEVICE_ENUM
+    assert data[CONF_STATUS_IDENTITY_SOURCE] == STATUS_IDENTITY_SOURCE_REMOTE_DISCOVERY
+    assert data[CONF_SECONDARY_STATUS_IDENTITIES] == [
+        {"device_id": "778899", "enum": "05"}
+    ]
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
 # --- Copy diagnostics --------------------------------------------------------
 
 
@@ -648,3 +755,77 @@ async def test_copy_diagnostics_returns_to_menu_on_submit(hass: HomeAssistant) -
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "developer_tools"
+
+
+# --- async_remove() - releasing a still-open calibration capture the
+# instant this flow goes away (e.g. the person closes the dialog mid-form,
+# between the two calibration drives), instead of leaving it to time out on
+# its own via api.py's STATUS_FRAME_CAPTURE_STALE_TIMEOUT_SECONDS. ---------
+
+
+async def test_async_remove_is_a_safe_noop_when_calibration_was_never_started(
+    hass: HomeAssistant,
+) -> None:
+    """A flow removed before ever reaching a calibration step - cancelled
+    straight from the reconfigure/pairing menu, say - has never called
+    _get_calibration_handler(), so calibration_handler is still None. This
+    must not raise; _finish_calibration_capture() is only ever reached
+    through a real handler instance.
+    """
+    flow = make_flow(hass)
+    assert flow.calibration_handler is None
+
+    await flow.async_remove()
+
+    assert flow.calibration_handler is None
+
+
+async def test_async_remove_releases_an_active_calibration_capture(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """The common real case: a capture is genuinely open (the person left
+    the dialog standing on calibration_open_instruction/_close_instruction,
+    between the two drives) when the flow is removed.
+
+    Drives CalibrationFlowHandler's own real _start_calibration_capture()/
+    _finish_calibration_capture() against a genuine SchellenbergUsbApi
+    (connected_api, from conftest.py) rather than make_flow()'s usual bare
+    MagicMock: _runtime_api() (options_flow_calibration.py) gates on
+    isinstance(api, SchellenbergUsbApi), which a plain, spec-less
+    MagicMock() never satisfies - with one, _start_calibration_capture()
+    would return False before ever reaching async_remove(), the method
+    this test exists to exercise. Reassigning flow._api/_get_entry() right
+    after make_flow() mirrors exactly what that helper itself just wired,
+    only with a real instance in place of its usual mock; every other
+    test in this file is unaffected, since they never call
+    _get_calibration_handler()/_runtime_api() at all.
+    """
+    flow = make_flow(hass)
+    flow._api = connected_api
+    flow._get_entry = MagicMock(
+        return_value=SimpleNamespace(runtime_data=connected_api, subentries={})
+    )
+    handler = flow._get_calibration_handler()
+    assert handler._start_calibration_capture(phase="opening") is True
+    assert handler._capture_active is True
+    assert handler._capture_api is connected_api
+    connected_api.finish_status_frame_capture = MagicMock(  # type: ignore[method-assign]
+        return_value={"end_reason": "flow_removed", "primary": None}
+    )
+
+    await flow.async_remove()
+
+    connected_api.finish_status_frame_capture.assert_called_once_with(
+        end_reason="flow_removed", exclude_device_ids=frozenset()
+    )
+    # The capture is actually released - not merely asked to be - so a
+    # different blind's own calibration/status-discovery flow could claim
+    # the hub-wide buffer right away instead of waiting out the staleness
+    # timeout.
+    assert handler._capture_active is False
+    assert handler._capture_api is None
+    assert handler._calibration_discovery_result == {
+        "end_reason": "flow_removed",
+        "primary": None,
+    }

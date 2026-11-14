@@ -56,6 +56,7 @@ from .const import (
     SIGNAL_DEVICE_EVENT,
     SIGNAL_MANUAL_POSITION_SYNC,
     SIGNAL_STICK_STATUS_UPDATED,
+    STALE_MOVE_START_ECHO_WINDOW_SECONDS,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     STOP_COMMAND_LATENCY_SECONDS,
     SUBENTRY_TYPE_BLIND,
@@ -474,8 +475,8 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         # set whenever any setup or confirmation path has recorded a known
         # position: a fresh pairing (async_step_user) regardless of which
         # calibration_method_choice option was picked - a live calibration
-        # run (options_flow_calibration.py's calibration_close step) sets
-        # it to the real ending position, manual entry sets it directly
+        # run (options_flow_calibration.py's calibration_initial_state step)
+        # sets it to the real ending position, manual entry sets it directly
         # from the person's own stated current position - recalibrating an
         # already-paired blind, or confirming a position via Developer
         # Tools' "Set position" sync (config_flow.py). None only for a
@@ -489,6 +490,18 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._is_newly_registered_entity = is_newly_registered_entity
         self._move_start_time: float | None = None
         self._move_start_position: int | None = None
+        # monotonic() timestamp of the most recent moment this entity's own
+        # move genuinely ended, rather than one superseding it with another
+        # still-in-flight command (see _async_cancel_position_tracking() for
+        # that separate, unrelated case) - set by every place in this module
+        # that clears is_opening/is_closing to report this entity as idle:
+        # _handle_event()'s own EVENT_STOPPED branch, _handle_manual_
+        # position_sync(), the auto-stop-at-target and natural 0%/100%-end-
+        # stop branches inside _async_position_update_loop(), and the
+        # explicit Home Assistant stop in async_stop_cover(). Read back by
+        # _handle_event()'s own STARTED_MOVING branch - see its own comment
+        # for why.
+        self._own_move_completed_at: float | None = None
         self._position_update_task: asyncio.Task[None] | None = None
         self._target_position: int | None = None
         # True from the moment async_open_cover()/async_close_cover() are
@@ -833,6 +846,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._attr_is_closing = False
         self._move_start_time = None
         self._move_start_position = None
+        self._own_move_completed_at = time.monotonic()
         self._target_position = None
         self._position_update_source = "Developer Tools manual position sync"
         self._position_source_kind = "manual sync"
@@ -867,7 +881,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
 
         ending_position is whichever end stop the last-driven leg of the
         calibration (open or close - the person's own choice, see
-        options_flow_calibration.py's calibration_close step) reached.
+        options_flow_calibration.py's calibration_initial_state step) reached.
         """
         if device_id != self._device_id:
             return
@@ -994,7 +1008,62 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         )
 
         if event in (EVENT_STARTED_MOVING_UP, EVENT_STARTED_MOVING_DOWN):
-            if not self._has_live_position_tracking() and not self._command_in_flight:
+            genuinely_idle = (
+                not self._has_live_position_tracking() and not self._command_in_flight
+            )
+            if (
+                genuinely_idle
+                and self._own_move_completed_at is not None
+                and time.monotonic() - self._own_move_completed_at
+                < STALE_MOVE_START_ECHO_WINDOW_SECONDS
+            ):
+                # This entity's own primary status identity already told us,
+                # very recently (_own_move_completed_at, stamped by this same
+                # _handle_event()'s own EVENT_STOPPED branch below and by
+                # _handle_manual_position_sync() - see that attribute's own
+                # comment in __init__), that a move of ITS OWN already
+                # finished. Nothing of this entity's own is in flight right
+                # now either (genuinely_idle, the same check the existing
+                # stale-target-clearing branch just below already needed,
+                # for the unrelated reason its own comment explains) - and
+                # yet here is a fresh STARTED_MOVING echo, arriving within
+                # STALE_MOVE_START_ECHO_WINDOW_SECONDS of that completion.
+                #
+                # The protocol carries no correlation id tying a STARTED_
+                # MOVING frame to whichever command actually caused it, so
+                # this can only ever be a probabilistic judgment call, not a
+                # certain one - see that constant's own comment in const.py
+                # for the deliberately-accepted trade-off this implies (a
+                # genuinely new move that happens to start inside the same
+                # short window looks identical from here, and is swallowed
+                # just the same - see that comment for why "swallowed" can
+                # mean the whole move, not just this window). What this
+                # guards against is the far more common case this check
+                # exists for: a STARTED_MOVING echo of this entity's own
+                # just-finished move, delayed in
+                # the stick's own RF queue behind other traffic long enough
+                # to still arrive after the matching STOPPED echo already
+                # closed that move out - which would otherwise wrongly flip
+                # is_opening/is_closing back on and restart position
+                # tracking for a move that is not actually happening any
+                # more, reporting "wird geöffnet"/"wird geschlossen" on a
+                # blind that already reached, and is sitting at, its target.
+                #
+                # Deliberately a bare ignore, not a state change of any
+                # kind: is_opening/is_closing, the tracking task, and
+                # current_cover_position are all left exactly as the
+                # STOPPED branch already settled them - this stale echo
+                # carries no new information for this entity to act on.
+                _LOGGER.debug(
+                    "Device %s (%s) ignoring %s as a stale echo of its own "
+                    "move, which finished %.2fs ago",
+                    self._device_name,
+                    self._device_id,
+                    event,
+                    time.monotonic() - self._own_move_completed_at,
+                )
+                return
+            if genuinely_idle:
                 # Neither a tracking task nor a command of ours is in
                 # flight, so this echo can only be *reporting* a move this
                 # entity did not itself start - a paired remote control, a
@@ -1094,6 +1163,22 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                 status="confirmed",
             )
             self._start_position_tracking()
+            # A move of this entity's own is now genuinely, confirmedly
+            # under way again, so whatever _own_move_completed_at still
+            # held - necessarily from some earlier move, since the
+            # suppression check above already returned instead of
+            # reaching here for an echo of the move it refers to - is no
+            # longer a meaningful "how recently did *this* entity last
+            # stop" answer. Clearing it here, not just overwriting it
+            # from the next genuine EVENT_STOPPED, closes a narrower gap
+            # that would otherwise remain: without this, a *stale* echo
+            # of this move we just accepted could still be wrongly
+            # bounced off an *older* completion timestamp if this new
+            # move itself ends via _async_cancel_position_tracking()
+            # (superseded by yet another command) rather than a genuine
+            # EVENT_STOPPED/_handle_manual_position_sync() completion -
+            # the only two places that otherwise refresh this timestamp.
+            self._own_move_completed_at = None
         elif event == EVENT_STOPPED:
             # First, before any other statement - same reasoning as
             # async_stop_cover()'s own identical first line. This status
@@ -1191,6 +1276,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                 self._attr_is_closed = self._attr_current_cover_position == 0
             self._attr_is_opening = False
             self._attr_is_closing = False
+            self._own_move_completed_at = time.monotonic()
             # This log used to run *before* the _update_position()
             # recalculation (and clamp) above, right
             # after previous_position was captured - so it always printed
@@ -2028,6 +2114,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                         # stopped.
                         self._attr_is_opening = False
                         self._attr_is_closing = False
+                        self._own_move_completed_at = time.monotonic()
                         self._move_start_time = None
                         self._move_start_position = None
                         self._target_position = None
@@ -2049,6 +2136,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                         self._confirm_full_travel_resync("closing", 0)
                         self._attr_is_opening = False
                         self._attr_is_closing = False
+                        self._own_move_completed_at = time.monotonic()
                         self._move_start_time = None
                         self._move_start_position = None
                         self.async_write_ha_state()
@@ -2067,6 +2155,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
                         self._confirm_full_travel_resync("opening", 100)
                         self._attr_is_opening = False
                         self._attr_is_closing = False
+                        self._own_move_completed_at = time.monotonic()
                         self._move_start_time = None
                         self._move_start_position = None
                         self.async_write_ha_state()
@@ -2592,9 +2681,19 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         control_blind_stop()'s own CONFIRMED/UNCONFIRMED/FAILED
         distinction is unaffected by this revert and still reports
         exactly as honestly as it did while the extra wait existed; only
-        the independent motor-echo wait itself, and the matching skip-
-        remaining-resends check in control_blind_stop()'s own resend loop
-        (api.py), are gone.
+        the independent motor-echo wait itself is gone from this method.
+
+        The matching skip-remaining-resends check in control_blind_stop()'s
+        own resend loop (api.py) was reverted in that same commit, but was
+        later reinstated on its own, api.py-only: the project owner judged
+        the "ss" STOPPED status frame reliable enough to end that method's
+        own best-effort resend tail early, even though it was not judged
+        reliable enough to gate this method's wait on. See api.py's own
+        _stop_confirmed_at and control_blind_stop() docstring for that
+        current mechanism - it is unrelated to, and does not reopen, the
+        wait/race this method's own motor-echo wait was removed to close,
+        and it does not change the CONFIRMED/UNCONFIRMED/FAILED distinction
+        described above.
 
         was_opening_before_stop/was_closing_before_stop, and the fallback
         branch's own re-check against them a little further down, stay in
@@ -2777,6 +2876,7 @@ class SchellenbergCover(CoverEntity, RestoreEntity):
         self._update_position()
         self._attr_is_opening = False
         self._attr_is_closing = False
+        self._own_move_completed_at = time.monotonic()
         self._move_start_time = None
         self._move_start_position = None
         if not confirmed:

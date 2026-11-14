@@ -47,13 +47,13 @@
         "calibration_method_choice": {
           "title": "Laufzeiten festlegen",
           "menu_options": {
-            "test_motor": "Durch Bewegen des Rollladens kalibrieren",
-            "manual_times": "Laufzeiten manuell eingeben"
+            "test_motor": "durch Bewegen des Rollladens kalibrieren",
+            "manual_times": "laufzeiten manuell eingeben"
           }
         },
-        "calibration_close": {
+        "calibration_initial_state": {
           "title": "Bevor Sie beginnen",
-          "description": "Um {device_name} genau zu kalibrieren, muss Home Assistant wissen, welche Fahrtrichtung des Rollladens zuerst kalibriert werden soll.",
+          "description": "Um {device_name} genau zu kalibrieren, muss Home Assistant wissen, welche Fahrtrichtung des Rollladens zuerst kalibriert werden soll.{recalibration_notice}",
           "data": {
             "initial_state": "Wie ist der aktuelle Zustand des Rollladens?"
           },
@@ -94,8 +94,14 @@
           "title": "Hat sich der Rollladen bewegt?",
           "description": "Befehlsidentität {device_id}/{device_enum} getestet: kurz {test_action}, dann gestoppt.",
           "data": {
-            "motor_moved": "Der Rollladen hat sich bewegt"
+            "motor_moved": "Der Rollladen hat sich bewegt",
+            "motor_moved_result": "Was ist beim Test passiert?"
           },
+          "submit": "Weiter"
+        },
+        "wrong_motor_reset_notice": {
+          "title": "Anderen Motor zuerst zurücksetzen",
+          "description": "Hinweis: Der andere Motor, der eben fälschlich reagiert hat, bleibt weiterhin empfangsbereit, auch nachdem die Adresse für diesen neuen Rollladen erhöht wurde. Setzen Sie ihn daher **gleich** physisch zurück (z. B. über seine eigene Fernbedienung), bevor Sie die Kopplung erneut starten – sonst kann derselbe Fehler wieder auftreten.",
           "submit": "Weiter"
         },
         "test_success": {
@@ -119,7 +125,7 @@
             "edit": "Identitäten und Laufzeiten bearbeiten",
             "test_existing": "Gerätebefehl testen",
             "developer_tools": "Entwicklerwerkzeuge",
-            "calibrate": "Kalibrieren"
+            "calibrate": "Gerät kalibrieren"
           }
         },
         "developer_tools": {
@@ -129,25 +135,25 @@
             "test_open": "Test: den Rollladen öffnen",
             "test_close": "Test: den Rollladen schließen",
             "test_stop": "Test: den Rollladen stoppen",
-            "discover_status": "Die Rollladenfunkbefehle von diesem Rollladen auf der Fernbedienung trainieren für besseres Erkennen der Rollladenbefehlsübermittlung beim Drücken der Fernbedienung",
+            "discover_status": "Die Funksignale der Fernbedienung für den Rollladen erfassen",
             "set_position_open": "Die Rollladenposition vollständig geöffnet setzen",
             "set_position_closed": "Die Rollladenposition vollständig geschlossen setzen",
             "set_position_manual": "Die Rollladenposition manuell setzen",
-            "reset_stick": "Den USB-Stick zurücksetzen / serielle Schnittstelle neu verbinden von dem USB-Stick",
+            "reset_stick": "Den USB-Stick zurücksetzen / dessen serielle Schnittstelle neu verbinden",
             "copy_diagnostics": "Die obige Diagnose kopieren",
             "teach_motor": "Ein anderes Gerät anlernen im selben Sektor (Achtung die bestehenden Motordaten werden überschrieben nach diesem Vorgang) / Den USB-Sender aktivieren",
             "send_raw_command": "Rohes Funktelegramm an das Gerät senden"
           }
         },
         "status_discovery_choice": {
-          "title": "Funkbefehle von einer Fernbedienung anlernen?",
+          "title": "Funkbefehle von einer Fernbedienung erfassen?",
           "menu_options": {
-            "discover_status": "Von der Original-Fernbedienung anlernen (empfohlen)",
+            "discover_status": "Von der Original-Fernbedienung erfassen (empfohlen)",
             "skip_status_discovery": "Überspringen - Kopplung ohne dies abschließen"
           }
         },
         "discover_status": {
-          "title": "Die Rollladenfunkbefehle von diesem Rollladen von einer Fernbedienung trainieren für besseres Erkennen der Rollladenbefehlsübermittlung beim Drücken der Fernbedienung",
+          "title": "Fernbedienungssignale erfassen",
           "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_identity}\n\nVerwenden Sie nach dem Drücken auf Empfang starten die Original-Schellenberg-Fernbedienung für diesen Kanal des Geräts: Drücken Sie AUF, STOPP, ZU, STOPP. Home Assistant lauscht 45 Sekunden lang und gruppiert jede empfangene Geräte-ID, jeden Enum-Wert, Befehl und Zeitstempel.",
           "submit": "Empfang starten"
         },
@@ -165,7 +171,7 @@
           "submit": "Position bestätigen"
         },
         "reset_stick": {
-          "title": "Den USB-Stick zurücksetzen / serielle Schnittstelle neu verbinden von dem USB-Stick"
+          "title": "Den USB-Stick zurücksetzen / dessen serielle Schnittstelle neu verbinden"
         },
         "copy_diagnostics": {
           "title": "Die obige Diagnose kopieren",
@@ -177,7 +183,7 @@
         },
         "edit": {
           "title": "Die Geräteeinstellungen bearbeiten",
-          "description": "Das Ändern der Protokollidentitäten ändert nicht die eindeutige Entity-ID in Home Assistant. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie zusätzliche Identitäten als Geräte-ID/Enum ein, die jeweils durch eine Zeile oder mehrere Zeilen oder durch ein Komma oder durch mehrere Kommas getrennt werden. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
+          "description": "Das Ändern der Protokollidentitäten ändert nicht die eindeutige Entity-ID in Home Assistant. Die primäre Statusidentität steuert die Positionsverfolgung. Geben Sie bei Bedarf zusätzliche Identitäten als Geräte-ID/Enum ein, die jeweils durch eine Zeile oder mehrere Zeilen oder durch ein Komma oder durch mehrere Kommas getrennt werden. Sekundäre Identitäten werden für Diagnosezwecke abgeglichen, ändern jedoch nicht die Position. Lassen Sie beide primären Statusfelder leer, wenn sie unbekannt sind; die Sendeidentität wird nicht als Status verwendet, es sei denn, sie wurde tatsächlich beobachtet oder Sie geben sie manuell ein.",
           "data": {
             "device_name": "Name",
             "device_id": "Befehls-Geräte-ID",
@@ -192,7 +198,7 @@
           "submit": "Speichern"
         },
         "teach_motor": {
-          "title": "Ein anderes Gerät anlernen im selben Sektor (Achtung die bestehenden Motordaten werden überschrieben nach diesem Vorgang) / Den USB-Sender aktivieren",
+          "title": "Weiteres Gerät anlernen",
           "description": "Ausgewähltes Gerät: {selected_blind}\nBefehls-/Sendeidentität: {command_device_id}/{command_enum}\n\nOptional: Wählen Sie vor dem Senden den Kanal des Geräts an einer bereits gekoppelten Original-Fernbedienung aus, drücken Sie deren Programmiertaste, bis die Kanal-LED blinkt, und drücken Sie anschließend Stopp. Home Assistant sendet den Anlernbefehl 60, wartet auf die ACK-Bestätigung des Sticks, sendet den Abschlussbefehl 40 auf demselben Enum-Wert und führt anschließend einen kurzen Auf/Stopp-Test an dem Gerät durch. Die ACK-Bestätigungen des Sticks belegen nicht, dass das Gerät den Anlerncode Enum 60 gelernt hat oder sich bewegt hat. Wiederholen Sie Befehl 60 nicht außerhalb der Motorprogrammiersequenz; er kann auch die Drehrichtung ändern.",
           "submit": "Anlernbefehl an das Gerät senden und testen"
         },
@@ -205,6 +211,9 @@
           "submit": "Rohdaten senden"
         }
       },
+      "create_entry": {
+        "default": "Die Konfiguration wurde erstellt"
+      },
       "error": {
         "required": "Dieses Feld ist erforderlich.",
         "invalid_device_id": "Die Geräte-ID muss genau 6 Hexadezimalzeichen enthalten.",
@@ -213,6 +222,7 @@
         "already_configured": "Dieses Gerät ist bereits konfiguriert.",
         "initial_state_required": "Bitte wählen Sie aus, ob der Rollladen aktuell vollständig geöffnet oder vollständig geschlossen ist, bevor Sie fortfahren.",
         "test_direction_required": "Bitte wählen Sie aus, welche Rolladenfahrtrichtung getestet werden soll, bevor Sie fortfahren.",
+        "motor_moved_result_required": "Bitte wählen Sie aus, was beim Testlauf passiert ist, bevor Sie fortfahren.",
         "calibration_timeout": "Der Kalibrierungstimer ist abgelaufen. Der Rollladen hat mehr als 2 Minuten für die Bewegung benötigt. Bitte überprüfen Sie das Gerät und versuchen Sie es erneut.",
         "calibration_start_timeout": "Zeitüberschreitung beim Warten auf die Bewegung des Rollladens. Bitte stellen Sie sicher, dass das Gerät ordnungsgemäß angeschlossen ist, und versuchen Sie es erneut.",
         "unknown": "Ein unerwarteter Fehler ist während der Kalibrierung aufgetreten. Bitte versuchen Sie es erneut.",
@@ -262,6 +272,14 @@
         "unselected": "Bitte auswählen",
         "open": "Öffnen",
         "close": "Schließen"
+      }
+    },
+    "motor_moved_result": {
+      "options": {
+        "unselected": "Bitte auswählen",
+        "yes": "Ja, der Rollladen hat sich bewegt",
+        "no": "Nein, der Rollladen hat sich nicht bewegt",
+        "wrong_motor": "Kein Rollladen oder zwei Rollladen haben sich bewegt"
       }
     }
   },

@@ -479,6 +479,52 @@ MOVE_COMMAND_RESEND_DELAY_SECONDS = 0.25
 # non-edge start.
 NEAR_END_STOP_SNAP_TOLERANCE_PERCENT = 5
 
+# How long cover.py's own _handle_event() still treats a freshly-arriving
+# EVENT_STARTED_MOVING_UP/_DOWN as a stale, already-superseded echo of a
+# move this same entity's own primary status identity already reported
+# EVENT_STOPPED for, rather than a genuinely new move - instead of acting
+# on it (flipping is_opening/is_closing back on, restarting tracking) with
+# nothing actually moving any more. A real direct report: the stick's own
+# receive queue sharing RF airtime with other traffic (another blind's own
+# command, a different remote on the same band) can hold a frame back long
+# enough that this entity's STARTED_MOVING echo for a command it already
+# fully completed - stopped, tracking torn down - still arrives afterward.
+# _has_live_position_tracking()/_command_in_flight alone cannot tell that
+# apart from a real new move starting fresh: by definition, once this
+# entity's own move has genuinely ended, both already read exactly as idle
+# either way, and this protocol carries no sequence number or other
+# correlation id a late frame could be matched back to its own, now-
+# finished command by.
+#
+# 2.0s, the same figure a related, since-reverted mechanism settled on for
+# the symmetric problem on the *stop* side (MANUAL_STOP_MOTOR_CONFIRMATION_
+# GRACE_SECONDS, removed with commit a96a8d1). That mechanism's own
+# evaluation (2026-11-07) measured ~1.4s from a remote's own button-press
+# repeats to the matching primary move-start confirmation in a real
+# captured log - but attributed most of that particular gap to the button
+# needing to be held for a real stretch before the motor commits to a
+# move at all, not to RF-queueing delay itself. Reused here anyway, for
+# lack of a figure measured for this exact mechanism, as the best
+# available real-world reference point for "how late a primary echo can
+# plausibly still be" - not as a direct measurement of the delay this
+# guards against here.
+#
+# Deliberately short, not generous: this cannot distinguish a genuinely
+# stale echo of this entity's own finished move from a real, brand new
+# move that happens to start within the same short window (someone
+# pressing the remote again moments after the motor stops, say) - both
+# look identical from here, so the latter is also swallowed rather than
+# reported. That WINDOW itself is bounded to a couple of seconds, but a
+# false-negative's own consequence is not: a swallowed STARTED_MOVING
+# echo means _start_position_tracking() never runs for that move (see
+# _handle_event()'s own suppression-check comment), so the reported
+# position stays frozen at its pre-move value for that move's entire
+# physical duration - not just this window - until some later event this
+# entity does accept corrects it. Kept just long enough to reliably catch
+# the RF-queueing delay this exists for, without pretending the already-
+# accepted trade-off is smaller than it is.
+STALE_MOVE_START_ECHO_WINDOW_SECONDS = 2.0
+
 # How long cover.py's own optimistic guess from a secondary identity's
 # frame (_handle_secondary_activity) is allowed to stand before it is
 # withdrawn if nothing ever confirms it. This exists because decoding a
@@ -592,7 +638,8 @@ CONF_OPEN_TIME = "open_time"  # Time it takes to open (up) in seconds
 CONF_CLOSE_TIME = "close_time"  # Time it takes to close (down) in seconds
 # The blind's actual physical position (0 closed / 100 open) once calibration
 # - which now lets the person choose whether open or close is driven first,
-# see options_flow_calibration.py's calibration_close step - has finished.
+# see options_flow_calibration.py's calibration_initial_state step - has
+# finished.
 # Only ever 0 or 100: calibration always ends at whichever end stop the
 # second/last leg drove to. Set on every subentry created by a fresh pairing
 # regardless of which calibration_method_choice option was picked (Issue #78

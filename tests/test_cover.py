@@ -56,6 +56,7 @@ from custom_components.schellenberg_usb.const import (
     OPTIMISTIC_SECONDARY_MOVE_TIMEOUT_SECONDS,
     POSITION_UPDATE_LOOP_TIMEOUT_SECONDS,
     SIGNAL_DEVICE_EVENT,
+    STALE_MOVE_START_ECHO_WINDOW_SECONDS,
     STATUS_IDENTITY_SOURCE_UNKNOWN,
     STOP_COMMAND_LATENCY_SECONDS,
     SUBENTRY_TYPE_BLIND,
@@ -2613,6 +2614,99 @@ async def test_handle_event_respects_invert_direction_for_the_physical_signal(
     assert cover._attr_is_opening is False
 
 
+async def test_handle_event_started_moving_ignores_a_stale_echo_of_its_own_move(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A STARTED_MOVING echo arriving shortly after this same entity's own
+    move genuinely finished - delayed in the stick's own RF queue behind
+    other traffic long enough to still arrive after the matching STOPPED
+    echo already closed that move out - must be ignored, not mistaken for
+    a fresh move. Without this, the dashboard would flip back to "wird
+    geöffnet"/"wird geschlossen" on a blind that already reached, and is
+    sitting at, its target. See STALE_MOVE_START_ECHO_WINDOW_SECONDS's own
+    comment in const.py for why this is a deliberately short, inherently
+    imperfect heuristic rather than a certain one.
+    """
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._attr_is_opening = False
+    cover._attr_is_closing = False
+    cover._attr_current_cover_position = 100
+    cover._own_move_completed_at = clock()
+    clock.advance(STALE_MOVE_START_ECHO_WINDOW_SECONDS - 0.5)
+
+    cover._handle_event(EVENT_STARTED_MOVING_UP)
+
+    assert cover._attr_is_opening is False
+    assert cover._attr_is_closing is False
+    assert cover._attr_current_cover_position == 100
+    cover._start_position_tracking.assert_not_called()
+    # The stale marker itself is left exactly as it was by a suppressed
+    # echo - nothing here re-derives "how recently did this move finish",
+    # and a second stale echo right behind this one must be judged against
+    # the same original completion, not reset by the one just ignored.
+    assert cover._own_move_completed_at == 1_000.0
+
+
+async def test_handle_event_started_moving_accepts_echo_once_the_stale_window_elapses(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same echo, arriving just after STALE_MOVE_START_ECHO_WINDOW_SECONDS
+    has elapsed instead of just inside it, is accepted as a genuinely new
+    move exactly as before this fix - and clears the stale marker, so a
+    later echo isn't still judged against this same, now-irrelevant old
+    completion (see cover.py's own comment at the clearing site for why
+    that matters once a move can end via supersession instead of a
+    genuine STOPPED/manual-sync completion).
+    """
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._attr_current_cover_position = 100
+    cover._own_move_completed_at = clock()
+    clock.advance(STALE_MOVE_START_ECHO_WINDOW_SECONDS + 0.5)
+
+    cover._handle_event(EVENT_STARTED_MOVING_DOWN)
+
+    assert cover._attr_is_closing is True
+    assert cover._attr_is_opening is False
+    cover._start_position_tracking.assert_called_once_with()
+    assert cover._own_move_completed_at is None
+
+
+async def test_handle_event_started_moving_accepts_echo_at_stale_window_boundary(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """elapsed == STALE_MOVE_START_ECHO_WINDOW_SECONDS exactly must already
+    count as outside the window, not still inside it - the suppression
+    check's own comparison is a strict '<', not '<='. The two neighboring
+    tests above each sit comfortably off to one side of the boundary
+    (-0.5s / +0.5s) and so cannot tell a '<' from a '<=' apart; this one
+    sits exactly on it, which is the only place that distinction is
+    observable at all.
+    """
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    cover = _build_cover(hass, api)
+    cover._start_position_tracking = MagicMock()  # type: ignore[method-assign]
+    cover._attr_current_cover_position = 100
+    cover._own_move_completed_at = clock()
+    clock.advance(STALE_MOVE_START_ECHO_WINDOW_SECONDS)
+
+    cover._handle_event(EVENT_STARTED_MOVING_DOWN)
+
+    assert cover._attr_is_closing is True
+    assert cover._attr_is_opening is False
+    cover._start_position_tracking.assert_called_once_with()
+    assert cover._own_move_completed_at is None
+
+
 async def test_handle_event_stopped_freezes_the_estimated_position(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2633,6 +2727,148 @@ async def test_handle_event_stopped_freezes_the_estimated_position(
     assert cover._attr_current_cover_position == 45
     assert cover._attr_is_opening is False
     assert cover._attr_is_closing is False
+    # Stamped for the STARTED_MOVING branch's own stale-echo suppression to
+    # read back later (see test_handle_event_started_moving_ignores_a_
+    # stale_echo_of_its_own_move) - this is the moment that logic treats as
+    # "this entity's own move genuinely ended".
+    assert cover._own_move_completed_at == clock()
+
+
+async def test_position_loop_reaching_an_explicit_target_arms_the_stale_echo_guard(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for a gap an independent review (2026-11-14) found
+    alongside the fix this mechanism already had: reaching an explicit
+    set_cover_position() target - whether via an active stop command or
+    the motor's own end-stop, both funnel into this same shared completion
+    code, see its own comment right above where self._own_move_completed_at
+    is now also set here - used to clear is_opening/is_closing without
+    arming self._own_move_completed_at, unlike EVENT_STOPPED and
+    _handle_manual_position_sync() (see test_handle_event_stopped_freezes_
+    the_estimated_position and test_handle_manual_position_sync_applies_
+    the_confirmed_position above/below). A delayed STARTED_MOVING echo of
+    this exact, already-finished move would have gone completely
+    unsuppressed.
+
+    Target is 50 - an intermediate position, neither 0 nor 100 - so that
+    needs_stop_command (see _async_position_update_loop()'s own check)
+    is True and this genuinely drives the *active stop command* half of
+    that split: the real, awaited self._api.control_blind_stop() call,
+    confirmed here via the mocked CONFIRMED outcome. The sibling motor's-
+    own-end-stop half (target 0/100, the other, needs_stop_command=False
+    branch) is covered separately by test_position_loop_natural_close_
+    endstop_arms_the_stale_echo_guard and its _open_ mirror below. A
+    first version of this test used target 0 here too, which - through
+    that same needs_stop_command check - silently took the end-stop
+    branch instead and never actually exercised control_blind_stop() at
+    all, duplicating the natural-end-stop tests' own coverage rather than
+    adding the active-stop-command coverage this test's name and mock
+    claim to provide; caught by a second independent review (2026-11-14)
+    of this very fix.
+    """
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(return_value=StopOutcome.CONFIRMED)
+    cover = _build_cover(hass, api)
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 50),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 55
+    cover._target_position = 50
+
+    await cover._async_position_update_loop()
+
+    api.control_blind_stop.assert_awaited_once_with(
+        cover._command_enum, device_id=cover._command_device_id
+    )
+    assert cover._attr_is_closing is False
+    assert cover._own_move_completed_at == clock()
+
+
+async def test_position_loop_natural_close_endstop_arms_the_stale_echo_guard(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same gap as above, for the other end-stop branch: a plain
+    close_cover() with no explicit target at all (self._target_position
+    stays None throughout), ended purely by the motor's own 0% end-stop.
+    """
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    cover = _build_cover(hass, api)
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 0),
+    )
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 5
+
+    await cover._async_position_update_loop()
+
+    assert cover._attr_is_closing is False
+    assert cover._own_move_completed_at == clock()
+
+
+async def test_position_loop_natural_open_endstop_arms_the_stale_echo_guard(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirror of the close-endstop case above, for the 100% open end-stop."""
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    cover = _build_cover(hass, api)
+    monkeypatch.setattr(
+        cover,
+        "_update_position",
+        lambda: setattr(cover, "_attr_current_cover_position", 100),
+    )
+    cover._attr_is_opening = True
+    cover._attr_current_cover_position = 95
+
+    await cover._async_position_update_loop()
+
+    assert cover._attr_is_opening is False
+    assert cover._own_move_completed_at == clock()
+
+
+async def test_async_stop_cover_arms_the_stale_echo_guard(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same gap again, for an explicit Home Assistant stop command - the
+    fourth and last of the four places this review found missing it.
+    """
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
+    api = MagicMock()
+    api.control_blind_stop = AsyncMock(return_value=StopOutcome.CONFIRMED)
+    cover = _build_cover(hass, api)
+    cover._attr_is_closing = True
+    cover._attr_current_cover_position = 40
+
+    await cover.async_stop_cover()
+
+    assert cover._attr_is_closing is False
+    assert cover._own_move_completed_at == clock()
 
 
 async def test_handle_event_stopped_after_backstop_exhaustion_does_not_error(
@@ -3536,8 +3772,10 @@ async def test_set_cover_position_equal_to_current_while_idle_is_a_noop(
 
 
 async def test_handle_manual_position_sync_applies_the_confirmed_position(
-    hass: HomeAssistant,
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr(time, "monotonic", clock)
     api = MagicMock()
     cover = _build_cover(hass, api)
     cover._stop_position_tracking = MagicMock()  # type: ignore[method-assign]
@@ -3553,6 +3791,14 @@ async def test_handle_manual_position_sync_applies_the_confirmed_position(
     assert cover._target_position is None
     assert cover._position_confirmed_since_restart is True
     cover._stop_position_tracking.assert_called_once_with()
+    # Stamped for the STARTED_MOVING branch's own stale-echo suppression to
+    # read back later - one of several places (alongside EVENT_STOPPED,
+    # see test_handle_event_stopped_freezes_the_estimated_position, and
+    # the auto-stop-at-target/natural-end-stop/async_stop_cover() branches
+    # covered separately above) that clear is_opening/is_closing to report
+    # this entity as idle, so this too must count as "this entity's own
+    # move genuinely ended".
+    assert cover._own_move_completed_at == 1_000.0
 
 
 async def test_handle_calibration_completed_ignores_a_different_device(
@@ -3576,7 +3822,7 @@ async def test_handle_calibration_completed_updates_travel_times_and_closes(
     hass: HomeAssistant,
 ) -> None:
     """ending_position=0: the close leg ran last, see
-    options_flow_calibration.py's calibration_close step.
+    options_flow_calibration.py's calibration_initial_state step.
     """
     api = MagicMock()
     cover = _build_cover(hass, api, device_id="ABCDEF")
@@ -3691,7 +3937,7 @@ async def test_added_to_hass_uses_calibration_ending_position_when_nothing_was_r
 ) -> None:
     """No restored HA state, but the subentry carries the position
     calibration actually ended at (see options_flow_calibration.py's
-    calibration_close step and cover.py's own
+    calibration_initial_state step and cover.py's own
     _initial_position_from_calibration) - that real measured value should
     be used instead of unconditionally defaulting to closed.
     """

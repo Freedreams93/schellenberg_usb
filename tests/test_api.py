@@ -1627,6 +1627,54 @@ async def test_control_blind_stop_sends_two_extra_resends_after_being_accepted(
     assert len(written(connected_api)) == 3
 
 
+async def test_control_blind_stop_skips_resends_once_a_real_stop_frame_arrives(
+    connected_api: SchellenbergUsbApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A confirmed motor-stop echo makes the remaining resends unnecessary.
+
+    Companion to test_control_blind_stop_sends_two_extra_resends_after_
+    being_accepted above - project owner's own follow-up request
+    (2026-11-07): those two resends exist only to cover for a *lost*
+    primary stop frame; once this blind's own real "ss" STOPPED status
+    frame has actually arrived, the motor is independently known to be
+    stopped already, so firing them anyway would just be redundant RF
+    traffic on an already-busy shared transmitter. register_entity()
+    below gives this device_id a status identity to receive that frame
+    on - a plain device_id with none registered is exactly the scenario
+    the test above exercises, which still passes unchanged (asserts all
+    three writes), so this is additive, not a replacement.
+
+    Briefly reverted (2026-11-08, commit a96a8d1) along with this test,
+    over reliability concerns; both reinstated at the project owner's own
+    later, explicit request once real-world use showed that concern did
+    not hold up in practice - see control_blind_stop()'s own comment.
+    """
+    connected_api.register_entity("AAAAAA", "10", "Test Blind")
+    real_sleep = asyncio.sleep
+
+    async def instant_sleep(*_args: object, **_kwargs: object) -> None:
+        # See the matching comment on the companion test above for why a
+        # bare `return None` would never let this task actually run.
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    task = asyncio.ensure_future(
+        connected_api.control_blind_stop("10", device_id="AAAAAA")
+    )
+    await _run_until(lambda: len(written(connected_api)) == 1)
+
+    connected_api._handle_message("t1")  # the primary stop is accepted
+    # The motor's own real echo, independent of and after that stick
+    # accept - see _stop_confirmed_at's own comment in api.py.
+    connected_api._handle_message("ss" + "10" + "AAAAAA" + CMD_STOP + "00000000")
+
+    assert await asyncio.wait_for(task, timeout=1) is StopOutcome.CONFIRMED
+    # Neither best-effort resend fired - just the one, already-confirmed
+    # primary write.
+    assert len(written(connected_api)) == 1
+
+
 async def test_control_blind_stop_logs_the_transmitter_wait_before_writing(
     connected_api: SchellenbergUsbApi,
     monkeypatch: pytest.MonkeyPatch,
@@ -3195,9 +3243,9 @@ async def test_handle_message_ss_frame_updates_tracking_and_dispatches_signal(
         connected_api.hass, f"{SIGNAL_DEVICE_EVENT}_ABCDEF_10", _on_event
     )
 
-    # ss + enum(10) + device_id(ABCDEF) + incrementor(0000, ignored) +
-    # command(CMD_UP) + padding(00, ignored) + signal(00, ignored)
-    connected_api._handle_message("ss" + "10" + "ABCDEF" + "0000" + CMD_UP + "0000")
+    # ss + enum(10) + device_id(ABCDEF) + command(CMD_UP) +
+    # remainder(00000000, unparsed - see api.py's own format comment)
+    connected_api._handle_message("ss" + "10" + "ABCDEF" + CMD_UP + "00000000")
 
     frame = connected_api.get_last_received_for_identities([("ABCDEF", "10")])
     assert frame is not None
@@ -3209,6 +3257,48 @@ async def test_handle_message_ss_frame_updates_tracking_and_dispatches_signal(
     assert tracking_frame is not None
     assert tracking_frame["command"] == CMD_UP
     assert received == [CMD_UP]
+
+
+# Regression test for GitHub Issue #85: the command byte was previously read
+# from message[14:16], documented at the time as a 4-char "message
+# incrementor" sitting at [10:14] followed by the 2-char command. Real-world
+# frames (Debug_Protokoll.xlsx, attached to #85) proved that wrong - [14:16]
+# gave a different value almost every time for the *same*, physically-known
+# button, while [10:12] - right after the 6-char device id, with no
+# incrementor field at all - gave exactly one stable value per real action
+# across every one of the 141 frames in that capture. The four raw frames
+# below are copied verbatim from that capture (one per distinct action, two
+# different trigger sources: a SmartFriends box and a 5-channel remote), so
+# this test fails if the parser ever regresses to the old, wrong offset.
+@pytest.mark.parametrize(
+    ("raw_frame", "expected_command", "expected_interpretation"),
+    [
+        # SmartFriends box, device 23/8FC96F. Old [14:16] read "02", "03"
+        # and "04" for these three - as if three different commands had
+        # been sent - instead of the one real command each actually was.
+        ("ss238FC96F00260200EE", CMD_STOP, "stop"),
+        ("ss238FC96F02260300ED", CMD_DOWN, "close"),
+        ("ss238FC96F01260400ED", CMD_UP, "open"),
+        # 5-channel remote, device 43/B891F6, broadcasting Allow Pairing.
+        # Old [14:16] read "DB" here - not even one of the five recognized
+        # command bytes in const.py.
+        ("ss43B891F64025DB00C0", CMD_ALLOW_PAIRING, "unknown"),
+    ],
+)
+def test_handle_message_ss_frame_command_byte_matches_issue_85_capture(
+    connected_api: SchellenbergUsbApi,
+    raw_frame: str,
+    expected_command: str,
+    expected_interpretation: str,
+) -> None:
+    connected_api._handle_message(raw_frame)
+
+    enum = raw_frame[2:4]
+    device_id = raw_frame[4:10]
+    frame = connected_api.get_last_received_for_identities([(device_id, enum)])
+    assert frame is not None
+    assert frame["command"] == expected_command
+    assert frame["interpreted_command"] == expected_interpretation
 
 
 async def test_handle_message_ss_frame_unmatched_device_skips_the_per_entity_signal(
@@ -3241,7 +3331,7 @@ async def test_handle_message_ss_frame_unmatched_device_skips_the_per_entity_sig
         connected_api.hass, f"{SIGNAL_DEVICE_EVENT}_FEDCBA_20", _on_id_and_enum
     )
 
-    connected_api._handle_message("ss" + "20" + "FEDCBA" + "0000" + CMD_STOP + "0000")
+    connected_api._handle_message("ss" + "20" + "FEDCBA" + CMD_STOP + "00000000")
 
     frame = connected_api.get_last_received_for_identities([("FEDCBA", "20")])
     assert frame is not None
@@ -3270,7 +3360,7 @@ async def test_handle_message_unmatched_frame_logs_at_debug_only(
         not connected_api._registered_entity_keys
     )  # the exact state that used to warn
 
-    connected_api._handle_message("ss" + "20" + "FEDCBA" + "0000" + CMD_STOP + "0000")
+    connected_api._handle_message("ss" + "20" + "FEDCBA" + CMD_STOP + "00000000")
 
     unmatched_records = [
         record
@@ -3297,7 +3387,7 @@ async def test_handle_message_ss_frame_resolves_pairing_future_for_unknown_devic
     )
     connected_api._pairing_future = connected_api.hass.loop.create_future()
 
-    connected_api._handle_message("ss" + "30" + "112233" + "0000" + CMD_STOP + "0000")
+    connected_api._handle_message("ss" + "30" + "112233" + CMD_STOP + "00000000")
 
     assert connected_api._pairing_future.done()
     assert connected_api._pairing_future.result() == "112233"
@@ -3320,7 +3410,7 @@ async def test_handle_message_ss_frame_skips_capture_signal_when_no_capture_acti
         connected_api.hass, SIGNAL_DEVICE_EVENT_CAPTURE, _on_capture_event
     )
 
-    connected_api._handle_message("ss" + "10" + "ABCDEF" + "0000" + CMD_UP + "0000")
+    connected_api._handle_message("ss" + "10" + "ABCDEF" + CMD_UP + "00000000")
 
     assert received == []
 
@@ -3349,7 +3439,7 @@ async def test_handle_message_ss_frame_broadcasts_capture_signal_during_capture(
     )
     connected_api.start_status_frame_capture(phase="opening")
 
-    connected_api._handle_message("ss" + "10" + "FEDCBA" + "0000" + CMD_UP + "0000")
+    connected_api._handle_message("ss" + "10" + "FEDCBA" + CMD_UP + "00000000")
 
     assert received == [("FEDCBA", CMD_UP)]
 
@@ -3367,7 +3457,7 @@ async def test_handle_message_caps_the_status_discovery_frame_list(
     connected_api.start_status_frame_capture(phase="opening")
 
     for _ in range(api_module.MAX_STATUS_DISCOVERY_FRAMES + 50):
-        connected_api._handle_message("ss" + "10" + "FEDCBA" + "0000" + CMD_UP + "0000")
+        connected_api._handle_message("ss" + "10" + "FEDCBA" + CMD_UP + "00000000")
 
     assert connected_api._status_discovery_frames is not None
     assert len(connected_api._status_discovery_frames) == (
@@ -3510,7 +3600,7 @@ def test_handle_message_does_not_cache_an_ss_frame_with_a_non_hex_device_id(
     registration lookup and signal dispatch (both already no-op harmlessly
     for a bogus key, since nothing real is ever registered under one).
     """
-    connected_api._handle_message("ss10ZZZZZZ0000010000")
+    connected_api._handle_message("ss10ZZZZZZ0100000000")
 
     assert connected_api._last_received_messages == {}
 
@@ -3525,7 +3615,7 @@ def test_handle_message_evicts_the_oldest_identity_once_the_cache_is_full(
     """
     for index in range(api_module.MAX_LAST_RECEIVED_MESSAGES + 1):
         device_id = f"{index:06X}"
-        connected_api._handle_message(f"ss10{device_id}0000010000")
+        connected_api._handle_message(f"ss10{device_id}0100000000")
 
     assert len(connected_api._last_received_messages) == (
         api_module.MAX_LAST_RECEIVED_MESSAGES
@@ -3544,18 +3634,18 @@ def test_handle_message_moves_a_re_seen_identity_back_to_the_front_of_the_cache(
     eviction exactly as if it were new, rather than leaving it stuck at the
     front of the queue under its original, now-stale insertion position.
     """
-    connected_api._handle_message(f"ss10{'000000'}0000010000")
+    connected_api._handle_message(f"ss10{'000000'}0100000000")
     for index in range(1, api_module.MAX_LAST_RECEIVED_MESSAGES):
         device_id = f"{index:06X}"
-        connected_api._handle_message(f"ss10{device_id}0000010000")
+        connected_api._handle_message(f"ss10{device_id}0100000000")
     # Cache is now exactly full (MAX_LAST_RECEIVED_MESSAGES entries: "000000"
     # plus indices 1..MAX_LAST_RECEIVED_MESSAGES-1). Re-seeing "000000" here
     # must not grow it further, and must mark "000000" as freshly used.
-    connected_api._handle_message(f"ss10{'000000'}0000010000")
+    connected_api._handle_message(f"ss10{'000000'}0100000000")
 
     # One more, brand-new identity now has to evict *something*.
     overflow_device_id = f"{api_module.MAX_LAST_RECEIVED_MESSAGES:06X}"
-    connected_api._handle_message(f"ss10{overflow_device_id}0000010000")
+    connected_api._handle_message(f"ss10{overflow_device_id}0100000000")
 
     assert len(connected_api._last_received_messages) == (
         api_module.MAX_LAST_RECEIVED_MESSAGES
