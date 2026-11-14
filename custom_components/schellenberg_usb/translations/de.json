@@ -48,7 +48,7 @@
           "title": "Rollladenmotorlaufzeiten festlegen",
           "menu_options": {
             "test_motor": "durch Bewegen des Rollladens kalibrieren",
-            "manual_times": "Rollladenmotorzeiten manuell festlegen"
+            "manual_times": "Rollladenmotorlaufzeiten manuell festlegen"
           }
         },
         "calibration_initial_state": {
@@ -74,7 +74,7 @@
           "description": "Home Assistant hat die erwartete Bewegung nicht rechtzeitig erkannt. Versuchen Sie es erneut, oder geben Sie die Laufzeiten stattdessen manuell ein.",
           "menu_options": {
             "calibration_retry": "Erneut versuchen",
-            "manual_times": "Rollladenmotorzeiten manuell festlegen"
+            "manual_times": "Rollladenmotorlaufzeiten manuell festlegen"
           }
         },
         "calibration_complete": {
@@ -109,7 +109,7 @@
           "submit": "Weiter"
         },
         "manual_times": {
-          "title": "Rollladenmotorzeiten manuell festlegen",
+          "title": "Rollladenmotorlaufzeiten manuell festlegen",
           "description": "Geben Sie die gemessenen vollständigen Öffnungs- und Schließzeiten ein.",
           "data": {
             "open_time_seconds": "Öffnungszeit",

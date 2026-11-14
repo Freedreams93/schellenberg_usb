@@ -3418,7 +3418,7 @@ def test_calibration_method_choice_menu_options_capitalization() -> None:
     menu_options = _load_step("de", "calibration_method_choice")["menu_options"]
     assert menu_options == {
         "test_motor": "durch Bewegen des Rollladens kalibrieren",
-        "manual_times": "Rollladenmotorzeiten manuell festlegen",
+        "manual_times": "Rollladenmotorlaufzeiten manuell festlegen",
     }
 
 
@@ -3464,11 +3464,17 @@ def test_calibration_method_choice_title_names_the_menu_not_just_manual_entry() 
     are *for* - the shutter motor's travel times - with no "manually"
     anywhere in it, while the manual_times option alone keeps that
     word, since it is the one path it actually describes. The two must
-    therefore differ in every language, not match. German additionally
-    drops "lauf" from the option but not the title - "Rollladenmotorzeiten
-    manuell festlegen" vs. the title's "Rollladenmotorlaufzeiten
-    festlegen" - the person's own exact dictated wording, kept verbatim
-    rather than "corrected" to match the title's stem.
+    therefore differ in every language, not match.
+
+    German briefly dropped "lauf" from the option only ("Rollladenmotorzeiten
+    manuell festlegen" vs. the title's "Rollladenmotorlaufzeiten festlegen") -
+    the person's own exact dictated wording for the option at the time, kept
+    verbatim rather than "corrected" to match the title's stem. Later the
+    same day, after seeing the two side by side in the running app, the
+    person asked for "Rollladenmotorlaufzeiten" everywhere instead, in every
+    menu it appears in - reversing that specific earlier dictation. German's
+    option and title now share that same stem, differing only by "manuell",
+    matching how EN/ES/FR already worked all along.
     """
     expected = {
         "strings": (
@@ -3481,7 +3487,7 @@ def test_calibration_method_choice_title_names_the_menu_not_just_manual_entry() 
         ),
         "de": (
             "Rollladenmotorlaufzeiten festlegen",
-            "Rollladenmotorzeiten manuell festlegen",
+            "Rollladenmotorlaufzeiten manuell festlegen",
         ),
         "es": (
             "Establecer los tiempos de recorrido del motor de la persiana",
