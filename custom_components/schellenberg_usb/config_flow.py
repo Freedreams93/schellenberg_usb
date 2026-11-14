@@ -380,7 +380,7 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             self.calibration_handler = CalibrationFlowHandler(self)
         return self.calibration_handler
 
-    async def async_remove(self) -> None:
+    def async_remove(self) -> None:
         """Release a still-open calibration capture the instant this flow
         goes away, instead of leaving it to time out on its own.
 
@@ -405,6 +405,18 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         handler stays None until _get_calibration_handler() first lazily
         creates it, which a flow removed before ever reaching a
         calibration step never does.
+
+        Deliberately a plain, non-async override despite its own name:
+        its only call, _finish_calibration_capture(), is itself
+        synchronous, so there is nothing here to await. An `async def`
+        version would still run fine at the one real call site either
+        way, but mypy flags it regardless - the base FlowHandler.
+        async_remove() in Home Assistant's own data_entry_flow.py is
+        itself typed as a plain `-> None`, not `Coroutine[Any, Any,
+        None]`, so an `async def` override is a Liskov violation as far
+        as mypy's --strict override check is concerned. Staying
+        non-async here sidesteps that mismatch outright instead of
+        suppressing it.
         """
         if self.calibration_handler is not None:
             self.calibration_handler._finish_calibration_capture("flow_removed")

@@ -775,7 +775,7 @@ async def test_async_remove_is_a_safe_noop_when_calibration_was_never_started(
     flow = make_flow(hass)
     assert flow.calibration_handler is None
 
-    await flow.async_remove()
+    flow.async_remove()
 
     assert flow.calibration_handler is None
 
@@ -810,11 +810,11 @@ async def test_async_remove_releases_an_active_calibration_capture(
     assert handler._start_calibration_capture(phase="opening") is True
     assert handler._capture_active is True
     assert handler._capture_api is connected_api
-    connected_api.finish_status_frame_capture = MagicMock(  # type: ignore[method-assign]
+    connected_api.finish_status_frame_capture = MagicMock(
         return_value={"end_reason": "flow_removed", "primary": None}
     )
 
-    await flow.async_remove()
+    flow.async_remove()
 
     connected_api.finish_status_frame_capture.assert_called_once_with(
         end_reason="flow_removed", exclude_device_ids=frozenset()
