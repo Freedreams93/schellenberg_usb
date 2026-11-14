@@ -62,18 +62,12 @@
         "calibration_open_instruction": {
           "title": "Abrir la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en abrirse {device_name}. Pulse Iniciar **y luego** el botón de apertura en el control para iniciar la medición. La calibración solo comienza cuando Home Assistant recibe un mensaje de movimiento ascendente de la persiana y este es procesado por Home Assistant.",
-          "submit": "Iniciar",
-          "error": {
-            "unknown": "No se detectó ninguna confirmación de transmisión de la persiana.\nPor favor, inténtelo de nuevo."
-          }
+          "submit": "Iniciar"
         },
         "calibration_close_instruction": {
           "title": "Cerrar la persiana",
           "description": "Ahora mediremos cuánto tiempo tarda en cerrarse {device_name}. Pulse Iniciar **y luego** el botón de cierre en el control para iniciar la calibración. La calibración solo comienza cuando Home Assistant recibe un mensaje de movimiento descendente de la persiana y este es procesado por Home Assistant.",
-          "submit": "Iniciar",
-          "error": {
-            "unknown": "No se detectó ninguna confirmación de transmisión de la persiana.\nPor favor, inténtelo de nuevo."
-          }
+          "submit": "Iniciar"
         },
         "calibration_timeout_choice": {
           "title": "Sin respuesta de la persiana",

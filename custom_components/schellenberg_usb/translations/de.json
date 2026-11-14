@@ -62,18 +62,12 @@
         "calibration_open_instruction": {
           "title": "Rollladen öffnen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu öffnen. Drücken Sie Start **und dann** die Öffnen-Taste an der Steuerung, um die Messung zu starten. Die Kalibrierung startet erst, wenn eine Aufwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
-          "submit": "Start",
-          "error": {
-            "unknown": "Es wurde keine Sendebestätigung des Rollladens erkannt.\nBitte versuchen Sie es erneut."
-          }
+          "submit": "Start"
         },
         "calibration_close_instruction": {
           "title": "Rollladen schließen",
           "description": "Jetzt messen wir, wie lange es dauert, {device_name} zu schließen. Drücken Sie Start **und dann** die Schließen-Taste an der Steuerung, um die Kalibrierung zu starten. Die Kalibrierung startet erst, wenn eine Abwärtsbewegungsnachricht vom Rollladen zu Home Assistant übermittelt wurde und danach von Home Assistant verarbeitet wurde.",
-          "submit": "Start",
-          "error": {
-            "unknown": "Es wurde keine Sendebestätigung des Rollladens erkannt.\nBitte versuchen Sie es erneut."
-          }
+          "submit": "Start"
         },
         "calibration_timeout_choice": {
           "title": "Keine Rückmeldung vom Rollladen",

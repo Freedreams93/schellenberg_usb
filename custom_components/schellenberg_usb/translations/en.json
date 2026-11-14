@@ -62,18 +62,12 @@
         "calibration_open_instruction": {
           "title": "Open the shutter",
           "description": "Now we will measure how long it takes to open {device_name}. Press Start **and then** the open button on the control to start the measurement. The calibration only starts when an upward movement message from the shutter has been transmitted to Home Assistant and subsequently processed by Home Assistant.",
-          "submit": "Start",
-          "error": {
-            "unknown": "No transmission confirmation was detected from the shutter.\nPlease try again."
-          }
+          "submit": "Start"
         },
         "calibration_close_instruction": {
           "title": "Close the shutter",
           "description": "Now we will measure how long it takes to close {device_name}. Press Start **and then** the close button on the control to start the calibration. The calibration only starts when a downward movement message from the shutter has been transmitted to Home Assistant and subsequently processed by Home Assistant.",
-          "submit": "Start",
-          "error": {
-            "unknown": "No transmission confirmation was detected from the shutter.\nPlease try again."
-          }
+          "submit": "Start"
         },
         "calibration_timeout_choice": {
           "title": "No response from the shutter",

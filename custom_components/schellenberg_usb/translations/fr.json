@@ -62,18 +62,12 @@
         "calibration_open_instruction": {
           "title": "Ouvrir le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour ouvrir {device_name}. Appuyez sur Démarrer **puis** sur le bouton d'ouverture de la commande pour lancer la mesure. La calibration ne démarre que lorsqu'un message de mouvement vers le haut du volet a été transmis à Home Assistant et ensuite traité par Home Assistant.",
-          "submit": "Démarrer",
-          "error": {
-            "unknown": "Aucune confirmation de transmission du volet n'a été détectée.\nVeuillez réessayer."
-          }
+          "submit": "Démarrer"
         },
         "calibration_close_instruction": {
           "title": "Fermer le volet",
           "description": "Nous allons maintenant mesurer le temps nécessaire pour fermer {device_name}. Appuyez sur Démarrer **puis** sur le bouton de fermeture de la commande pour lancer la calibration. La calibration ne démarre que lorsqu'un message de mouvement vers le bas du volet a été transmis à Home Assistant et ensuite traité par Home Assistant.",
-          "submit": "Démarrer",
-          "error": {
-            "unknown": "Aucune confirmation de transmission du volet n'a été détectée.\nVeuillez réessayer."
-          }
+          "submit": "Démarrer"
         },
         "calibration_timeout_choice": {
           "title": "Aucune réponse du volet",
