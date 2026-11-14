@@ -309,6 +309,50 @@ def _interpret_status_command(command: str) -> str:
     }.get(command.upper(), "unknown")
 
 
+# The four values ever confirmed to appear in a real "ss" status frame's
+# command field, at either candidate byte position - see
+# _resolve_status_command()'s own docstring for why there are two.
+_KNOWN_STATUS_COMMAND_BYTES = frozenset({CMD_STOP, CMD_UP, CMD_DOWN, CMD_ALLOW_PAIRING})
+
+
+def _resolve_status_command(message: str) -> str:
+    """Return a "ss" status frame's command byte, trying both known layouts.
+
+    Issue #85's fix reads this field at message[10:12], confirmed against
+    141 real captured frames (Debug_Protokoll.xlsx) from two trigger
+    sources where the previous message[14:16] slice was unstable. A
+    real debug log gathered later from different hardware (two devices,
+    both reporting under enum 09) shows the opposite: message[10:12] is
+    a fixed, never-changing "1F" regardless of the real action, while
+    message[14:16] matches the real action exactly, every time, across
+    dozens of frames spanning several minutes - 1F is never a command
+    (a command byte by definition varies with the action), so for that
+    hardware the Issue #85 position is reading the wrong field, not an
+    unstable one.
+
+    Both data sets are real captures, so rather than pick one position
+    and risk breaking the other hardware class, this trusts message[10:12]
+    whenever it is itself one of the four values any real frame has ever
+    been confirmed to carry, and only tries message[14:16] when it is
+    not - which is exactly the situation the second log shows. This
+    differs from the secondary-identity command-byte fallback reverted in
+    1db9e69 (api.py history): that fallback's second field was a
+    per-transmission sequence counter which could coincidentally match a
+    real command byte on any given press, so validating against the known
+    set couldn't reliably tell real commands apart from counter noise.
+    Here, the first field is either a real command or a constant that
+    never varies with the action, so the same validation is decisive
+    rather than coincidental.
+    """
+    primary = message[10:12].upper()
+    if primary in _KNOWN_STATUS_COMMAND_BYTES:
+        return primary
+    fallback = message[14:16].upper()
+    if fallback in _KNOWN_STATUS_COMMAND_BYTES:
+        return fallback
+    return primary
+
+
 def _normalize_protocol_enum(value: object) -> str:
     """Normalize one- or two-digit protocol enums without changing other values."""
     text = str(value).strip()
@@ -1068,22 +1112,18 @@ class SchellenbergUsbApi:
         # ss = prefix (2 chars)
         # XX = device enum (2 chars)
         # YYYYYY = device ID (6 chars)
-        # CC = command (2 chars) - confirmed via GitHub Issue #85's
-        # Debug_Protokoll.xlsx: 141 captured real-world frames across two
-        # independent trigger sources (a SmartFriends box and a 5-channel
-        # remote), cross-checked against the physically-known button
-        # pressed for each. Characters 10:12 gave exactly one stable value
-        # per actual action across every repeat (00=Stop, 01=Up/open,
-        # 02=Down/close, 40=Allow Pairing broadcast) - the previous 14:16
-        # slice instead gave up to 12 different values for the same single
-        # action (e.g. "Stop"), so it was never the command field.
+        # CC = command (2 chars). Which 2 characters this actually is has
+        # been confirmed, by two different real captures, to differ by
+        # hardware: see _resolve_status_command()'s docstring above for
+        # both data sets and why this reads the field through that
+        # function instead of a single fixed slice.
         # RRRRRRRR = remaining 8 chars (positions 12:20) - not conclusively
         # reverse-engineered, and not read anywhere else in this codebase.
         if message.startswith("ss") and len(message) >= 18:
             try:
                 device_enum = message[2:4]
                 device_id = message[4:10]
-                command = message[10:12]
+                command = _resolve_status_command(message)
 
                 _LOGGER.debug(
                     "Parsed: enum=%s, id=%s, cmd=%s", device_enum, device_id, command

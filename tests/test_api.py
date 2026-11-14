@@ -3389,6 +3389,68 @@ def test_handle_message_ss_frame_command_byte_matches_issue_85_capture(
     assert frame["interpreted_command"] == expected_interpretation
 
 
+# Regression test for the real-world report that followed Issue #85's own
+# fix: on this user's hardware (two devices, both status-reporting under
+# enum 09), message[10:12] - the position Issue #85's fix reads - is a
+# fixed "1F" in every one of 27 distinct frames collected in a user-
+# provided HA debug log, spanning idle/ambient traffic and traffic
+# following explicit HA-issued open/close/stop commands alike. Since a
+# real command byte must vary with the real action and "1F" never does
+# here, it cannot be the command field for this hardware - message[14:16]
+# is, and does vary correctly with it (00/01/02 only, exactly matching
+# stop/open/close). The four raw frames below are copied verbatim from
+# that log (two devices, all three actions); the closing one is the
+# tightest-correlated of the set - logged ~1.6s after this integration
+# itself issued an explicit close command to that exact device.
+# _resolve_status_command() must keep reading Issue #85's own capture
+# correctly (previous test) while also resolving these - see its
+# docstring in api.py for why checking both positions against the known
+# command set is reliable here, unlike the already-reverted secondary-
+# identity fallback (1db9e69).
+@pytest.mark.parametrize(
+    ("raw_frame", "expected_command", "expected_interpretation"),
+    [
+        ("ss096E568B1F820000C9", CMD_STOP, "stop"),
+        ("ss096E568B1F820100C9", CMD_UP, "open"),
+        ("ss096E568B1F820200CD", CMD_DOWN, "close"),
+        ("ss090B49491F820000C9", CMD_STOP, "stop"),
+    ],
+)
+def test_handle_message_ss_frame_command_byte_falls_back_for_1f82_hardware(
+    connected_api: SchellenbergUsbApi,
+    raw_frame: str,
+    expected_command: str,
+    expected_interpretation: str,
+) -> None:
+    connected_api._handle_message(raw_frame)
+
+    enum = raw_frame[2:4]
+    device_id = raw_frame[4:10]
+    frame = connected_api.get_last_received_for_identities([(device_id, enum)])
+    assert frame is not None
+    assert frame["command"] == expected_command
+    assert frame["interpreted_command"] == expected_interpretation
+
+
+def test_handle_message_ss_frame_keeps_reporting_unknown_when_neither_position_decodes(
+    connected_api: SchellenbergUsbApi,
+) -> None:
+    """When message[10:12] AND message[14:16] are both outside the known
+    command set, the frame must keep reporting exactly what it did before
+    this fallback existed - message[10:12]'s own raw value, interpreted as
+    "unknown" - rather than the fallback inventing some other behavior for
+    a frame nobody has ever captured and confirmed the meaning of.
+    """
+    # ss + enum(10) + device_id(ABCDEF) + "99" (not a known command) +
+    # "00" (unused remainder) + "FF" (also not a known command) + "0000"
+    connected_api._handle_message("ss10ABCDEF9900FF0000")
+
+    frame = connected_api.get_last_received_for_identities([("ABCDEF", "10")])
+    assert frame is not None
+    assert frame["command"] == "99"
+    assert frame["interpreted_command"] == "unknown"
+
+
 async def test_handle_message_ss_frame_unmatched_device_skips_the_per_entity_signal(
     connected_api: SchellenbergUsbApi,
 ) -> None:
