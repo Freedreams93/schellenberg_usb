@@ -126,9 +126,6 @@ SIGNAL_DEVICE_EVENT = f"{DOMAIN}_device_event"
 # options_flow_calibration.py's movement-wait listeners still see the
 # device's real status frames during that single active capture window.
 SIGNAL_DEVICE_EVENT_CAPTURE = f"{DOMAIN}_device_event_capture"
-SIGNAL_DEVICE_PAIRED = f"{DOMAIN}_device_paired"
-SIGNAL_PAIRING_STARTED = f"{DOMAIN}_pairing_started"
-SIGNAL_PAIRING_TIMEOUT = f"{DOMAIN}_pairing_timeout"
 SIGNAL_STICK_STATUS_UPDATED = f"{DOMAIN}_stick_status_updated"
 SIGNAL_CALIBRATION_COMPLETED = f"{DOMAIN}_calibration_completed"
 SIGNAL_MANUAL_POSITION_SYNC = f"{DOMAIN}_manual_position_sync"
@@ -479,25 +476,6 @@ MOVE_COMMAND_RESEND_DELAY_SECONDS = 0.25
 # non-edge start.
 NEAR_END_STOP_SNAP_TOLERANCE_PERCENT = 5
 
-# How long cover.py's own optimistic guess from a secondary identity's
-# frame (_handle_secondary_activity) is allowed to stand before it is
-# withdrawn if nothing ever confirms it. This exists because decoding a
-# secondary frame's own command byte to learn its real direction has been
-# tried twice on real Gurtwickler-remote hardware and failed both times
-# (see commits e911236 and 1db9e69) - so that byte is deliberately never
-# inspected at all any more. Instead, the guess is corrected for free the
-# moment the primary status identity's own echo of the same physical move
-# arrives - _handle_event()'s STARTED_MOVING branch overwrites is_opening/
-# is_closing with the real, reliably decoded direction and starts real
-# tracking, exactly as it already does for any other externally-triggered
-# move. This timeout only covers the case that echo never arrives at all
-# (the same real-world RF loss this project's own debug logs have shown
-# happens occasionally) - long enough that a genuinely-landing-late echo
-# is not preempted, short enough that a wrong guess with nothing left to
-# correct it does not stand for long. Tune here only; cover.py has no
-# literal of its own.
-OPTIMISTIC_SECONDARY_MOVE_TIMEOUT_SECONDS = 5.0
-
 # Device verification
 VERIFY_TIMEOUT = 5  # seconds to wait for verification response
 # Expected response format: RFTU_V20 F:20180510_DFBD B:1
@@ -592,7 +570,8 @@ CONF_OPEN_TIME = "open_time"  # Time it takes to open (up) in seconds
 CONF_CLOSE_TIME = "close_time"  # Time it takes to close (down) in seconds
 # The blind's actual physical position (0 closed / 100 open) once calibration
 # - which now lets the person choose whether open or close is driven first,
-# see options_flow_calibration.py's calibration_close step - has finished.
+# see options_flow_calibration.py's calibration_initial_state step - has
+# finished.
 # Only ever 0 or 100: calibration always ends at whichever end stop the
 # second/last leg drove to. Set on every subentry created by a fresh pairing
 # regardless of which calibration_method_choice option was picked (Issue #78

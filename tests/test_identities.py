@@ -120,6 +120,78 @@ def test_summarize_status_discovery_frames_with_no_recognized_commands() -> None
     ]
 
 
+def test_summarize_status_discovery_frames_1f82_hardware_regression() -> None:
+    """Concrete regression anchor for the same real-world hardware behind
+    api.py's _resolve_status_command() fallback (see its docstring, and
+    CHANGELOG.md's v1.5.0 entry right after the Issue #85 bullet): two
+    real devices whose "ss" frames carry a constant, non-command "1F" at
+    message[10:12] - the position api.py reads before trying its
+    fallback - with the real command only recoverable from message[14:16].
+
+    This function never sees raw wire bytes, only the already-resolved
+    "command" field api.py's _handle_message() put in each frame dict -
+    so it cannot fall back itself. Before the api.py fix, every frame
+    from this hardware carried "1F" here, exactly like the no-recognized-
+    commands case above, and this function could never select it as
+    primary: no amount of open/close/stop cycling would ever produce a
+    recognized command, so calibration's own post-capture identity
+    selection (_finish_calibration_capture() -> this function) would
+    permanently fail for this hardware, independently of - and in
+    addition to - the narrower movement-wait-never-matches symptom the
+    CHANGELOG entry describes. The api.py fix resolves both from the
+    same one-line change, since both consume the same "command" field.
+    """
+    unresolved_frames = [
+        {
+            "device_id": "6E568B",
+            "enum": "09",
+            "command": "1F",
+            "phase": "opening",
+        },
+        {
+            "device_id": "6E568B",
+            "enum": "09",
+            "command": "1F",
+            "phase": "opening_endstop",
+        },
+        {
+            "device_id": "6E568B",
+            "enum": "09",
+            "command": "1F",
+            "phase": "closing",
+        },
+        {
+            "device_id": "6E568B",
+            "enum": "09",
+            "command": "1F",
+            "phase": "closing_endstop",
+        },
+    ]
+    before_fix = summarize_status_discovery_frames(unresolved_frames)
+    assert before_fix["primary"] is None
+    assert before_fix["position_tracking_available"] is False
+    assert before_fix["unknown_commands"] == [
+        {"device_id": "6E568B", "enum": "09", "commands": ["1F"]}
+    ]
+
+    # Same capture window, same phases - only the "command" field differs,
+    # exactly as api.py's own _resolve_status_command() now resolves it
+    # for these real frames (see test_handle_message_ss_frame_command_
+    # byte_falls_back_for_1f82_hardware in tests/test_api.py).
+    resolved_frames = [
+        {**frame, "command": command}
+        for frame, command in zip(
+            unresolved_frames, ["01", "00", "02", "00"], strict=True
+        )
+    ]
+    after_fix = summarize_status_discovery_frames(resolved_frames)
+    assert after_fix["primary"] is not None
+    assert after_fix["primary"]["device_id"] == "6E568B"
+    assert after_fix["primary"]["phase_confirmed_frame_count"] == 4
+    assert after_fix["position_tracking_available"] is True
+    assert after_fix["unknown_commands"] == []
+
+
 def test_summarize_status_discovery_frames_prefers_phase_confirmed_group() -> None:
     """A calibration run's capture window labels each frame with the leg
     it was taken during (see api.py's phase tagging). A frame whose
