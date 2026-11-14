@@ -26,9 +26,6 @@ from custom_components.schellenberg_usb.const import (
     PLATFORMS,
     SIGNAL_CALIBRATION_COMPLETED,
     SIGNAL_DEVICE_EVENT,
-    SIGNAL_DEVICE_PAIRED,
-    SIGNAL_PAIRING_STARTED,
-    SIGNAL_PAIRING_TIMEOUT,
     SIGNAL_STICK_STATUS_UPDATED,
     STOP_COMMAND_RESEND_DELAY_SECONDS,
     VERIFY_TIMEOUT,
@@ -77,9 +74,6 @@ def test_led_commands() -> None:
 def test_signal_constants() -> None:
     """Test signal constants are properly formatted."""
     assert SIGNAL_DEVICE_EVENT == "schellenberg_usb_device_event"
-    assert SIGNAL_DEVICE_PAIRED == "schellenberg_usb_device_paired"
-    assert SIGNAL_PAIRING_STARTED == "schellenberg_usb_pairing_started"
-    assert SIGNAL_PAIRING_TIMEOUT == "schellenberg_usb_pairing_timeout"
     assert SIGNAL_STICK_STATUS_UPDATED == "schellenberg_usb_stick_status_updated"
     assert SIGNAL_CALIBRATION_COMPLETED == "schellenberg_usb_calibration_completed"
 

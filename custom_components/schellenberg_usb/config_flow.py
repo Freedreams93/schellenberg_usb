@@ -700,26 +700,38 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         }
 
     @staticmethod
-    def _motor_moved_result_schema() -> vol.Schema:
-        """Build the required, no-default three-way test-outcome field.
+    def _motor_moved_result_schema(*, allow_wrong_motor: bool) -> vol.Schema:
+        """Build the required, no-default motor-moved-result field.
 
-        Only used for the "pairing" workflow's own did_motor_move form -
-        the "existing" workflow keeps its original plain BooleanSelector
-        below, unchanged, since a wrong-motor retry only ever makes sense
-        while a brand new device_enum is still up for grabs during a
-        fresh pairing (see async_step_wrong_motor_reset_notice()'s own
-        docstring for why there is nothing equivalent for an already-
-        paired blind's own re-test). Same non-answer-placeholder pattern
-        as _test_direction_schema() above, for the same reason: a required
-        "list" (radio) select still visibly highlights its first real
-        option before anything is chosen, which looks exactly like a
-        considered answer.
+        Shared by both did_motor_move workflows, as of the 2026-11-14
+        unification - "existing" used to keep its own, original plain
+        BooleanSelector(default=True) here, which carried the exact risk
+        this select was written to avoid in the first place: a defaulted
+        field looks like a considered answer whether or not one was
+        actually made (same reasoning as _test_direction_schema() above).
+
+        The two callers differ only in which outcomes are actually on
+        offer, via allow_wrong_motor: a fresh "pairing" gets all three -
+        see async_step_did_motor_move()'s own docstring for what each one
+        means. "existing" only ever gets "yes"/"no": a wrong-motor retry
+        re-pairs at a fresh address (async_step_wrong_motor_reset_notice()),
+        and an already-paired blind being re-tested has no "fresh address"
+        to retry at - there being nothing for that option to actually do
+        is exactly why it stays pairing-only rather than becoming a third,
+        non-functional choice on every re-test. Same non-answer-placeholder
+        pattern as _test_direction_schema() above either way, for the same
+        reason: a required "list" (radio) select still visibly highlights
+        its first real option before anything is chosen, which looks
+        exactly like a considered answer.
         """
+        options = ["unselected", "yes", "no"]
+        if allow_wrong_motor:
+            options.append("wrong_motor")
         return vol.Schema(
             {
                 vol.Required("motor_moved_result"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=["unselected", "yes", "no", "wrong_motor"],
+                        options=options,
                         mode=selector.SelectSelectorMode.LIST,
                         translation_key="motor_moved_result",
                     )
@@ -740,62 +752,61 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
         unification, 2026-11-07), and the "existing" setup's re-test of
         an already-paired blind.
 
-        The two workflows ask a different question here, as of the
-        wrong-motor-retry option (2026-11-14): "existing" keeps the
-        original plain yes/no - there is nothing new to offer it, since
-        retrying at a different address only ever makes sense for a fresh
-        pairing that still has a free address to retry with (below). A
-        fresh "pairing", instead, offers a required three-way choice
-        (_motor_moved_result_schema()): the test moved the new blind as
+        Both workflows ask the same required, no-default question here
+        (_motor_moved_result_schema()) - unified on 2026-11-14, when
+        "existing" gave up its own original plain BooleanSelector(default
+        =True) for exactly the reason that schema's own docstring gives.
+        They differ only in which outcomes are actually on offer. A fresh
+        "pairing" gets all three: the test moved the new blind as
         expected; nothing moved, probably just a lost command, worth
-        retrying the *same* address first (unchanged from before - the
-        common, mundane case); or no blind reacted correctly at all, or an
-        additional/different, already-paired one also moved - which keeps
-        its own separate option rather than collapsing into "nothing
-        moved" above, because only the person watching the physical
-        blinds can tell these symptoms apart; this integration cannot
-        (see async_step_wrong_motor_reset_notice()'s own docstring for why
-        not, and for what that option actually does).
+        retrying the *same* address first (the common, mundane case); or
+        no blind reacted correctly at all, or an additional/different,
+        already-paired one also moved - which keeps its own separate
+        option rather than collapsing into "nothing moved" above, because
+        only the person watching the physical blinds can tell these
+        symptoms apart; this integration cannot (see
+        async_step_wrong_motor_reset_notice()'s own docstring for why not,
+        and for what that option actually does). "existing" only ever
+        gets "yes"/"no" - see _motor_moved_result_schema()'s own
+        docstring for why a wrong-motor retry has nothing to do there.
         """
+        allow_wrong_motor = self._pairing_workflow != "existing"
         if user_input is None:
             return self.async_show_form(
                 step_id="did_motor_move",
-                data_schema=(
-                    vol.Schema(
-                        {
-                            vol.Required("motor_moved", default=True): (
-                                selector.BooleanSelector()
-                            )
-                        }
-                    )
-                    if self._pairing_workflow == "existing"
-                    else self._motor_moved_result_schema()
+                data_schema=self._motor_moved_result_schema(
+                    allow_wrong_motor=allow_wrong_motor
                 ),
                 description_placeholders=self._did_motor_move_placeholders(),
             )
 
-        if self._pairing_workflow == "existing":
-            if not user_input["motor_moved"]:
-                return await self.async_step_edit()
-            return self.async_abort(reason="command_test_successful")
-
-        # "pairing" is the only workflow that can still be here -
-        # "existing" always returns above, either way.
+        valid_results = (
+            ("yes", "no", "wrong_motor") if allow_wrong_motor else ("yes", "no")
+        )
         motor_moved_result = user_input.get("motor_moved_result")
-        if motor_moved_result not in ("yes", "no", "wrong_motor"):
+        if motor_moved_result not in valid_results:
             # "unselected" (or anything else) was submitted - see
             # _motor_moved_result_schema()'s own comment for why this is
             # reachable despite the field being required.
             return self.async_show_form(
                 step_id="did_motor_move",
-                data_schema=self._motor_moved_result_schema(),
+                data_schema=self._motor_moved_result_schema(
+                    allow_wrong_motor=allow_wrong_motor
+                ),
                 description_placeholders=self._did_motor_move_placeholders(),
                 errors={"base": "motor_moved_result_required"},
             )
 
         if motor_moved_result == "yes":
+            if self._pairing_workflow == "existing":
+                return self.async_abort(reason="command_test_successful")
             return await self.async_step_test_success()
         if motor_moved_result == "no":
+            if self._pairing_workflow == "existing":
+                # Same handling as before this option existed: an already-
+                # configured blind with a known cover entity has a more
+                # useful next step than an open-ended retry loop.
+                return await self.async_step_edit()
             # Same handling as before this option existed: no movement
             # doesn't necessarily mean the pairing failed - the blind may
             # simply already have been sitting at the end stop in the
@@ -810,8 +821,10 @@ class SchellenbergPairingSubentryFlow(ConfigSubentryFlow):
             # up on their behalf.
             self._test_motor_retry_attempted = True
             return await self.async_step_test_motor()
-        # Only "wrong_motor" left: either no blind reacted correctly, or a
-        # different/additional, already-paired one also moved - see
+        # Only "wrong_motor" left, and only reachable when allow_wrong_motor
+        # was True - i.e. never for "existing" (see valid_results above):
+        # either no blind reacted correctly, or a different/additional,
+        # already-paired one also moved - see
         # async_step_wrong_motor_reset_notice()'s own docstring for why
         # both symptoms get the same treatment.
         return await self.async_step_wrong_motor_reset_notice()

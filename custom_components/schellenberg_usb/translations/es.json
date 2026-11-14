@@ -94,7 +94,6 @@
           "title": "¿Se movió la persiana?",
           "description": "Identidad de comando {device_id}/{device_enum} probada: brevemente {test_action}, luego detenida.",
           "data": {
-            "motor_moved": "La persiana se movió",
             "motor_moved_result": "¿Qué sucedió durante la prueba?"
           },
           "submit": "Continuar"
@@ -314,8 +313,8 @@
   },
   "services": {
     "test_command": {
-      "name": "Comando de prueba para el dispositivo",
-      "description": "Envía Arriba, Abajo o Stop a un dispositivo sin crear una persiana."
+      "name": "Comando de prueba de persiana",
+      "description": "Envía abrir, cerrar o detener a un enum de dispositivo sin crear una persiana."
     }
   }
 }

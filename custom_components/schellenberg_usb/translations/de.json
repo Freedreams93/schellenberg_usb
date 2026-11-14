@@ -94,7 +94,6 @@
           "title": "Hat sich der Rollladen bewegt?",
           "description": "Befehlsidentität {device_id}/{device_enum} getestet: kurz {test_action}, dann gestoppt.",
           "data": {
-            "motor_moved": "Der Rollladen hat sich bewegt",
             "motor_moved_result": "Was ist beim Test passiert?"
           },
           "submit": "Weiter"
@@ -314,8 +313,8 @@
   },
   "services": {
     "test_command": {
-      "name": "Testbefehl für das Gerät",
-      "description": "Sendet Auf, Zu oder Stopp an ein Gerät, ohne ein Gerät anzulegen."
+      "name": "Rollladen-Testbefehl",
+      "description": "Sendet Auf, Zu oder Stopp an eine Geräte-Enum, ohne einen Rollladen anzulegen."
     }
   }
 }

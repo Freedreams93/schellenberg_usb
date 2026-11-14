@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from homeassistant.config_entries import ConfigSubentry, SubentryFlowResult
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -2838,7 +2838,7 @@ async def test_did_motor_move_true_for_an_existing_blind_aborts_successfully(
     )
 
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={"motor_moved": True}
+        result["flow_id"], user_input={"motor_moved_result": "yes"}
     )
 
     assert result["type"] is FlowResultType.ABORT
@@ -2868,11 +2868,91 @@ async def test_did_motor_move_false_for_an_existing_blind_returns_to_edit(
     assert result["step_id"] == "did_motor_move"
 
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={"motor_moved": False}
+        result["flow_id"], user_input={"motor_moved_result": "no"}
     )
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "edit"
+
+
+async def test_did_motor_move_rejects_unselected_for_an_existing_blind(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same reasoning as test_did_motor_move_rejects_submitting_without_a_
+    real_choice above, now for the "existing" workflow's own re-test form -
+    unified onto the same required, no-default select on 2026-11-14 (see
+    _motor_moved_result_schema()'s own docstring), it must reject the
+    highlighted-but-unchosen "unselected" placeholder the same way the
+    "pairing" form does, rather than ever silently treating it as "no".
+    """
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    entry = _build_hub_entry(hass, connected_api)
+    blind = _add_existing_blind(hass, entry)
+    result = await _start_reconfigure_flow(hass, entry, blind)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "test_existing"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    assert result["step_id"] == "did_motor_move"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved_result": "unselected"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "did_motor_move"
+    assert result["errors"] == {"base": "motor_moved_result_required"}
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"motor_moved_result": "yes"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "command_test_successful"
+
+
+async def test_did_motor_move_rejects_wrong_motor_for_an_existing_blind(
+    hass: HomeAssistant,
+    connected_api: SchellenbergUsbApi,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "wrong_motor" only ever makes sense while a fresh device_enum is
+    still up for grabs during a "pairing" - an already-paired blind being
+    re-tested has no fresh address to retry at (see
+    _motor_moved_result_schema()'s own docstring), so the "existing"
+    workflow's own form must never offer it at all - confirmed here at a
+    stronger level than test_did_motor_move_rejects_unselected_for_an_
+    existing_blind just above: "unselected" is a genuine, declared option
+    of that same selector, so it passes Home Assistant's own schema
+    validation and only then gets rejected by async_step_did_motor_move()'s
+    own manual check. "wrong_motor" is not a declared option of the
+    schema shown to "existing" at all (allow_wrong_motor=False drops it
+    from the SelectSelector's own options=[...] list), so submitting it
+    anyway never even reaches that manual check or this step's handler:
+    Home Assistant's own schema validation (a plain vol.In(options) under
+    the hood) rejects it first, raising InvalidData instead of returning
+    a form. The schema itself, not just this step's own code, is what
+    makes the option unreachable here.
+    """
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    entry = _build_hub_entry(hass, connected_api)
+    blind = _add_existing_blind(hass, entry)
+    result = await _start_reconfigure_flow(hass, entry, blind)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"next_step_id": "test_existing"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"test_direction": "open"}
+    )
+    assert result["step_id"] == "did_motor_move"
+
+    with pytest.raises(InvalidData):
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"], user_input={"motor_moved_result": "wrong_motor"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3293,6 +3373,30 @@ def test_calibration_initial_state_forces_an_explicit_choice() -> None:
         "open": "Der Rollladen ist aktuell vollständig geöffnet",
         "closed": "Der Rollladen ist aktuell vollständig geschlossen",
     }
+
+
+def test_did_motor_move_unified_field_replaces_the_old_boolean_everywhere() -> None:
+    """The "existing" workflow's own re-test used to have its own separate
+    "motor_moved" plain-boolean field and label here, dropped when it was
+    unified (2026-11-14) onto the same "motor_moved_result" required select
+    _motor_moved_result_schema() already used for "pairing" (see that
+    schema's own docstring for why). Confirmed across every language, the
+    same way test_calibration_initial_state_forces_an_explicit_choice just
+    above confirms its own, analogous boolean-to-select replacement: the
+    old field and its label are gone, not just unreferenced from Python.
+    The full four-label option set backing the shared selector still
+    carries all three real outcomes plus the placeholder in every
+    language - which caller actually offers "wrong_motor" is a runtime
+    subset chosen in config_flow.py (see allow_wrong_motor there), not a
+    reason to drop its label from strings.json.
+    """
+    for language in ("strings", "en", "de", "es", "fr"):
+        step = _load_step(language, "did_motor_move")
+        assert "motor_moved_result" in step["data"], language
+        assert "motor_moved" not in step["data"], language
+
+        options = _load_selector_translations(language)["motor_moved_result"]["options"]
+        assert set(options) == {"unselected", "yes", "no", "wrong_motor"}, language
 
 
 def test_calibration_method_choice_menu_options_capitalization() -> None:

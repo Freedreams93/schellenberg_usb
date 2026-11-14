@@ -94,7 +94,6 @@
           "title": "Le volet a-t-il bougé ?",
           "description": "Identité de commande {device_id}/{device_enum} testée : brièvement {test_action}, puis arrêtée.",
           "data": {
-            "motor_moved": "Le volet a bougé",
             "motor_moved_result": "Que s'est-il passé pendant le test ?"
           },
           "submit": "Continuer"
@@ -314,8 +313,8 @@
   },
   "services": {
     "test_command": {
-      "name": "Commande de test pour l'appareil",
-      "description": "Envoie Haut, Bas ou Stop à un appareil sans créer de volet."
+      "name": "Commande de test de volet",
+      "description": "Envoie ouverture, fermeture ou arrêt à une énumération d'appareil sans créer de volet."
     }
   }
 }

@@ -94,7 +94,6 @@
           "title": "Did the shutter move?",
           "description": "Command identity {device_id}/{device_enum} tested: briefly {test_action}, then stopped.",
           "data": {
-            "motor_moved": "The shutter moved",
             "motor_moved_result": "What happened during the test?"
           },
           "submit": "Continue"
@@ -314,8 +313,8 @@
   },
   "services": {
     "test_command": {
-      "name": "Test command for the device",
-      "description": "Sends Up, Down, or Stop to a device without creating a cover."
+      "name": "Test blind command",
+      "description": "Send open, close, or stop to a device enum without creating a cover."
     }
   }
 }
